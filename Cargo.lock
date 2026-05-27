@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "cadenza"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -452,7 +452,7 @@ dependencies = [
 
 [[package]]
 name = "cadenza-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "cadenza-i18n",
@@ -471,7 +471,7 @@ dependencies = [
 
 [[package]]
 name = "cadenza-i18n"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "fluent-bundle",
  "include_dir",
@@ -483,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "cadenza-proto"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_json",
@@ -4078,7 +4078,7 @@ checksum = "8ee5873ec9cce0195efcb7a4e9507a04cd49aec9c83d0389df45b1ef7ba2e649"
 
 [[package]]
 name = "skills-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
