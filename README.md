@@ -3,7 +3,7 @@
 > A system-tray desktop app for managing AI-agent tasks — built for Claude Code, Codex, and similar tools.
 
 **Status:** under development (Phase 1 — foundation). No public release yet.
-**Stack:** Tauri 2 · Rust · React + TypeScript · Vite · pnpm
+**Stack:** Tauri 2 · Rust · vanilla HTML/CSS/JS (no build step)
 **Target platforms:** Windows · Linux · macOS
 **License:** MIT OR Apache-2.0
 
@@ -44,7 +44,7 @@ so they can coexist during the migration.
 │              cadenza (Tauri 2.x)                    │
 │                                                     │
 │  ┌────────────┐    ┌──────────────────────────────┐ │
-│  │ Tray Icon  │    │   WebView (React)            │ │
+│  │ Tray Icon  │    │   WebView (vanilla HTML/JS)  │ │
 │  │ (Rust)     │    │   Board · Modal · Terminal   │ │
 │  └────────────┘    └──────┬───────────────────────┘ │
 │        │                  │ invoke / emit / channel │
@@ -79,19 +79,21 @@ so they can coexist during the migration.
 cadenza/
 ├── src-tauri/        # Tauri app: tray, IPC server, store, triage, PTY, notify
 ├── cadenza-cli/      # clap CLI that talks to the app over the local socket
-├── proto/            # Shared NDJSON types (path dep)
-├── i18n/             # Shared Fluent loader + locale resolution
-├── locales/          # .ftl files for app + CLI (pt-BR, en)
-├── web/              # React + TypeScript + Vite frontend
-├── skills/           # CLAUDE.md snippet per locale (pt-BR, en)
-├── DESIGN-desktop-v2.md  # Design document — source of truth
-└── CLAUDE.md         # Guidance for AI agents editing this repo
+├── proto/            # Shared NDJSON wire types (path dep)
+├── i18n/             # Shared Fluent bundle loader + locale resolution
+├── locales/          # .ftl files for app, CLI and UI (pt-BR, en)
+├── ui/               # Hand-written HTML/CSS/JS; vendored libs in ui/vendor/
+├── skills/           # Per-locale skill snippet handed to the agent
+├── skills-core/      # Shared skill metadata + loader
+├── Cargo.toml        # Workspace manifest
+├── deny.toml         # cargo-deny policy (MIT/Apache/BSD/MPL only)
+└── CLAUDE.md         # Non-negotiable constraints + 12-rule operating manual
 ```
 
-`DESIGN-desktop-v2.md` covers every decision in detail (protocol,
-security, phases, risks). When it and the README disagree, **the design
-wins**. The design document is written in Portuguese — that is the
-project's primary working language for design decisions.
+The non-negotiable constraints (frozen on-disk format, no MCP/JSON-RPC,
+exit codes, license policy, XSS hygiene) live in `CLAUDE.md`. When the
+README and `CLAUDE.md` disagree, `CLAUDE.md` wins. Portuguese is the
+project's primary working language for architecture discussions.
 
 ---
 
@@ -102,29 +104,31 @@ project's primary working language for design decisions.
 ### Prerequisites
 
 - Rust stable ≥ 1.77 (`rustup toolchain install stable`)
-- Node.js ≥ 20 and [pnpm](https://pnpm.io) ≥ 9
+- Tauri CLI 2 (`cargo install tauri-cli --version "^2" --locked`)
 - The OS toolchain Tauri 2 needs — see
   [tauri.app/start/prerequisites](https://tauri.app/start/prerequisites/)
   (WebView2 on Windows, `webkit2gtk` on Linux, Xcode CLI on macOS).
 
+No Node.js, no `pnpm`, no `node_modules` — the UI is plain HTML/CSS/JS
+served by Tauri as static files, and third-party JS libs are vendored
+under `ui/vendor/` with pinned versions.
+
 ### Run in dev
 
 ```bash
-pnpm install
-pnpm dev          # tauri dev — launches the app + Vite with HMR
+cargo tauri dev   # launches the app; reload UI changes with Ctrl+R
 ```
 
 ### Production build
 
 ```bash
-pnpm build        # tauri build — builds the installer for the current platform
+cargo tauri build # builds the installer for the current platform
 ```
 
-### Frontend only
+### CLI only
 
 ```bash
-pnpm web:dev      # Vite alone, without the Tauri shell
-pnpm web:typecheck
+cargo run -p cadenza-cli -- current --json
 ```
 
 ---
@@ -135,12 +139,14 @@ pnpm web:typecheck
 PATH. It requires the Cadenza app to be running.
 
 ```bash
-cadenza current --json                          # active task (or null)
-cadenza list --estado doing                     # filter by state
-cadenza log T-42 "implemented the handshake"    # record progress
-cadenza propose --parent T-42 \
-        --title "extract auth module"           # blocks until decided
-cadenza done T-42 "merged, tests green"         # mark as done
+cadenza-cli current --json                          # active task (or null)
+cadenza-cli list --estado doing                     # filter by state
+cadenza-cli log T-42 "implemented the handshake"    # record progress
+cadenza-cli propose --parent T-42 \
+        --title "extract auth module" \
+        --repro "..." --file "src/auth/mod.rs" \
+        --what-failed "..." --action "..."          # blocks until decided
+cadenza-cli done T-42 "merged, tests green"         # mark as done
 ```
 
 `--estado` accepts English aliases (`todo | doing | review | done`); the
@@ -171,8 +177,8 @@ cadenza done T-42 "merged, tests green"         # mark as done
   `~/.cadenza/triage/<id>.proposta.json` before any response — either
   side can crash and reconnect without duplicating tasks.
 
-A full NDJSON session example and the complete list of ops live in
-`DESIGN-desktop-v2.md` § "Protocolo IPC".
+The full NDJSON protocol — handshake, ops, error envelopes — is defined
+in the `proto/` crate; the canonical wire values are PT-canonical.
 
 ---
 
@@ -180,9 +186,11 @@ A full NDJSON session example and the complete list of ops live in
 
 - **Display layer only.** On-disk data and wire values stay in canonical
   Portuguese.
-- **Frontend:** `react-i18next` + ICU, JSON namespaces.
-- **Backend and CLI:** `fluent-rs`, with `.ftl` files embedded via
-  `include_dir!`.
+- **One toolchain everywhere.** Backend, CLI and UI all consume the same
+  `.ftl` files via `fluent-rs` (embedded with `include_dir!`). The UI
+  loads its strings at boot through a Tauri command (`load_translations`)
+  and renders them with a small `t(key, args)` helper — no
+  `react-i18next`, no second i18n system.
 - **Locales at launch:** `pt-BR` (primary), `en` (fallback). `pt_PT`
   falls through to `pt-BR`.
 - **Resolution chain:** `--lang` > `CADENZA_LANG` > `config.json` >
@@ -208,7 +216,7 @@ as a mistake. Summary of what's in `CLAUDE.md`:
 - **No open TCP port.** PTY streaming uses Tauri channels instead of a
   local WebSocket.
 
-The rationale for each one is in the design doc.
+The rationale for each one is in `CLAUDE.md`.
 
 ---
 
@@ -218,8 +226,8 @@ The rationale for each one is in the design doc.
   `config`/`store`/`observ`/`i18n` wired from the first boot.
 - [ ] **Phase 2 — Core backend:** `triage` (idempotency + recovery),
   `spawn` (PTY via `portable-pty`), `terminal` (channel + ring buffer).
-- [ ] **Phase 3 — Frontend integration:** `commands.rs`, `web/src/api.ts`
-  rewritten on `@tauri-apps/api`, terminal on a Tauri channel, language
+- [ ] **Phase 3 — Frontend integration:** `commands.rs`, `ui/api.js`
+  built on `window.__TAURI__`, terminal on a Tauri channel, language
   switcher.
 - [ ] **Phase 4 — CLI + IPC + Notifications:** `proto`/`auth`/`ipc`,
   `cadenza-cli` with clap, `notify` with actions, per-locale skill,
@@ -229,20 +237,17 @@ The rationale for each one is in the design doc.
   `tauri-plugin-updater` pointed at a public endpoint, smoke tests on
   all three OSes.
 
-Each checkbox is broken down in `DESIGN-desktop-v2.md` § "Fases de
-implementação".
-
 ---
 
 ## Contributing
 
 Read `CLAUDE.md` before opening a PR — it spells out the non-negotiable
-constraints (frozen on-disk format, no MCP/JSON-RPC, stable exit codes)
-and the 12-rule operating manual that applies to both humans and agents.
+constraints (frozen on-disk format, no MCP/JSON-RPC, stable exit codes,
+license policy, XSS hygiene) and the 12-rule operating manual that
+applies to both humans and agents.
 
-The design document is in Portuguese; PRs that touch architecture, the
-protocol, or the data layout should edit the relevant section in the
-same language.
+Portuguese is the project's working language for architecture
+discussions; English is fine for code, comments, commits and PRs.
 
 ---
 

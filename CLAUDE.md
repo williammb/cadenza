@@ -4,9 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**Pre-implementation.** The repo contains `DESIGN-desktop-v4.md` (active, canonical) plus `DESIGN-desktop-v3.md` and `DESIGN-desktop-v2.md` (both historical). No Cargo workspace, no UI, no build scripts exist yet. Do not invent commands (`cargo run`, `npm test`, etc.) — they will not work until Phase 1 of the design is scaffolded.
-
-When the user asks for implementation work, the first task is to bootstrap the workspace per `DESIGN-desktop-v4.md` § "Estrutura do projeto" and § "Fases de implementação".
+**Phase 1 scaffolded.** The Cargo workspace exists with five crates (`src-tauri`, `cadenza-cli`, `proto`, `i18n`, `skills-core`), the vanilla HTML/CSS/JS UI lives under `ui/` with vendored libs in `ui/vendor/`, and locale bundles are in `locales/`. `cargo build`, `cargo run -p cadenza-cli -- …`, and `cargo tauri dev` (after `cargo install tauri-cli --version "^2" --locked`) are real commands. Phases 2–5 (full triage/PTY/IPC/installers) are still in progress — check the relevant module before assuming a feature is complete.
 
 ## What this project is
 
@@ -17,7 +15,7 @@ When the user asks for implementation work, the first task is to bootstrap the w
 
 They communicate over a local **named pipe (Windows) / Unix socket** using **NDJSON** framing, authenticated by a token in `~/.cadenza/auth` (mode `0600`). The terminal stream uses **Tauri channels** (`ipc::Channel`) — no TCP ports are opened.
 
-`DESIGN-desktop-v4.md` is the source of truth. v2 (Tauri+React) and v3 (Slint) are historical — the project briefly explored both before landing on v4 on 2026-05-27. Read the relevant section of v4 before suggesting changes that touch architecture, protocol, or data layout.
+The project briefly explored Tauri+React and Slint before landing on the current Tauri+vanilla-JS shape on 2026-05-27. Do not re-propose either reversal (see the "Hard constraints" section below).
 
 ## Hard constraints (do not break)
 
@@ -32,7 +30,7 @@ These are decisions already made — re-deriving or "improving" them silently is
 - **i18n is unified under `fluent-rs`.** Backend, CLI, and UI all consume the same `.ftl` files. UI loads strings via a Tauri command (`load_translations(locale)` at boot returns a dict; `t(key, args)` for plural-y cases that need backend resolution). English is the fallback; pt-BR is primary. Logs are always English. Don't introduce a second i18n system (no react-i18next, no gettext .po) — one toolchain only.
 - **CLI accepts EN aliases for enum values** (`--estado todo|doing|review|done`) mapped to PT canonical in `cadenza-cli/src/aliases.rs`. Subcommands themselves are English (`list`, `current`, `propose`, `done`).
 - **No MCP.** Agent integration is CLI-based by design — debuggable, agent-agnostic. Don't propose adding MCP.
-- **No JSON-RPC.** Wire format is NDJSON with `{v, id, op, args}` requests and `{v, id, ok, result|error}` responses. Rationale in the design doc — don't switch to jsonrpsee.
+- **No JSON-RPC.** Wire format is NDJSON with `{v, id, op, args}` requests and `{v, id, ok, result|error}` responses — don't switch to jsonrpsee.
 - **No JS framework, no `node_modules`, no build step for the UI.** UI is hand-written HTML/CSS/JS in `ui/`, served as static files by Tauri (`withGlobalTauri: true` in `tauri.conf.json`, accessed via `window.__TAURI__`). Don't propose React, Vue, Svelte, Vite, npm, Webpack — that decision was made and reversed in v2. Third-party JS libs (xterm.js, marked, DOMPurify) are vendored under `ui/vendor/` with pinned versions.
 - **No Slint, no native Rust GUI framework.** v3 explored Slint and reversed it because GPLv3 blocks enterprise adoption. UI is Tauri webview. Don't re-propose iced/egui/Dioxus.
 - **License: MIT OR Apache-2.0.** Every `Cargo.toml` declares it; repo has both `LICENSE-MIT` and `LICENSE-APACHE`. **All dependencies must be MIT, Apache-2.0, BSD, or MPL-2.0** — no GPL/LGPL/AGPL ever. `cargo-deny` enforces this in CI.
@@ -47,9 +45,9 @@ Agents inspect these directly without parsing stdout. Don't renumber:
 
 `0` ok · `1` generic · `2` bad usage · `10` app not running · `11` bad/missing token · `12` protocol mismatch · `20` proposal rejected · `21` decision timeout · `30` task not found.
 
-## Architectural shape (when it exists)
+## Architectural shape
 
-The planned workspace is a Cargo workspace with four Rust crates plus a static-files UI directory — no frontend toolchain:
+Cargo workspace with five Rust crates plus a static-files UI directory — no frontend toolchain:
 
 ```
 src-tauri/   - Tauri app: tray, IPC server, store, triage, PTY, notifications, Tauri commands
@@ -58,13 +56,14 @@ ui/          - hand-written HTML/CSS/JS, served as static files by Tauri
 cadenza-cli/ - clap-based CLI client over the local socket
 proto/       - shared NDJSON types (path dep from both Rust crates)
 i18n/        - shared Fluent bundle loader + locale resolution chain
+skills-core/ - shared skill snippet metadata + loader
 locales/     - .ftl files for UI, app, and CLI (pt-BR, en)
-skills/      - CLAUDE.md snippet handed to the agent, one per locale
+skills/      - per-locale skill snippet handed to the agent
 installers/  - tauri build outputs: NSIS / AppImage / DMG (Phase 5)
 LICENSE-MIT, LICENSE-APACHE, deny.toml at repo root
 ```
 
-Module responsibilities for `src-tauri/src/*.rs` are spelled out in the design doc § "Módulos Rust — responsabilidades". Read that before adding a new module — the boundary between `store`/`triage`/`ipc`/`commands` is intentional. `commands.rs` holds `#[tauri::command]` handlers (UI ↔ backend); it does not own business logic.
+The boundary between `store`/`triage`/`ipc`/`commands` in `src-tauri/src/` is intentional — read the existing modules before adding a new one. `commands.rs` holds `#[tauri::command]` handlers (UI ↔ backend); it does not own business logic. `triage` owns proposal idempotency and recovery; `store` owns persistence; `ipc` owns the NDJSON server and framing.
 
 ## Locale resolution chain
 
@@ -72,7 +71,7 @@ Module responsibilities for `src-tauri/src/*.rs` are spelled out in the design d
 
 ## Document conventions
 
-The design document is written in **Portuguese**. When editing it, match the existing voice and keep tables in the same column order. New design decisions of comparable weight should land as numbered sections, not scattered footnotes.
+Portuguese is the project's working language for architecture discussions; English is fine for code, comments, commits and PRs. When adding constraints to this file of comparable weight to the existing "Hard constraints", land them as a new bullet there — not as scattered footnotes elsewhere.
 
 ---
 
