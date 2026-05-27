@@ -2,7 +2,7 @@
 
 > A system-tray desktop app for managing AI-agent tasks — built for Claude Code, Codex, and similar tools.
 
-**Status:** under development (Phase 1 — foundation). No public release yet.
+**Status:** active development (Phases 1–4 complete, Phase 5 in progress). No public release yet.
 **Stack:** Tauri 2 · Rust · vanilla HTML/CSS/JS (no build step)
 **Target platforms:** Windows · Linux · macOS
 **License:** MIT OR Apache-2.0
@@ -222,20 +222,20 @@ The rationale for each one is in `CLAUDE.md`.
 
 ## Roadmap
 
-- [ ] **Phase 1 — Foundation:** Cargo workspace, Tauri boilerplate,
+- [x] **Phase 1 — Foundation:** Cargo workspace, Tauri boilerplate,
   `config`/`store`/`observ`/`i18n` wired from the first boot.
-- [ ] **Phase 2 — Core backend:** `triage` (idempotency + recovery),
+- [x] **Phase 2 — Core backend:** `triage` (idempotency + recovery),
   `spawn` (PTY via `portable-pty`), `terminal` (channel + ring buffer).
-- [ ] **Phase 3 — Frontend integration:** `commands.rs`, `ui/api.js`
+- [x] **Phase 3 — Frontend integration:** `commands.rs`, `ui/api.js`
   built on `window.__TAURI__`, terminal on a Tauri channel, language
   switcher.
-- [ ] **Phase 4 — CLI + IPC + Notifications:** `proto`/`auth`/`ipc`,
+- [x] **Phase 4 — CLI + IPC + Notifications:** `proto`/`auth`/`ipc`,
   `cadenza-cli` with clap, `notify` with actions, per-locale skill,
   end-to-end test with a real agent.
 - [ ] **Phase 5 — Packaging and updates:** icons,
   NSIS/AppImage/DMG, cross-platform CI with ed25519 signing,
   `tauri-plugin-updater` pointed at a public endpoint, smoke tests on
-  all three OSes.
+  all three OSes. *(NSIS complete; AppImage and DMG pending)*
 
 ---
 

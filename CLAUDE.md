@@ -4,7 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-**Phase 1 scaffolded.** The Cargo workspace exists with five crates (`src-tauri`, `cadenza-cli`, `proto`, `i18n`, `skills-core`), the vanilla HTML/CSS/JS UI lives under `ui/` with vendored libs in `ui/vendor/`, and locale bundles are in `locales/`. `cargo build`, `cargo run -p cadenza-cli -- …`, and `cargo tauri dev` (after `cargo install tauri-cli --version "^2" --locked`) are real commands. Phases 2–5 (full triage/PTY/IPC/installers) are still in progress — check the relevant module before assuming a feature is complete.
+**Phases 1–4 complete; Phase 5 partial.** The full IPC stack (named pipe/Unix socket, NDJSON), triage engine with idempotency/recovery, PTY/terminal, and the full task store (SQLite and PostgreSQL backends, ideias inbox, projects, agent runs) are implemented. Phase 5 (cross-platform packaging) has a working NSIS installer; AppImage and DMG are not yet produced. The Cargo workspace has five crates (`src-tauri`, `cadenza-cli`, `proto`, `i18n`, `skills-core`), the vanilla HTML/CSS/JS UI lives under `ui/` with vendored libs in `ui/vendor/`, and locale bundles are in `locales/`. `cargo build`, `cargo run -p cadenza-cli -- …`, and `cargo tauri dev` (after `cargo install tauri-cli --version "^2" --locked`) are real commands.
+
+## Added scope
+
+Features added after the original Phases 1–5 plan — all fully implemented:
+
+- **SQLite and PostgreSQL backends.** The store is a `Repository` trait with three impls: `FileRepository` (legacy Node.js compat), `SqliteRepository`, and `PgRepository`. Backend is switchable at runtime via `set_storage_backend`; migrations handled by `store/migrate.rs`.
+- **OS keyring for PG password.** `secrets.rs` uses the `keyring` crate to store/retrieve the PostgreSQL password from the OS credential store — never on disk in plaintext.
+- **Ideias inbox.** File-backed inbox under `~/.cadenza/inbox/` (`store/ideias_inner.rs`). Tauri commands: `list_ideias`, `read_ideia`, `create_ideia`, `delete_ideia`, `set_ideia_status`, `destrinchar_ideia`.
+- **Projects.** `projects.rs` + commands (`set_task_project`, `list_task_projects`, `set_active_project`) attach tasks to named projects and track the active project.
+- **Agent runs.** `runs.rs` + commands (`start_task_agent`, `read_task_run`, `list_task_runs`, `clear_task_run`) spawn and track PTY-based agent sessions per task.
 
 ## What this project is
 
