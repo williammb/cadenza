@@ -1,0 +1,14 @@
+[package]
+name = "cadenza-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Cadenza IPC wire protocol (NDJSON) — shared types between app and CLI"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

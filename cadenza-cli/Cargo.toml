@@ -1,0 +1,27 @@
+[package]
+name = "cadenza-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Cadenza CLI — used by AI agents to drive tasks over the local socket"
+
+[[bin]]
+name = "cadenza-cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive", "env"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+uuid = { workspace = true }
+tokio = { workspace = true }
+interprocess = { workspace = true }
+dirs = { workspace = true }
+
+cadenza-proto = { workspace = true }
+cadenza-i18n = { workspace = true }
+skills-core = { workspace = true }

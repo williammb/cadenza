@@ -1,0 +1,787 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cadenza</title>
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1 data-i18n="app-name">Cadenza</h1>
+      <span class="app-version" id="app-version" aria-label="Versão"></span>
+      <label class="topbar-project">
+        <svg
+          class="ic"
+          viewBox="0 0 24 24"
+          width="16"
+          height="16"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+        </svg>
+        <select id="project-select" data-i18n-aria-label="topbar-project-aria" aria-label="Projeto ativo">
+          <option value="" data-i18n="topbar-project-all">Todos os projetos</option>
+        </select>
+      </label>
+      <span class="status" id="status" aria-live="polite"></span>
+      <div class="topbar-actions">
+        <button
+          type="button"
+          class="btn btn-triage"
+          id="btn-triage"
+          data-i18n-aria-label="triage-pending-tooltip"
+          data-i18n-title="triage-pending-tooltip"
+          aria-label="Abrir triagem"
+          title="Abrir triagem"
+          hidden
+        >
+          <span id="triage-pending-count" class="triage-count">0</span>
+          <span class="triage-label" data-i18n="triage-pending-tooltip">Triagem</span>
+        </button>
+        <button
+          type="button"
+          class="btn btn-primary"
+          id="btn-new-task"
+          data-i18n-aria-label="topbar-new-task-aria"
+          aria-label="Criar nova task"
+        >
+          <svg
+            class="ic"
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 5v14M5 12h14" />
+          </svg>
+          <span data-i18n="topbar-new-task-short">Nova task</span>
+        </button>
+        <button
+          type="button"
+          class="btn btn-icon"
+          id="btn-theme"
+          data-i18n-aria-label="topbar-theme-aria"
+          data-i18n-title="topbar-theme-aria"
+          aria-label="Alternar tema"
+          title="Alternar tema"
+        >
+          <span class="theme-icon theme-icon-light" aria-hidden="true">☀</span>
+          <span class="theme-icon theme-icon-dark" aria-hidden="true">☾</span>
+        </button>
+        <button
+          type="button"
+          class="btn btn-icon"
+          id="btn-settings"
+          data-i18n-aria-label="topbar-settings-aria"
+          aria-label="Abrir configurações"
+          title="Configurações"
+        >
+          <svg
+            viewBox="0 0 24 24"
+            width="18"
+            height="18"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="3"></circle>
+            <path
+              d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"
+            ></path>
+          </svg>
+        </button>
+      </div>
+    </header>
+
+    <main class="board" id="board">
+      <section class="column column-inbox" data-tipo="ideia">
+        <header>
+          <svg class="ic col-ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 12h-6l-2 3h-4l-2-3H2"></path>
+            <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"></path>
+          </svg>
+          <h2 data-i18n="board-column-inbox">Inbox</h2>
+          <span class="count" data-count-for="inbox">0</span>
+          <button
+            type="button"
+            class="btn btn-icon col-add"
+            id="btn-new-ideia"
+            data-i18n-aria-label="ideia-new-aria"
+            aria-label="Nova ideia"
+            title="Nova ideia"
+          >+</button>
+        </header>
+        <div class="cards" data-drop="ideia"></div>
+      </section>
+
+      <section class="column" data-estado="a_fazer">
+        <header>
+          <svg class="ic col-ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 12h-6l-2 3h-4l-2-3H2"></path>
+            <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"></path>
+          </svg>
+          <h2 data-i18n="board-column-todo">A Fazer</h2>
+          <span class="count" data-count-for="a_fazer">0</span>
+        </header>
+        <div class="cards" data-drop></div>
+      </section>
+
+      <section class="column" data-estado="fazendo">
+        <header>
+          <svg class="ic col-ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polygon points="6 3 20 12 6 21 6 3"></polygon>
+          </svg>
+          <h2 data-i18n="board-column-doing">Fazendo</h2>
+          <span class="count" data-count-for="fazendo">0</span>
+        </header>
+        <div class="cards" data-drop></div>
+      </section>
+
+      <section class="column" data-estado="aguardando_revisao">
+        <header>
+          <svg class="ic col-ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7S2 12 2 12Z"></path>
+            <circle cx="12" cy="12" r="3"></circle>
+          </svg>
+          <h2 data-i18n="board-column-review">Aguardando Revisão</h2>
+          <span class="count" data-count-for="aguardando_revisao">0</span>
+        </header>
+        <div class="cards" data-drop></div>
+      </section>
+
+      <section class="column" data-estado="feito">
+        <header>
+          <svg class="ic col-ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+            <polyline points="22 4 12 14.01 9 11.01"></polyline>
+          </svg>
+          <h2 data-i18n="board-column-done">Feito</h2>
+          <span class="count" data-count-for="feito">0</span>
+        </header>
+        <div class="cards" data-drop></div>
+      </section>
+    </main>
+
+    <!-- ============================ SETTINGS MODAL ============================ -->
+    <dialog id="settings-modal" class="modal">
+      <form method="dialog" class="modal-form" id="settings-form">
+        <header class="modal-header">
+          <h2 data-i18n="settings-title">Configurações</h2>
+          <button
+            type="button"
+            class="btn btn-icon modal-close"
+            data-action="close-settings"
+            data-i18n-aria-label="action-close"
+            aria-label="Fechar"
+          >×</button>
+        </header>
+
+        <section class="modal-section">
+          <h3 data-i18n="settings-section-language">Idioma</h3>
+          <select id="settings-locale" name="locale">
+            <option value="pt-BR" data-i18n="settings-language-pt">Português (pt-BR)</option>
+            <option value="en" data-i18n="settings-language-en">English (en)</option>
+          </select>
+        </section>
+
+        <section class="modal-section">
+          <h3 data-i18n="settings-section-projects">Projetos</h3>
+          <ul class="project-list" id="project-list"></ul>
+          <div class="project-add">
+            <input
+              type="text"
+              id="new-project-name"
+              data-i18n-placeholder="settings-project-name"
+              placeholder="Nome"
+            />
+            <div class="path-picker">
+              <input
+                type="text"
+                id="new-project-path"
+                data-i18n-placeholder="settings-project-path"
+                placeholder="Caminho"
+              />
+              <button
+                type="button"
+                class="btn btn-icon path-browse"
+                id="btn-browse-path"
+                data-i18n-aria-label="settings-project-path-browse"
+                data-i18n-title="settings-project-path-browse"
+                aria-label="Selecionar pasta"
+                title="Selecionar pasta"
+              >…</button>
+            </div>
+            <button
+              type="button"
+              class="btn"
+              id="btn-add-project"
+              data-i18n="action-add"
+            >Adicionar</button>
+          </div>
+        </section>
+
+        <section class="modal-section">
+          <h3 data-i18n="settings-section-agent">Agente padrão</h3>
+          <select id="settings-agent-kind" name="agent-kind">
+            <option value="claude_code" data-i18n="settings-agent-claude">Claude Code</option>
+            <option value="codex" data-i18n="settings-agent-codex">Codex</option>
+          </select>
+          <label class="field">
+            <span data-i18n="settings-agent-command">Comando (opcional)</span>
+            <input type="text" id="agent-command" placeholder="claude" />
+          </label>
+        </section>
+
+        <section class="modal-section">
+          <h3 data-i18n="settings-section-storage">Armazenamento</h3>
+          <p class="modal-hint" data-i18n="settings-storage-hint">
+            Onde as tasks ficam salvas. Trocar dispara migração automática
+            e exige reiniciar.
+          </p>
+          <ul class="storage-list" id="storage-list">
+            <li>
+              <label class="storage-option">
+                <input
+                  type="radio"
+                  name="storage-backend"
+                  value="files"
+                  id="storage-files"
+                />
+                <span class="storage-label">
+                  <strong data-i18n="settings-storage-files">Arquivos</strong>
+                  <small data-i18n="settings-storage-files-hint">
+                    ~/.cadenza/tasks/*.md — compatível com task-ai (Node.js)
+                  </small>
+                </span>
+              </label>
+            </li>
+            <li>
+              <label class="storage-option">
+                <input
+                  type="radio"
+                  name="storage-backend"
+                  value="sqlite"
+                  id="storage-sqlite"
+                />
+                <span class="storage-label">
+                  <strong data-i18n="settings-storage-sqlite">SQLite</strong>
+                  <small data-i18n="settings-storage-sqlite-hint">
+                    ~/.cadenza/cadenza.db — banco local, leitura/escrita mais rápida
+                  </small>
+                </span>
+              </label>
+            </li>
+            <li>
+              <label class="storage-option">
+                <input
+                  type="radio"
+                  name="storage-backend"
+                  value="postgres"
+                  id="storage-postgres"
+                />
+                <span class="storage-label">
+                  <strong data-i18n="settings-storage-postgres">PostgreSQL</strong>
+                  <small data-i18n="settings-storage-postgres-hint">
+                    Supabase / AWS / Azure — senha no keyring do SO, nunca em disco
+                  </small>
+                </span>
+              </label>
+            </li>
+          </ul>
+
+          <div id="pg-config-block" class="pg-config" hidden>
+            <div class="pg-row">
+              <label class="field pg-host">
+                <span data-i18n="settings-pg-host">Host</span>
+                <input type="text" id="pg-host" placeholder="db.example.com" />
+              </label>
+              <label class="field pg-port">
+                <span data-i18n="settings-pg-port">Porta</span>
+                <input
+                  type="number"
+                  id="pg-port"
+                  min="1"
+                  max="65535"
+                  value="5432"
+                />
+              </label>
+            </div>
+            <label class="field">
+              <span data-i18n="settings-pg-database">Banco de dados</span>
+              <input type="text" id="pg-database" placeholder="cadenza" />
+            </label>
+            <label class="field">
+              <span data-i18n="settings-pg-user">Usuário</span>
+              <input type="text" id="pg-user" placeholder="cadenza" />
+            </label>
+            <label class="field">
+              <span data-i18n="settings-pg-password">Senha</span>
+              <input
+                type="password"
+                id="pg-password"
+                autocomplete="new-password"
+                placeholder="••••••••"
+              />
+              <small class="pg-password-hint" data-i18n="settings-pg-password-hint">
+                Vai pro keyring do SO. Nunca é gravada em config.json.
+              </small>
+            </label>
+            <label class="field">
+              <span data-i18n="settings-pg-ssl">Modo SSL</span>
+              <select id="pg-ssl-mode">
+                <option value="require" data-i18n="settings-pg-ssl-require">require (recomendado)</option>
+                <option value="prefer" data-i18n="settings-pg-ssl-prefer">prefer</option>
+                <option value="disable" data-i18n="settings-pg-ssl-disable">disable</option>
+              </select>
+            </label>
+            <div class="pg-actions">
+              <button
+                type="button"
+                class="btn"
+                id="btn-pg-test"
+                data-i18n="settings-pg-test"
+              >Testar conexão</button>
+              <button
+                type="button"
+                class="btn btn-primary"
+                id="btn-pg-save"
+                data-i18n="settings-pg-save"
+                disabled
+              >Salvar e migrar</button>
+              <button
+                type="button"
+                class="btn btn-danger btn-small"
+                id="btn-pg-clear"
+                data-i18n="settings-pg-clear"
+              >Limpar senha</button>
+            </div>
+            <div
+              id="pg-status"
+              class="modal-status"
+              aria-live="polite"
+            ></div>
+          </div>
+          <div
+            id="storage-restart-banner"
+            class="modal-status warn"
+            hidden
+          >
+            <span data-i18n="settings-storage-restart">
+              Reinicie para aplicar a mudança de armazenamento.
+            </span>
+            <button
+              type="button"
+              class="btn btn-primary btn-small"
+              id="btn-restart-now"
+              data-i18n="settings-storage-restart-now"
+            >Reiniciar agora</button>
+          </div>
+        </section>
+
+        <section class="modal-section">
+          <h3 data-i18n="settings-section-skills">Skills do CLI</h3>
+          <p class="modal-hint" data-i18n="settings-skills-hint">
+            Instala um snippet que ensina o agente (Claude Code, Codex) a
+            usar o cadenza-cli.
+          </p>
+
+          <div class="skill-controls">
+            <fieldset class="skill-group">
+              <legend data-i18n="settings-skills-agents">Agentes</legend>
+              <label class="skill-check">
+                <input type="checkbox" id="skill-agent-claude" checked />
+                <span data-i18n="settings-skills-agent-claude">Claude Code</span>
+              </label>
+              <label class="skill-check">
+                <input type="checkbox" id="skill-agent-codex" checked />
+                <span data-i18n="settings-skills-agent-codex">Codex</span>
+              </label>
+            </fieldset>
+
+            <fieldset class="skill-group">
+              <legend data-i18n="settings-skills-scope">Escopo</legend>
+              <label class="skill-check">
+                <input
+                  type="radio"
+                  name="skill-scope"
+                  value="project"
+                  id="skill-scope-project"
+                  checked
+                />
+                <span data-i18n="settings-skills-scope-project">Projeto atual</span>
+              </label>
+              <div class="skill-project-picker" id="skill-project-picker">
+                <label
+                  for="skill-project-select"
+                  class="skill-project-label"
+                  data-i18n="settings-skills-project-label"
+                >Projeto</label>
+                <select id="skill-project-select" class="skill-project-select"></select>
+                <span
+                  id="skill-project-empty"
+                  class="skill-project-empty"
+                  data-i18n="settings-skills-project-empty"
+                  hidden
+                >Nenhum projeto cadastrado.</span>
+              </div>
+              <label class="skill-check">
+                <input
+                  type="radio"
+                  name="skill-scope"
+                  value="global"
+                  id="skill-scope-global"
+                />
+                <span data-i18n="settings-skills-scope-global">Global (usuário)</span>
+              </label>
+            </fieldset>
+          </div>
+
+          <label class="skill-check">
+            <input type="checkbox" id="skill-force" />
+            <span data-i18n="settings-skills-force">Sobrescrever se já existir</span>
+          </label>
+
+          <div class="skill-actions">
+            <button
+              type="button"
+              class="btn btn-primary"
+              id="btn-skill-install"
+              data-i18n="settings-skills-install"
+            >Instalar</button>
+            <button
+              type="button"
+              class="btn"
+              id="btn-skill-remove"
+              data-i18n="settings-skills-remove"
+            >Remover</button>
+            <button
+              type="button"
+              class="btn btn-small"
+              id="btn-skill-refresh"
+              data-i18n="settings-skills-refresh"
+            >Atualizar status</button>
+          </div>
+
+          <table class="skill-status-table">
+            <thead>
+              <tr>
+                <th data-i18n="settings-skills-col-agent">Agente</th>
+                <th data-i18n="settings-skills-col-scope">Escopo</th>
+                <th data-i18n="settings-skills-col-status">Status</th>
+                <th data-i18n="settings-skills-col-path">Caminho</th>
+              </tr>
+            </thead>
+            <tbody id="skill-status-table-body"></tbody>
+          </table>
+
+          <div
+            id="skill-status"
+            class="modal-status"
+            aria-live="polite"
+          ></div>
+        </section>
+
+        <footer class="modal-footer">
+          <span class="modal-status" id="settings-status" aria-live="polite"></span>
+          <button type="button" class="btn" data-action="close-settings" data-i18n="action-cancel">Cancelar</button>
+          <button type="submit" class="btn btn-primary" data-i18n="action-save">Salvar</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <!-- ============================ TASK MODAL ============================ -->
+    <dialog id="task-modal" class="modal">
+      <form method="dialog" class="modal-form" id="task-form">
+        <header class="modal-header">
+          <div class="modal-title-row">
+            <h2 id="task-modal-title" data-i18n="task-modal-title-new">Nova task</h2>
+            <span id="task-id-badge" class="task-id-badge" hidden></span>
+            <button
+              type="button"
+              class="btn btn-primary btn-start"
+              id="btn-start-task"
+              data-i18n-aria-label="task-modal-start-aria"
+              aria-label="Iniciar agente"
+              hidden
+            >
+              <span class="play-icon" aria-hidden="true">▶</span>
+              <span id="btn-start-task-label" data-i18n="task-modal-start">Iniciar</span>
+            </button>
+          </div>
+          <button
+            type="button"
+            class="btn btn-icon modal-close"
+            data-action="close-task"
+            data-i18n-aria-label="action-close"
+            aria-label="Fechar"
+          >×</button>
+        </header>
+
+        <label class="field">
+          <span data-i18n="task-field-titulo">Título</span>
+          <input type="text" id="task-titulo" required />
+        </label>
+
+        <label class="field">
+          <span data-i18n="task-field-estado">Estado</span>
+          <select id="task-estado">
+            <option value="a_fazer" data-i18n="estado-a-fazer">A fazer</option>
+            <option value="fazendo" data-i18n="estado-fazendo">Fazendo</option>
+            <option value="aguardando_revisao" data-i18n="estado-aguardando-revisao">Aguardando revisão</option>
+            <option value="feito" data-i18n="estado-feito">Feito</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span data-i18n="task-field-body">Descrição</span>
+          <textarea id="task-body" rows="6"></textarea>
+        </label>
+
+        <footer class="modal-footer">
+          <span class="modal-status" id="task-status" aria-live="polite"></span>
+          <button
+            type="button"
+            class="btn btn-danger"
+            id="btn-delete-task"
+            data-i18n="action-delete"
+            hidden
+          >Excluir</button>
+          <button type="button" class="btn" data-action="close-task" data-i18n="action-cancel">Cancelar</button>
+          <button type="submit" class="btn btn-primary" data-i18n="action-save">Salvar</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <!-- ============================ TRIAGE MODAL ============================ -->
+    <dialog id="triage-modal" class="modal">
+      <article class="modal-form">
+        <header class="modal-header">
+          <div class="modal-title-row">
+            <h2 data-i18n="triage-modal-title">Proposta de task derivada</h2>
+            <span id="triage-id-badge" class="task-id-badge" hidden></span>
+          </div>
+          <button
+            type="button"
+            class="btn btn-icon modal-close"
+            data-action="close-triage"
+            data-i18n-aria-label="action-close"
+            aria-label="Fechar"
+          >×</button>
+        </header>
+
+        <div id="triage-empty" class="modal-empty" hidden data-i18n="triage-empty">
+          (sem propostas pendentes)
+        </div>
+
+        <dl id="triage-body" class="triage-grid">
+          <dt data-i18n="triage-field-title">Título</dt>
+          <dd id="triage-title"></dd>
+          <dt data-i18n="triage-field-parent">Task de origem</dt>
+          <dd id="triage-parent"></dd>
+          <dt data-i18n="triage-field-file">Arquivo</dt>
+          <dd id="triage-file"></dd>
+          <dt data-i18n="triage-field-repro">Como reproduzir</dt>
+          <dd id="triage-repro" class="triage-multiline"></dd>
+          <dt data-i18n="triage-field-what-failed">O que falhou</dt>
+          <dd id="triage-what-failed" class="triage-multiline"></dd>
+          <dt data-i18n="triage-field-action">Ação proposta</dt>
+          <dd id="triage-action" class="triage-multiline"></dd>
+          <dt data-i18n="triage-field-created">Recebida em</dt>
+          <dd id="triage-created"></dd>
+        </dl>
+
+        <nav class="triage-nav" id="triage-nav" hidden>
+          <button type="button" class="btn btn-icon" id="triage-prev" aria-label="Anterior">‹</button>
+          <span id="triage-counter">1 / 1</span>
+          <button type="button" class="btn btn-icon" id="triage-next" aria-label="Próxima">›</button>
+        </nav>
+
+        <footer class="modal-footer">
+          <span class="modal-status" id="triage-status" aria-live="polite"></span>
+          <button type="button" class="btn" data-action="close-triage" data-i18n="action-cancel">Cancelar</button>
+          <button type="button" class="btn btn-danger" id="triage-reject" data-i18n="action-reject">Rejeitar</button>
+          <button type="button" class="btn btn-primary" id="triage-accept" data-i18n="action-accept">Aceitar</button>
+        </footer>
+      </article>
+    </dialog>
+
+    <!-- ============================ START AGENT MODAL ============================ -->
+    <dialog id="start-agent-modal" class="modal">
+      <form method="dialog" class="modal-form" id="start-agent-form">
+        <header class="modal-header">
+          <div class="modal-title-row">
+            <h2 data-i18n="start-agent-title">Iniciar agente</h2>
+            <span id="start-agent-task-badge" class="task-id-badge"></span>
+          </div>
+          <button
+            type="button"
+            class="btn btn-icon modal-close"
+            data-action="close-start-agent"
+            data-i18n-aria-label="action-close"
+            aria-label="Fechar"
+          >×</button>
+        </header>
+
+        <div id="start-agent-resume-banner" class="modal-status" hidden>
+          <span data-i18n="start-agent-resume-banner">Continuar conversa salva</span>
+          <code id="start-agent-resume-id"></code>
+          <button
+            type="button"
+            class="btn btn-small"
+            id="btn-start-agent-fresh"
+            data-i18n="start-agent-fresh"
+          >Iniciar nova</button>
+        </div>
+
+        <label class="field">
+          <span data-i18n="start-agent-kind-label">Plataforma</span>
+          <select id="start-agent-kind">
+            <option value="claude_code" data-i18n="settings-agent-claude">Claude Code</option>
+            <option value="codex" data-i18n="settings-agent-codex">Codex</option>
+          </select>
+        </label>
+
+        <label class="field">
+          <span data-i18n="start-agent-model-label">Modelo</span>
+          <select id="start-agent-model"></select>
+        </label>
+
+        <label class="field" id="start-agent-model-other-field" hidden>
+          <span data-i18n="start-agent-model-other-label">Identificador do modelo</span>
+          <input
+            type="text"
+            id="start-agent-model-other"
+            data-i18n-placeholder="start-agent-model-other-placeholder"
+            placeholder="claude-opus-4-7"
+          />
+        </label>
+
+        <footer class="modal-footer">
+          <span class="modal-status" id="start-agent-status" aria-live="polite"></span>
+          <button type="button" class="btn" data-action="close-start-agent" data-i18n="action-cancel">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="btn-start-agent-submit" data-i18n="start-agent-action-start">Iniciar</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <!-- ============================ IDEIA MODAL ============================ -->
+    <dialog id="ideia-modal" class="modal">
+      <form method="dialog" class="modal-form" id="ideia-form">
+        <header class="modal-header">
+          <div class="modal-title-row">
+            <h2 id="ideia-modal-title" data-i18n="ideia-modal-title-new">Nova ideia</h2>
+            <span id="ideia-id-badge" class="task-id-badge" hidden></span>
+          </div>
+          <button
+            type="button"
+            class="btn btn-icon modal-close"
+            data-action="close-ideia"
+            data-i18n-aria-label="action-close"
+            aria-label="Fechar"
+          >×</button>
+        </header>
+
+        <label class="field">
+          <span data-i18n="ideia-field-titulo">Título</span>
+          <input type="text" id="ideia-titulo" required />
+        </label>
+
+        <label class="field">
+          <span data-i18n="ideia-field-project">Projeto</span>
+          <select id="ideia-project" required></select>
+        </label>
+
+        <label class="field">
+          <span data-i18n="ideia-field-body">Descrição livre</span>
+          <textarea id="ideia-body" rows="8"></textarea>
+        </label>
+
+        <footer class="modal-footer">
+          <span class="modal-status" id="ideia-status" aria-live="polite"></span>
+          <button
+            type="button"
+            class="btn btn-danger"
+            id="btn-delete-ideia"
+            data-action="delete-ideia"
+            data-i18n="action-delete"
+            hidden
+          >Excluir</button>
+          <button type="button" class="btn" data-action="close-ideia" data-i18n="action-cancel">Cancelar</button>
+          <button type="submit" class="btn btn-primary" data-i18n="action-save">Salvar</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <!-- ============================ TERMINAL DRAWER ============================ -->
+    <aside id="terminal-drawer" class="terminal-drawer" data-collapsed="true">
+      <div
+        class="terminal-resize-handle"
+        id="terminal-resize-handle"
+        role="separator"
+        aria-orientation="horizontal"
+        data-i18n-aria-label="terminal-resize-aria"
+        aria-label="Redimensionar terminal"
+        title="Arrastar para redimensionar"
+      ></div>
+      <header class="terminal-header">
+        <div class="terminal-title">
+          <svg class="ic" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="4 17 10 11 4 5"></polyline>
+            <line x1="12" y1="19" x2="20" y2="19"></line>
+          </svg>
+          <span data-i18n="terminal-title">Terminal</span>
+        </div>
+        <div class="terminal-tabs" id="terminal-tabs"></div>
+        <div class="terminal-actions">
+          <button
+            type="button"
+            class="btn btn-icon"
+            id="btn-terminal-toggle"
+            data-i18n-aria-label="terminal-toggle-aria"
+            aria-label="Expandir/recolher terminal"
+            title="Expandir/recolher terminal"
+          >
+            <svg class="ic terminal-chevron" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="18 15 12 9 6 15"></polyline>
+            </svg>
+          </button>
+        </div>
+      </header>
+      <div class="terminal-body">
+        <div id="terminal-empty" class="modal-empty" data-i18n="terminal-empty">
+          (nenhuma sessão ativa)
+        </div>
+        <div id="terminal-host" class="terminal-host" hidden></div>
+      </div>
+    </aside>
+
+    <!-- Vendored xterm UMDs. Must load BEFORE the modules so window.Terminal
+         and window.FitAddon are populated when terminal.js runs. -->
+    <script src="vendor/xterm.js"></script>
+    <script src="vendor/xterm-addon-fit.js"></script>
+
+    <script type="module" src="i18n.js"></script>
+    <script type="module" src="settings.js"></script>
+    <script type="module" src="task-modal.js"></script>
+    <script type="module" src="triage-modal.js"></script>
+    <script type="module" src="ideia-modal.js"></script>
+    <script type="module" src="terminal.js"></script>
+    <script type="module" src="start-agent-modal.js"></script>
+    <script type="module" src="app.js"></script>
+  </body>
+</html>

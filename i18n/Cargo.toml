@@ -1,0 +1,18 @@
+[package]
+name = "cadenza-i18n"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Cadenza Fluent i18n bundle loader + locale resolver — shared between app and CLI"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+fluent-bundle = { workspace = true }
+intl-memoizer = { workspace = true }
+unic-langid = { workspace = true }
+include_dir = { workspace = true }
+sys-locale = { workspace = true }
+tracing = { workspace = true }

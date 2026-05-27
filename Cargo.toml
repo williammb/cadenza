@@ -1,0 +1,65 @@
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "cadenza-cli",
+    "proto",
+    "i18n",
+    "skills-core",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/cadenza-app/cadenza"
+authors = ["Cadenza contributors"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+anyhow = "1"
+thiserror = "2"
+async-trait = "0.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "std", "clock"] }
+fs2 = "0.4"
+dirs = "5"
+fluent-bundle = "0.15"
+intl-memoizer = "0.5"
+unic-langid = "0.9"
+include_dir = "0.7"
+sys-locale = "0.3"
+tokio = { version = "1", features = ["full"] }
+portable-pty = "0.8"
+interprocess = { version = "2", features = ["tokio"] }
+rand = "0.8"
+base64 = "0.22"
+sqlx = { version = "0.8", default-features = false, features = [
+    "sqlite",
+    "postgres",
+    "runtime-tokio",
+    "tls-rustls",
+    "macros",
+    "migrate",
+] }
+keyring = "3"
+
+cadenza-proto = { path = "proto" }
+cadenza-i18n = { path = "i18n" }
+skills-core = { path = "skills-core" }
+
+[profile.dev]
+opt-level = 0
+debug = 1
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+codegen-units = 1

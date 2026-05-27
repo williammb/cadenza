@@ -1,0 +1,56 @@
+# cargo-deny configuration for Cadenza.
+#
+# CLAUDE.md hard constraint: every dependency must be MIT, Apache-2.0,
+# BSD, or MPL-2.0 — no GPL/LGPL/AGPL ever. This file enforces that.
+#
+# Run locally:   cargo deny check
+# Run in CI:     cargo deny check licenses bans advisories sources
+
+[graph]
+all-features = true
+
+[output]
+feature-depth = 1
+
+[licenses]
+version = 2
+confidence-threshold = 0.93
+
+# Allowed SPDX identifiers. Everything else fails the build.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "MPL-2.0",
+    "Zlib",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "CC0-1.0",
+    "OpenSSL",
+]
+
+# No per-crate exceptions: if a crate's license isn't in `allow`, it fails.
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Crates we deliberately refuse to depend on (license, security, or
+# abandonment grounds). Empty for now — add as the dependency graph grows.
+deny = []
+skip = []
+skip-tree = []
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = []
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
