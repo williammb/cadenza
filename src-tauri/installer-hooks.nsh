@@ -18,6 +18,7 @@
 
 ${Using:StrFunc} StrStr
 ${Using:StrFunc} StrRep
+${Using:StrFunc} UnStrRep
 
 !define CADENZA_ENV_KEY 'HKCU "Environment"'
 
@@ -46,9 +47,9 @@ ${Using:StrFunc} StrRep
   Delete "$INSTDIR\cadenza-cli.exe"
 
   ReadRegStr $0 ${CADENZA_ENV_KEY} "Path"
-  ${StrRep} $1 "$0" ";$INSTDIR" ""
-  ${StrRep} $1 "$1" "$INSTDIR;" ""
-  ${StrRep} $1 "$1" "$INSTDIR"  ""
+  ${UnStrRep} $1 "$0" ";$INSTDIR" ""
+  ${UnStrRep} $1 "$1" "$INSTDIR;" ""
+  ${UnStrRep} $1 "$1" "$INSTDIR"  ""
   ${If} $0 != $1
     WriteRegExpandStr ${CADENZA_ENV_KEY} "Path" "$1"
     SendMessage ${HWND_BROADCAST} ${WM_SETTINGCHANGE} 0 "STR:Environment" /TIMEOUT=5000
