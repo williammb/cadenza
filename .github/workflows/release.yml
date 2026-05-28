@@ -1,4 +1,4 @@
-name: release
+name: Release
 
 on:
   push:
@@ -9,8 +9,14 @@ on:
 permissions:
   contents: write
 
+# Jobs run sequentially (build-windows → build-linux → build-macos) so each
+# tauri-action invocation downloads the in-progress `latest.json` from the
+# draft release, merges its own platform entry, and re-uploads — running them
+# in parallel would race on the asset upload and only the last writer's
+# platform would be updatable.
 jobs:
   build-windows:
+    name: Build (Windows · NSIS)
     runs-on: windows-latest
 
     steps:
@@ -19,29 +25,118 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Cache cargo
+      - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
 
-      - name: Build Cadenza (Tauri + NSIS installer)
+      - name: Build, sign and publish (Windows)
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Cadenza ${{ github.ref_name }}"
           releaseDraft: true
           prerelease: false
-          includeUpdaterJson: false
-          args: --target x86_64-pc-windows-msvc
+          includeUpdaterJson: true
+          updaterJsonPreferNsis: true
+          args: --target x86_64-pc-windows-msvc --bundles nsis
 
-      - name: Upload installer artifact
+      # Smoke-test path: on workflow_dispatch (no tag), just build and
+      # upload artifacts — never touch a public release.
+      - name: Build (Windows, smoke-test)
+        if: github.event_name == 'workflow_dispatch'
+        run: cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis
+        shell: bash
+
+      - name: Upload installer artifact (smoke-test)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
           name: cadenza-windows-installer
           path: |
             target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
-            target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
           if-no-files-found: error
+
+  build-linux:
+    name: Build (Linux · AppImage)
+    runs-on: ubuntu-22.04
+    needs: build-windows
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libdbus-1-dev \
+            patchelf \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Build, sign and publish (Linux)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Cadenza ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: --bundles appimage
+
+  build-macos:
+    name: Build (macOS · DMG · universal)
+    runs-on: macos-latest
+    needs: build-linux
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          # Universal DMG requires both architectures; macos-latest defaults
+          # to apple-silicon-only otherwise, leaving Intel Macs without a
+          # working installer.
+          targets: x86_64-apple-darwin,aarch64-apple-darwin
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      - name: Build, sign and publish (macOS)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_KEY_PASSWORD }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Cadenza ${{ github.ref_name }}"
+          releaseDraft: true
+          prerelease: false
+          includeUpdaterJson: true
+          args: --target universal-apple-darwin --bundles dmg

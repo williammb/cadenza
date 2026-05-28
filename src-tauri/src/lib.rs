@@ -76,6 +76,7 @@ pub fn run() {
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Tauri's State<T> wants T directly; we hold the same Arc<AppState>
         // separately for the IPC server, then manage a clone here so
         // both halves see the same data behind one Arc.

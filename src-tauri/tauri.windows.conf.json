@@ -1,0 +1,7 @@
+{
+  "bundle": {
+    "resources": {
+      "../target/release/cadenza-cli.exe": "cadenza-cli.exe"
+    }
+  }
+}

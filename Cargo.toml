@@ -13,7 +13,7 @@ version = "0.1.3"
 edition = "2021"
 rust-version = "1.77"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/cadenza-app/cadenza"
+repository = "https://github.com/williammb/candeza"
 authors = ["Cadenza contributors"]
 
 [workspace.dependencies]
