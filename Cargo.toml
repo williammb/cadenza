@@ -29,7 +29,7 @@ tracing-appender = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "std", "clock"] }
 fs2 = "0.4"
-dirs = "5"
+dirs = "6"
 fluent-bundle = "0.15"
 intl-memoizer = "0.5"
 unic-langid = "0.9"
