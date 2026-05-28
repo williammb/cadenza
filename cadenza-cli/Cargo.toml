@@ -25,3 +25,7 @@ dirs = { workspace = true }
 cadenza-proto = { workspace = true }
 cadenza-i18n = { workspace = true }
 skills-core = { workspace = true }
+
+[dev-dependencies]
+assert_cmd = "2"
+tempfile = "3"

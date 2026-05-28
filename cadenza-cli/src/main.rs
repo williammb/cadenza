@@ -539,7 +539,17 @@ fn run_diag() -> Result<()> {
     Ok(())
 }
 
-fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
+    // CADENZA_DATA_DIR overrides the default so integration tests can point
+    // to a temp directory without touching the real ~/.cadenza. An empty
+    // value (`export CADENZA_DATA_DIR=`) falls through to the home_dir
+    // branch — otherwise PathBuf::from("") resolves to the cwd and
+    // read_token would read `./auth` from whatever directory the agent ran in.
+    if let Ok(dir) = std::env::var("CADENZA_DATA_DIR") {
+        if !dir.trim().is_empty() {
+            return PathBuf::from(dir);
+        }
+    }
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".cadenza")

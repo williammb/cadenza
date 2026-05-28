@@ -223,11 +223,10 @@ async fn open_stream() -> std::io::Result<Stream> {
     }
     #[cfg(not(windows))]
     {
-        let path = dirs::home_dir()
-            .unwrap_or_else(std::env::temp_dir)
-            .join(".cadenza")
-            .join("run")
-            .join("socket");
+        // Honor CADENZA_DATA_DIR (via crate::data_dir()) so integration
+        // tests that point at a temp directory don't accidentally connect
+        // to the developer's real `~/.cadenza/run/socket`.
+        let path = crate::data_dir().join("run").join("socket");
         let name = path
             .as_path()
             .to_fs_name::<GenericFilePath>()
