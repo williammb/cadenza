@@ -273,24 +273,13 @@ where
             return Ok(());
         }
     };
-    if protocol < MIN_PROTOCOL {
-        send_err(
-            &tx,
-            hello_id,
-            ErrorBody::new("protocol_too_old", "update cli"),
-        )
-        .await;
-        drop(tx);
-        let _ = writer_handle.await;
-        return Ok(());
-    }
-    if protocol > MAX_PROTOCOL {
-        send_err(
-            &tx,
-            hello_id,
-            ErrorBody::new("protocol_too_new", "update app"),
-        )
-        .await;
+
+    // Protocol-range check runs BEFORE args deserialization so an old
+    // client whose hello::Args shape no longer matches still sees the
+    // CLAUDE.md exit-code 12 contract ("update cli") instead of a
+    // generic bad_args (exit 1).
+    if let Err(e) = check_protocol(protocol) {
+        send_err(&tx, hello_id, e).await;
         drop(tx);
         let _ = writer_handle.await;
         return Ok(());
@@ -306,19 +295,14 @@ where
         }
     };
 
-    // Token validation.
-    let token_ok = crate::auth::validate(&deps.data_dir, &args.token).unwrap_or(false);
-    if !token_ok {
-        send_err(&tx, hello_id, ErrorBody::new("auth_failed", "invalid token")).await;
-        drop(tx);
-        let _ = writer_handle.await;
-        return Ok(());
-    }
-
-    // Welcome.
-    let hello_result = ops::hello::Result {
-        protocol: MAX_PROTOCOL,
-        app: format!("cadenza/{SERVER_APP_VERSION}"),
+    let hello_result = match check_hello(protocol, &args.token, &deps.data_dir) {
+        Ok(r) => r,
+        Err(e) => {
+            send_err(&tx, hello_id, e).await;
+            drop(tx);
+            let _ = writer_handle.await;
+            return Ok(());
+        }
     };
     send_ok(&tx, hello_id.clone(), hello_result).await;
     tracing::info!(client = %args.client, "ipc client authenticated");
@@ -707,6 +691,52 @@ async fn done_op(repo: &dyn Repository, args: &ops::done::Args) -> Result<(), Er
     Ok(())
 }
 
+// ───────── hello validation ─────────────────────────────────────────────────
+
+/// Reject a protocol number that falls outside the negotiated window.
+/// Split out from `check_hello` so the handler can run this BEFORE
+/// `hello::Args` deserialization — an old client with a stale args shape
+/// must still see protocol_too_old (exit 12) instead of bad_args (exit 1).
+fn check_protocol(protocol: u32) -> Result<(), ErrorBody> {
+    if protocol < MIN_PROTOCOL {
+        return Err(ErrorBody::new("protocol_too_old", "update cli"));
+    }
+    if protocol > MAX_PROTOCOL {
+        return Err(ErrorBody::new("protocol_too_new", "update app"));
+    }
+    Ok(())
+}
+
+/// Validate a hello protocol number and auth token, returning the welcome
+/// result on success or a typed error body on failure.  Extracted so the
+/// three checks (protocol-too-old, protocol-too-new, auth-failed) can be
+/// unit-tested without needing a running Tauri app or an `AppState`.
+fn check_hello(
+    protocol: u32,
+    token: &str,
+    data_dir: &std::path::Path,
+) -> Result<ops::hello::Result, ErrorBody> {
+    check_protocol(protocol)?;
+    // Distinguish wrong-token (auth_failed) from an IO error reading the
+    // auth file. The latter typically fires during tray-driven token
+    // rotation (create + rename races validate); reporting it as a
+    // retryable internal error lets the agent's reconnect path recover
+    // instead of telling the human their token is invalid.
+    match crate::auth::validate(data_dir, token) {
+        Ok(true) => {}
+        Ok(false) => return Err(ErrorBody::new("auth_failed", "invalid token")),
+        Err(e) => {
+            return Err(
+                ErrorBody::new("internal", format!("auth check failed: {e}")).retryable(),
+            )
+        }
+    }
+    Ok(ops::hello::Result {
+        protocol: MAX_PROTOCOL,
+        app: format!("cadenza/{SERVER_APP_VERSION}"),
+    })
+}
+
 // ───────── helpers ─────────
 
 fn bad_args(e: serde_json::Error) -> ErrorBody {
@@ -792,4 +822,58 @@ pub fn build_proposta_decidida_event(registro: &DecisaoRegistro) -> Option<Event
         }),
     )
     .ok()
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// IPC handshake unit tests
+//
+// These tests exercise `check_hello` directly — no Tauri app state, no tokio
+// runtime — so they run cleanly even in environments where the Tauri/WebView2
+// DLLs are not fully available.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cadenza_proto::{MAX_PROTOCOL, MIN_PROTOCOL};
+    use tempfile::TempDir;
+
+    fn write_token(dir: &TempDir, token: &str) {
+        std::fs::write(dir.path().join("auth"), token).unwrap();
+    }
+
+    /// Valid token + current MAX_PROTOCOL → ok with `{protocol, app}`.
+    #[test]
+    fn handshake_ok() {
+        let dir = TempDir::new().unwrap();
+        let token = "test-token-ok";
+        write_token(&dir, token);
+        let result = check_hello(MAX_PROTOCOL, token, dir.path()).unwrap();
+        assert_eq!(result.protocol, MAX_PROTOCOL);
+        assert!(result.app.starts_with("cadenza/"), "app = {}", result.app);
+    }
+
+    /// Protocol above MAX_PROTOCOL → `protocol_too_new`.
+    #[test]
+    fn handshake_protocol_too_new() {
+        let err = check_protocol(MAX_PROTOCOL + 1).unwrap_err();
+        assert_eq!(err.code, "protocol_too_new");
+    }
+
+    /// Wrong token with valid protocol → `auth_failed`.
+    #[test]
+    fn handshake_auth_failed() {
+        let dir = TempDir::new().unwrap();
+        write_token(&dir, "real-token");
+        let err = check_hello(MAX_PROTOCOL, "wrong-token", dir.path()).unwrap_err();
+        assert_eq!(err.code, "auth_failed");
+    }
+
+    /// Protocol below MIN_PROTOCOL → `protocol_too_old`.
+    #[test]
+    fn handshake_protocol_too_old() {
+        assert!(MIN_PROTOCOL > 0, "test assumes MIN_PROTOCOL > 0");
+        let err = check_protocol(MIN_PROTOCOL - 1).unwrap_err();
+        assert_eq!(err.code, "protocol_too_old");
+    }
 }
