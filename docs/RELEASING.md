@@ -83,7 +83,7 @@ per-platform download URLs and ed25519 signatures. The app fetches this
 file from:
 
 ```
-https://github.com/williammb/candeza/releases/latest/download/latest.json
+https://github.com/williammb/cadenza/releases/latest/download/latest.json
 ```
 
 If you fork the repository, update the `endpoints` array in

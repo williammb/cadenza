@@ -1,8 +1,11 @@
 # Cadenza
 
+[![CI](https://github.com/williammb/cadenza/actions/workflows/ci.yml/badge.svg)](https://github.com/williammb/cadenza/actions/workflows/ci.yml)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
+
 > A system-tray desktop app for managing AI-agent tasks — built for Claude Code, Codex, and similar tools.
 
-**Status:** active development (Phases 1–4 complete, Phase 5 in progress). No public release yet.
+**Status:** active development / private pre-release (Phases 1–4 complete, Phase 5 in progress). No public binaries yet.
 **Stack:** Tauri 2 · Rust · vanilla HTML/CSS/JS (no build step)
 **Target platforms:** Windows · Linux · macOS
 **License:** MIT OR Apache-2.0
@@ -20,7 +23,7 @@ through a browser via `start.bat`, Cadenza ships a single binary with:
 - A separate CLI (`cadenza-cli`) that AI agents use to read the active
   task, report progress, propose new scope, and mark work as done.
 - Native OS notifications when the agent needs a human decision.
-- Signed auto-updates (ed25519) with automatic rollback on failure.
+- Signed-update plumbing for the future public release channel.
 
 The human ↔ agent loop is mediated by **proposals**: the agent never
 creates or completes tasks on its own — it proposes, and the human decides
@@ -87,13 +90,15 @@ cadenza/
 ├── skills-core/      # Shared skill metadata + loader
 ├── Cargo.toml        # Workspace manifest
 ├── deny.toml         # cargo-deny policy (MIT/Apache/BSD/MPL only)
-└── CLAUDE.md         # Non-negotiable constraints + 12-rule operating manual
+├── AGENTS.md         # Codex-oriented repository guidance
+└── CLAUDE.md         # Claude Code-oriented repository guidance
 ```
 
 The non-negotiable constraints (frozen on-disk format, no MCP/JSON-RPC,
-exit codes, license policy, XSS hygiene) live in `CLAUDE.md`. When the
-README and `CLAUDE.md` disagree, `CLAUDE.md` wins. Portuguese is the
-project's primary working language for architecture discussions.
+exit codes, license policy, XSS hygiene) live in `AGENTS.md` and
+`CLAUDE.md`. Contributors should also read `CONTRIBUTING.md`. When the
+README and agent guidance disagree, the agent guidance wins. Portuguese is
+the project's primary working language for architecture discussions.
 
 ---
 
@@ -182,6 +187,21 @@ in the `proto/` crate; the canonical wire values are PT-canonical.
 
 ---
 
+## Privacy and local data
+
+- Cadenza is local-first. Task data, inbox items, triage proposals, logs,
+  and the local auth token live under the user's Cadenza data directory
+  (`~/.cadenza` for the legacy-compatible file backend).
+- The local CLI token is used only for same-host communication between
+  `cadenza-cli` and the running app.
+- PostgreSQL passwords are stored in the OS keyring when the PostgreSQL
+  backend is used.
+- The app does not open a TCP server for agent communication.
+- Public release builds may contact the configured GitHub release endpoint
+  to check signed updater metadata.
+
+---
+
 ## Internationalization
 
 - **Display layer only.** On-disk data and wire values stay in canonical
@@ -226,7 +246,7 @@ The rationale for each one is in `CLAUDE.md`.
   `config`/`store`/`observ`/`i18n` wired from the first boot.
 - [x] **Phase 2 — Core backend:** `triage` (idempotency + recovery),
   `spawn` (PTY via `portable-pty`), `terminal` (channel + ring buffer).
-- [x] **Phase 3 — Frontend integration:** `commands.rs`, `ui/api.js`
+- [x] **Phase 3 — Frontend integration:** `commands.rs` and UI modules
   built on `window.__TAURI__`, terminal on a Tauri channel, language
   switcher.
 - [x] **Phase 4 — CLI + IPC + Notifications:** `proto`/`auth`/`ipc`,
@@ -241,13 +261,15 @@ The rationale for each one is in `CLAUDE.md`.
 
 ## Contributing
 
-Read `CLAUDE.md` before opening a PR — it spells out the non-negotiable
-constraints (frozen on-disk format, no MCP/JSON-RPC, stable exit codes,
-license policy, XSS hygiene) and the 12-rule operating manual that
-applies to both humans and agents.
+Read `CONTRIBUTING.md` and `CLAUDE.md` before opening a PR. They spell out
+the non-negotiable constraints (frozen on-disk format, no MCP/JSON-RPC,
+stable exit codes, license policy, XSS hygiene) and the review expectations
+for this repository.
 
 Portuguese is the project's working language for architecture
 discussions; English is fine for code, comments, commits and PRs.
+
+Security issues should be reported privately; see `SECURITY.md`.
 
 ---
 
@@ -255,3 +277,5 @@ discussions; English is fine for code, comments, commits and PRs.
 
 Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE),
 at your option.
+
+Vendored browser assets are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

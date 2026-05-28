@@ -23,6 +23,8 @@ node_modules/
 !.vscode/extensions.json
 !.vscode/settings.json
 .idea/
+.claude/
+.codegraph/
 *.swp
 *.swo
 .DS_Store
@@ -34,4 +36,6 @@ Thumbs.db
 .cadenza/
 *.token
 
+# Local planning / review artifacts
+DESIGN-desktop*
 *.patch

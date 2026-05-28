@@ -1,0 +1,15 @@
+title = "Cadenza gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Verified false positive in vendored @xterm/xterm 5.5.0 minified bundle"
+condition = "AND"
+paths = [
+  '''ui/vendor/xterm\.js''',
+]
+regexTarget = "line"
+regexes = [
+  '''FourKeyMap=''',
+]
