@@ -229,13 +229,24 @@ mod tests {
         let session = TerminalSession::start("test", pty).expect("start session");
 
         // The reader thread runs the PTY. Poll the ring with a deadline.
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut answered_dsr = false;
         loop {
             let snap = session.snapshot();
             if let Ok(s) = std::str::from_utf8(&snap) {
                 if s.contains("hi") {
                     return;
                 }
+            }
+            // Windows ConPTY emits a Device Status Report query (ESC[6n)
+            // on startup and withholds program output until the terminal
+            // answers with a cursor position report. xterm.js answers
+            // automatically in the webview; the test must do the same via
+            // the session writer, or `echo hi` never flushes. No-op on
+            // Unix PTYs, which don't send the query.
+            if !answered_dsr && snap.windows(4).any(|w| w == b"\x1b[6n") {
+                let _ = session.write(b"\x1b[1;1R");
+                answered_dsr = true;
             }
             if Instant::now() > deadline {
                 let snap = session.snapshot();

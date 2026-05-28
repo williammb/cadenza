@@ -81,7 +81,6 @@ ignore = [
 
     # Misc transitive unmaintained crates.
     { id = "RUSTSEC-2024-0370", reason = "proc-macro-error unmaintained; transitive via portable-pty" },
-    { id = "RUSTSEC-2017-0008", reason = "serial crate unmaintained; transitive via portable-pty" },
 ]
 
 [sources]

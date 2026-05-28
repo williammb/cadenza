@@ -348,10 +348,12 @@ mod tests {
     fn spawn_echo_and_read_output() {
         let handle = PtyHandle::spawn(echo_hi()).expect("spawn echo");
         let mut reader = handle.try_clone_reader().expect("clone reader");
+        let mut writer = handle.take_writer().expect("take writer");
         // Read with a deadline — child writes immediately and exits.
-        let deadline = Instant::now() + Duration::from_secs(3);
+        let deadline = Instant::now() + Duration::from_secs(5);
         let mut buf = Vec::new();
         let mut chunk = [0u8; 1024];
+        let mut answered_dsr = false;
         loop {
             match reader.read(&mut chunk) {
                 Ok(0) => break,
@@ -359,6 +361,18 @@ mod tests {
                     buf.extend_from_slice(&chunk[..n]);
                     if std::str::from_utf8(&buf).is_ok_and(|s| s.contains("hi")) {
                         break;
+                    }
+                    // Windows ConPTY emits a Device Status Report query
+                    // (ESC[6n) on startup and withholds the program's
+                    // output until the terminal answers with a cursor
+                    // position report. A real terminal (xterm.js in the
+                    // webview) answers automatically; the test must too,
+                    // or `echo hi` never flushes. No-op on Unix PTYs,
+                    // which don't send the query.
+                    if !answered_dsr && buf.windows(4).any(|w| w == b"\x1b[6n") {
+                        let _ = writer.write_all(b"\x1b[1;1R");
+                        let _ = writer.flush();
+                        answered_dsr = true;
                     }
                 }
                 Err(_) => break,

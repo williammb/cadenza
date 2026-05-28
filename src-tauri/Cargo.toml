@@ -44,6 +44,7 @@ rand = { workspace = true }
 base64 = { workspace = true }
 sqlx = { workspace = true }
 keyring = { workspace = true }
+keyring-core = { workspace = true }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
