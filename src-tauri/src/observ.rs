@@ -25,7 +25,7 @@ pub fn init() -> Result<WorkerGuard, std::io::Error> {
         .filename_suffix("log")
         .max_log_files(7)
         .build(&log_dir)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
     let (non_blocking, guard) = tracing_appender::non_blocking(appender);
 
     let filter = EnvFilter::try_from_env("CADENZA_LOG").unwrap_or_else(|_| EnvFilter::new("info"));

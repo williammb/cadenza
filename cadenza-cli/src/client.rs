@@ -66,16 +66,9 @@ pub struct Client {
 
 impl Client {
     pub async fn connect() -> Result<Self> {
-        let stream = open_stream().await.map_err(|e| {
-            if matches!(
-                e.kind(),
-                ErrorKind::NotFound | ErrorKind::ConnectionRefused | ErrorKind::ConnectionReset
-            ) {
-                anyhow::Error::new(AppNotRunning(e))
-            } else {
-                anyhow::Error::new(AppNotRunning(e))
-            }
-        })?;
+        let stream = open_stream()
+            .await
+            .map_err(|e| anyhow::Error::new(AppNotRunning(e)))?;
         let (read, write) = tokio::io::split(stream);
         Ok(Self {
             reader: BufReader::new(read).lines(),
@@ -95,7 +88,7 @@ impl Client {
         loop {
             match self.next_frame().await? {
                 ServerFrame::Response(r) => {
-                    return self.into_result(r);
+                    return self.decode_response(r);
                 }
                 ServerFrame::Event(_) => continue, // unlikely pre-hello, but tolerate
             }
@@ -113,7 +106,7 @@ impl Client {
         loop {
             match self.next_frame().await? {
                 ServerFrame::Response(r) if r.id.as_deref() == Some(&id) => {
-                    return self.into_result(r);
+                    return self.decode_response(r);
                 }
                 ServerFrame::Response(r) if r.id.is_none() && !r.ok => {
                     // Connection-level error from the server (e.g.
@@ -148,7 +141,7 @@ impl Client {
         loop {
             match self.next_frame().await? {
                 ServerFrame::Response(r) if r.id.as_deref() == Some(&id) => {
-                    return self.into_result(r);
+                    return self.decode_response(r);
                 }
                 ServerFrame::Response(r) if r.id.is_none() && !r.ok => {
                     let err = r
@@ -195,7 +188,7 @@ impl Client {
         Ok(frame)
     }
 
-    fn into_result<R: DeserializeOwned>(&self, r: Response) -> Result<R> {
+    fn decode_response<R: DeserializeOwned>(&self, r: Response) -> Result<R> {
         if r.ok {
             let value = r
                 .result

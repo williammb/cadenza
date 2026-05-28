@@ -15,7 +15,7 @@ use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::agent::{self, CodexCapture, LaunchPlan};
-use crate::config::{AgenteKind, Config, PgConfig, PgSslMode, Project, StorageBackend};
+use crate::config::{AgenteKind, Config, PgConfig, PgSslMode, StorageBackend};
 use crate::projects::TaskProjects;
 use crate::runs::{TaskRun, TaskRuns};
 use crate::secrets;

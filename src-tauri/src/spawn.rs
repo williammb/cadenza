@@ -357,7 +357,7 @@ mod tests {
                 Ok(0) => break,
                 Ok(n) => {
                     buf.extend_from_slice(&chunk[..n]);
-                    if std::str::from_utf8(&buf).map_or(false, |s| s.contains("hi")) {
+                    if std::str::from_utf8(&buf).is_ok_and(|s| s.contains("hi")) {
                         break;
                     }
                 }

@@ -53,8 +53,6 @@ pub fn normalize(input: &str) -> String {
 
     if lower.starts_with("pt") {
         PRIMARY_LOCALE.to_string()
-    } else if lower.starts_with("en") {
-        DEFAULT_LOCALE.to_string()
     } else {
         DEFAULT_LOCALE.to_string()
     }

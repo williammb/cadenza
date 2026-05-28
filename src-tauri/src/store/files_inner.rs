@@ -214,6 +214,7 @@ impl Store {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)?;
         acquire_lock(&lock_file)?;
 
@@ -481,6 +482,7 @@ mod tests {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(&lock_path)
             .unwrap();
         FileExt::try_lock_exclusive(&lf).expect("initial lock must succeed");

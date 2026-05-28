@@ -322,9 +322,11 @@ mod tests {
     fn save_to_and_load_roundtrip() {
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("config.json");
-        let mut cfg = Config::default();
-        cfg.locale = Some("pt-BR".into());
-        cfg.skill_locale = Some("en".into());
+        let cfg = Config {
+            locale: Some("pt-BR".into()),
+            skill_locale: Some("en".into()),
+            ..Config::default()
+        };
         cfg.save_to(&path).unwrap();
         let loaded = Config::load_from(&path).unwrap();
         assert_eq!(loaded.locale.as_deref(), Some("pt-BR"));

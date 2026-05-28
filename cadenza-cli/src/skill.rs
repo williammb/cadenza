@@ -216,7 +216,7 @@ fn emit_status(rows: &[StatusRow], json: bool) {
             serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into())
         );
     } else {
-        println!("{:<7} {:<8} {:<10} {}", "agent", "scope", "status", "path");
+        println!("{:<7} {:<8} {:<10} path", "agent", "scope", "status");
         for r in rows {
             let status = if r.installed {
                 match r.locale.as_deref() {

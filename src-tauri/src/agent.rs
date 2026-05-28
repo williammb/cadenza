@@ -211,7 +211,7 @@ fn codex_sessions_root() -> PathBuf {
 pub fn find_codex_session_uuid(capture: &CodexCapture) -> Option<String> {
     let mut candidates: Vec<(SystemTime, String)> = Vec::new();
     collect_jsonl_newer_than(&capture.sessions_root, capture.started_at, &mut candidates);
-    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    candidates.sort_by_key(|c| std::cmp::Reverse(c.0));
     for (_mtime, name) in candidates {
         if let Some(uuid) = extract_uuid_suffix(&name) {
             return Some(uuid);

@@ -75,6 +75,12 @@ pub fn validate_id(id: &str) -> Result<()> {
     if id.contains('\0') {
         return Err(StoreError::BadData("id contains NUL byte".into()));
     }
+    // `\` is a path separator on Windows only; reject it unconditionally so
+    // validation behaves identically on Linux/macOS (where Path::components
+    // would otherwise treat `foo\bar` as a single Normal component).
+    if id.contains('\\') {
+        return Err(StoreError::BadData(format!("invalid id: {id}")));
+    }
     let mut comps = Path::new(id).components();
     let first = comps
         .next()
@@ -83,55 +89,6 @@ pub fn validate_id(id: &str) -> Result<()> {
         return Err(StoreError::BadData(format!("invalid id: {id}")));
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod id_validation_tests {
-    use super::{validate_id, StoreError};
-
-    #[test]
-    fn accepts_normal_ids() {
-        assert!(validate_id("T-1").is_ok());
-        assert!(validate_id("I-abc123").is_ok());
-        assert!(validate_id("P-aabbccdd").is_ok());
-    }
-
-    #[test]
-    fn rejects_path_traversal() {
-        for bad in [
-            "..",
-            "../auth",
-            "../../etc/passwd",
-            "foo/bar",
-            "foo\\bar",
-            ".",
-            "",
-        ] {
-            assert!(
-                matches!(validate_id(bad), Err(StoreError::BadData(_))),
-                "expected BadData for {bad:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn rejects_absolute_paths() {
-        assert!(matches!(validate_id("/abs"), Err(StoreError::BadData(_))));
-        if cfg!(windows) {
-            assert!(matches!(
-                validate_id("C:\\abs"),
-                Err(StoreError::BadData(_))
-            ));
-        }
-    }
-
-    #[test]
-    fn rejects_nul_byte() {
-        assert!(matches!(
-            validate_id("foo\0bar"),
-            Err(StoreError::BadData(_))
-        ));
-    }
 }
 
 /// Backend-agnostic data layer. `Send + Sync` so it can sit inside
@@ -210,5 +167,54 @@ impl From<ideias_inner::IdeiaError> for StoreError {
             Inner::Io(e) => StoreError::Io(e),
             Inner::Json(e) => StoreError::BadData(e.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod id_validation_tests {
+    use super::{validate_id, StoreError};
+
+    #[test]
+    fn accepts_normal_ids() {
+        assert!(validate_id("T-1").is_ok());
+        assert!(validate_id("I-abc123").is_ok());
+        assert!(validate_id("P-aabbccdd").is_ok());
+    }
+
+    #[test]
+    fn rejects_path_traversal() {
+        for bad in [
+            "..",
+            "../auth",
+            "../../etc/passwd",
+            "foo/bar",
+            "foo\\bar",
+            ".",
+            "",
+        ] {
+            assert!(
+                matches!(validate_id(bad), Err(StoreError::BadData(_))),
+                "expected BadData for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_absolute_paths() {
+        assert!(matches!(validate_id("/abs"), Err(StoreError::BadData(_))));
+        if cfg!(windows) {
+            assert!(matches!(
+                validate_id("C:\\abs"),
+                Err(StoreError::BadData(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn rejects_nul_byte() {
+        assert!(matches!(
+            validate_id("foo\0bar"),
+            Err(StoreError::BadData(_))
+        ));
     }
 }

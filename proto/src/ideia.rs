@@ -12,9 +12,10 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdeiaStatus {
+    #[default]
     Pendente,
     Destrinchada,
     Arquivada,
@@ -36,12 +37,6 @@ impl IdeiaStatus {
             "arquivada" => Some(IdeiaStatus::Arquivada),
             _ => None,
         }
-    }
-}
-
-impl Default for IdeiaStatus {
-    fn default() -> Self {
-        IdeiaStatus::Pendente
     }
 }
 

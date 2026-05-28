@@ -88,7 +88,7 @@ use crate::store::{validate_id, Repository};
 const SERVER_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Max NDJSON line we accept (1 MiB). A malformed/runaway client
 /// shouldn't be able to exhaust memory.
-const MAX_LINE_BYTES: usize = 1 * 1024 * 1024;
+const MAX_LINE_BYTES: usize = 1024 * 1024;
 const WRITER_CHANNEL_CAP: usize = 64;
 
 /// Bridge for events that must reach the Tauri webview (board refresh,
@@ -874,6 +874,7 @@ mod tests {
 
     /// Protocol below MIN_PROTOCOL → `protocol_too_old`.
     #[test]
+    #[allow(clippy::assertions_on_constants)]
     fn handshake_protocol_too_old() {
         assert!(MIN_PROTOCOL > 0, "test assumes MIN_PROTOCOL > 0");
         let err = check_protocol(MIN_PROTOCOL - 1).unwrap_err();

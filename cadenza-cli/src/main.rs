@@ -161,7 +161,7 @@ fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             // Map known error types to specific exit codes.
-            if let Some(_) = e.downcast_ref::<AppNotRunning>() {
+            if e.downcast_ref::<AppNotRunning>().is_some() {
                 eprintln!("error: {e:#}");
                 return ExitCode::from(10);
             }
