@@ -48,7 +48,7 @@ sqlx = { version = "0.8", default-features = false, features = [
     "macros",
     "migrate",
 ] }
-keyring = "3"
+keyring = "4"
 
 cadenza-proto = { path = "proto" }
 cadenza-i18n = { path = "i18n" }
