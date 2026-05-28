@@ -153,4 +153,14 @@ mod tests {
         assert!(!constant_time_eq(b"abc", b"abd"));
         assert!(!constant_time_eq(b"abc", b"abcd"));
     }
+
+    #[test]
+    fn ensure_token_regenerates_empty_auth_file() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("auth"), "").unwrap();
+        let token = ensure_token(dir.path()).unwrap();
+        assert!(!token.is_empty());
+        assert!(token.len() > 30);
+        assert!(validate(dir.path(), &token).unwrap());
+    }
 }

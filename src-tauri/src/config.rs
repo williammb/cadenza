@@ -228,7 +228,7 @@ impl Config {
 mod tests {
     use super::*;
     use std::io::Write;
-    use tempfile::NamedTempFile;
+    use tempfile::{NamedTempFile, TempDir};
 
     fn write_tmp(json: &str) -> NamedTempFile {
         let mut f = NamedTempFile::new().unwrap();
@@ -311,5 +311,28 @@ mod tests {
         let f = write_tmp("{}");
         let cfg = Config::load_from(f.path()).unwrap();
         assert_eq!(cfg.data_version, DATA_VERSION);
+    }
+
+    #[test]
+    fn rejects_empty_project_name() {
+        let f = write_tmp(
+            r#"{"data_version":1,"projects":[{"id":"p1","name":"","path":"."}]}"#,
+        );
+        let err = Config::load_from(f.path()).unwrap_err();
+        assert!(format!("{:#}", err).contains("empty name"), "got: {:#}", err);
+    }
+
+    #[test]
+    fn save_to_and_load_roundtrip() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let mut cfg = Config::default();
+        cfg.locale = Some("pt-BR".into());
+        cfg.skill_locale = Some("en".into());
+        cfg.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        assert_eq!(loaded.locale.as_deref(), Some("pt-BR"));
+        assert_eq!(loaded.skill_locale.as_deref(), Some("en"));
+        assert_eq!(loaded.data_version, DATA_VERSION);
     }
 }

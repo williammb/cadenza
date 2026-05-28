@@ -70,7 +70,7 @@ impl AppState {
         std::fs::create_dir_all(&home)?;
 
         let config_path = home.join("config.json");
-        let mut config = if config_path.exists() {
+        let config = if config_path.exists() {
             Config::load_from(&config_path)?
         } else {
             Config::default()
@@ -90,12 +90,9 @@ impl AppState {
         let task_projects = Arc::new(TaskProjects::load(&home)?);
         let task_runs = Arc::new(TaskRuns::load(&home)?);
 
-        // Garante o invariante "toda task tem projeto" antes da app
-        // expor qualquer comando: cria projeto `default` se necessário
-        // e amarra tasks órfãs. Idempotente — re-rodar não muda nada.
+        // Amarra tasks órfãs ao primeiro projeto. Idempotente.
         ensure_default_project_and_bind_orphans(
-            &mut config,
-            &config_path,
+            &config,
             &task_projects,
             repo.as_ref(),
         )?;
@@ -113,30 +110,19 @@ impl AppState {
     }
 }
 
-/// Garante que existe ao menos um projeto e que toda task tem entrada
-/// em `task-projects.json`. Chamado em `AppState::init` antes de qualquer
-/// comando rodar — preserva a constraint "toda task tem projeto" mesmo
-/// para bases criadas pela versão Node.js legacy ou por versões antigas
-/// do Cadenza desktop que não exigiam.
+/// Amarra tasks órfãs (sem entrada em `task-projects.json`) ao primeiro
+/// projeto do config. Chamado em `AppState::init` antes de qualquer
+/// comando rodar — preserva a constraint "toda task tem projeto" para
+/// bases migradas da versão Node.js legacy. Se não há projetos, retorna
+/// sem fazer nada; a UI detecta esse estado e guia o usuário a criar o
+/// primeiro projeto.
 fn ensure_default_project_and_bind_orphans(
-    config: &mut Config,
-    config_path: &std::path::Path,
+    config: &Config,
     task_projects: &TaskProjects,
     repo: &dyn Repository,
 ) -> anyhow::Result<()> {
     if config.projects.is_empty() {
-        let home_dir = dirs::home_dir().unwrap_or_else(std::env::temp_dir);
-        config.projects.push(Project {
-            id: "default".to_string(),
-            name: "Default".to_string(),
-            path: home_dir,
-            agente: None,
-        });
-        if config.active_project_id.is_none() {
-            config.active_project_id = Some("default".to_string());
-        }
-        config.save_to(config_path)?;
-        tracing::info!("created default project");
+        return Ok(());
     }
 
     let default_project_id = config.projects[0].id.clone();
@@ -817,6 +803,16 @@ pub fn save_config(state: State<'_, Arc<AppState>>, config: Config) -> Result<Co
         .join(".cadenza")
         .join("config.json");
     config.save_to(&path).map_err(to_str_err)?;
+    // Rebind orphans now that a project exists. Handles the legacy
+    // migration case: first install with pre-existing Node.js tasks and
+    // zero projects — AppState::init skipped binding; this is the next
+    // hook that can repair the invariant.
+    ensure_default_project_and_bind_orphans(
+        &config,
+        state.task_projects.as_ref(),
+        state.repo.as_ref(),
+    )
+    .map_err(to_str_err)?;
     let mut slot = state.config.lock().map_err(to_str_err)?;
     *slot = config.clone();
     tracing::info!(path = %path.display(), "config saved");

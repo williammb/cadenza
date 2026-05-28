@@ -3,7 +3,7 @@
 // file just opens them. Backend event listeners trigger a re-render.
 
 import { bootI18n, t, onLocaleChange } from "./i18n.js";
-import { openSettings } from "./settings.js";
+import { openSettings, setSettingsRefreshCallback } from "./settings.js";
 import {
   openNewTask,
   openEditTask,
@@ -34,6 +34,9 @@ const ESTADOS = ["a_fazer", "fazendo", "aguardando_revisao", "feito"];
 // every project-selector change. Repopulated on every renderBoard().
 let cachedTaskProjects = {};
 let cachedActiveProject = null;
+// Shown once per session when no projects exist, so the user is guided
+// to add a first project without reopening settings on every re-render.
+let _guidedToFirstProject = false;
 // task_id → task-run record from list_task_runs. Used to mark cards
 // that have a saved conversation so the user knows "click ▶ = resume".
 let cachedTaskRuns = {};
@@ -60,6 +63,12 @@ async function renderBoard() {
   cachedTaskRuns = runs ?? {};
   cachedActiveProject = cfg?.active_project_id ?? null;
   renderProjectOptions(cfg?.projects ?? [], cachedActiveProject);
+
+  // First launch: no projects yet — guide the user to add one.
+  if ((cfg?.projects ?? []).length === 0 && !_guidedToFirstProject) {
+    _guidedToFirstProject = true;
+    openSettings();
+  }
 
   // Filter by project before bucketing so the per-column counts also
   // reflect the active project — otherwise "FAZENDO 0" would be a lie
@@ -292,6 +301,7 @@ async function main() {
   setTriageRefresh(renderBoard);
   setIdeiaRefreshCallback(renderBoard);
   setStartAgentRefreshCallback(renderBoard);
+  setSettingsRefreshCallback(renderBoard);
   invoke("app_version")
     .then((v) => {
       const el = document.getElementById("app-version");

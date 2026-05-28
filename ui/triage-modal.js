@@ -9,6 +9,7 @@
 // the appropriate exit code (0 / 20).
 
 import { t } from "./i18n.js";
+import { renderMarkdown } from "./markdown.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -116,9 +117,9 @@ function renderCurrent() {
   titleEl.textContent = p.title ?? "";
   parentEl.textContent = p.parent ?? "—";
   fileEl.textContent = p.file ?? "—";
-  reproEl.textContent = p.repro ?? "";
-  whatFailedEl.textContent = p.what_failed ?? "";
-  actionEl.textContent = p.action ?? "";
+  renderMarkdown(reproEl, p.repro ?? "");
+  renderMarkdown(whatFailedEl, p.what_failed ?? "");
+  renderMarkdown(actionEl, p.action ?? "");
   createdEl.textContent = formatCreated(p.created_at_ms);
 
   if (queue.length > 1) {

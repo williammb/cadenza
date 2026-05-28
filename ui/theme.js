@@ -1,15 +1,34 @@
-// Two-state theme override (light / dark). When the user has never
-// toggled, the document has no `data-theme` attribute and CSS falls
-// back to `prefers-color-scheme`. Toggling once writes the explicit
-// choice to localStorage and applies `data-theme` to <html>, which
-// then wins over the media query (see styles.css :root[data-theme]).
+// Two-state theme override (light / dark). initTheme() sets data-theme on
+// <html> at startup — from localStorage if saved, otherwise from the OS via
+// window.matchMedia. Toggling writes the new choice to localStorage and
+// updates data-theme (see styles.css :root[data-theme]).
+//
+// When no explicit override is saved, we also subscribe to the OS theme
+// media query so a system-level light/dark switch (macOS/Windows auto
+// appearance at sunset) propagates live instead of being pinned to the
+// boot-time value.
 
 const STORAGE_KEY = "cadenza-theme";
 
 export function initTheme() {
   const saved = read();
-  if (saved === "light" || saved === "dark") {
-    document.documentElement.setAttribute("data-theme", saved);
+  const hasOverride = saved === "light" || saved === "dark";
+  document.documentElement.setAttribute(
+    "data-theme",
+    hasOverride ? saved : systemTheme(),
+  );
+  if (!hasOverride) {
+    try {
+      window
+        .matchMedia("(prefers-color-scheme: dark)")
+        .addEventListener("change", (e) => {
+          if (read()) return;
+          document.documentElement.setAttribute(
+            "data-theme",
+            e.matches ? "dark" : "light",
+          );
+        });
+    } catch {}
   }
 }
 

@@ -43,6 +43,7 @@ settings-section-agent = Agente padrão
 settings-language-pt = Português (pt-BR)
 settings-language-en = English (en)
 settings-projects-empty = Nenhum projeto cadastrado.
+settings-projects-delete-last-error = Não é possível remover o único projeto existente.
 settings-project-name = Nome
 settings-project-path = Caminho
 settings-project-path-browse = Selecionar pasta…

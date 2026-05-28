@@ -367,6 +367,38 @@ mod tests {
         assert_eq!(p2.proposta_id, original_id);
     }
 
+    // Verifies the "re-announce on startup" contract: after a restart the
+    // fresh Triage scans triage/ and returns only proposals that have no
+    // matching .decisao.json — decided proposals must be silently skipped.
+    #[test]
+    fn recover_returns_only_undecided_on_restart() {
+        let dir = TempDir::new().unwrap();
+
+        let (decided_id, pending_id) = {
+            let triage = Triage::new(dir.path()).unwrap();
+            let p1 = triage.propose(mk_args("k1", "one")).unwrap();
+            let p2 = triage.propose(mk_args("k2", "two")).unwrap();
+            triage
+                .write_decisao(DecisaoRegistro {
+                    proposta_id: p1.proposta_id.clone(),
+                    decisao: Decisao::Aceita,
+                    task_id: None,
+                    autor: "h".into(),
+                    decided_at_ms: 0,
+                })
+                .unwrap();
+            (p1.proposta_id, p2.proposta_id)
+        };
+
+        // Simulate restart with a fresh instance.
+        let t2 = Triage::new(dir.path()).unwrap();
+        let pending = t2.recover().unwrap();
+
+        assert_eq!(pending.len(), 1, "decided proposal must not be re-announced");
+        assert_eq!(pending[0].proposta_id, pending_id);
+        let _ = decided_id;
+    }
+
     #[tokio::test]
     async fn await_decisao_fast_path_when_already_decided() {
         let dir = TempDir::new().unwrap();

@@ -93,6 +93,20 @@ export async function attachTerminal(sessionId, opts = {}) {
   term.open(host);
   safeFit();
 
+  // Sync the PTY size to the xterm BEFORE attaching, so the child
+  // process (claude/codex) sees the real cols/rows from the first byte
+  // it writes. Without this, the child keeps the spawn-time default
+  // (agent.rs DEFAULT_COLS/ROWS = 120×30) while xterm renders at the
+  // drawer's actual width — and any cursor-rewrite sequences (spinner,
+  // progress bars) overlap because \x1b[K clears only up to col 120.
+  if (term.cols && term.rows) {
+    try {
+      await invoke("pty_resize", { sessionId, cols: term.cols, rows: term.rows });
+    } catch (e) {
+      console.warn("initial pty_resize failed", e);
+    }
+  }
+
   const channel = new Channel();
   channel.onmessage = (bytes) => {
     if (!term) return;

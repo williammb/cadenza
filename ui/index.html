@@ -770,10 +770,10 @@
       </div>
     </aside>
 
-    <!-- Vendored xterm UMDs. Must load BEFORE the modules so window.Terminal
-         and window.FitAddon are populated when terminal.js runs. -->
+    <!-- Vendored UMDs. Must load BEFORE the modules so globals are populated. -->
     <script src="vendor/xterm.js"></script>
     <script src="vendor/xterm-addon-fit.js"></script>
+    <script src="vendor/purify.min.js"></script>
 
     <script type="module" src="i18n.js"></script>
     <script type="module" src="settings.js"></script>

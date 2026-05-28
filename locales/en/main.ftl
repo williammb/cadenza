@@ -6,6 +6,7 @@ tray-lang-pt = Language: Português
 tray-lang-en = Language: English
 tray-restart = Restart
 tray-revoke-token = Revoke CLI token
+tray-copy-diag = Copy diagnostics
 tray-quit = Quit
 
 notification-proposal-title = Cadenza — new agent proposal

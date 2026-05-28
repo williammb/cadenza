@@ -43,6 +43,7 @@ settings-section-agent = Default agent
 settings-language-pt = Português (pt-BR)
 settings-language-en = English (en)
 settings-projects-empty = No projects registered.
+settings-projects-delete-last-error = Cannot remove the only existing project.
 settings-project-name = Name
 settings-project-path = Path
 settings-project-path-browse = Select folder…

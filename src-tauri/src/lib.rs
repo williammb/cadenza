@@ -224,13 +224,21 @@ pub fn run() {
             )?;
             let revogar =
                 MenuItem::with_id(app, "revogar", &labels.revogar, true, None::<&str>)?;
+            let copiar_diag = MenuItem::with_id(
+                app,
+                "copiar-diag",
+                &labels.copiar_diag,
+                true,
+                None::<&str>,
+            )?;
+            let sep3 = PredefinedMenuItem::separator(app)?;
             let sair = MenuItem::with_id(app, "sair", &labels.sair, true, None::<&str>)?;
 
             let menu = Menu::with_items(
                 app,
                 &[
                     &abrir, &settings, &sep1, &lang_pt, &lang_en, &sep2, &reiniciar, &revogar,
-                    &sair,
+                    &sep3, &copiar_diag, &sair,
                 ],
             )?;
 
@@ -258,6 +266,42 @@ pub fn run() {
                         "sair" => {
                             tracing::info!("tray quit");
                             app.exit(0);
+                        }
+                        "copiar-diag" => {
+                            let dir = data_dir();
+                            let auth_path = dir.join("auth");
+                            let socket = if cfg!(windows) {
+                                format!(
+                                    "\\\\.\\pipe\\cadenza-{}",
+                                    std::env::var("USERNAME")
+                                        .unwrap_or_else(|_| "<user>".into())
+                                )
+                            } else {
+                                dir.join("run").join("socket").display().to_string()
+                            };
+                            // "exists" alone is misleading for an empty
+                            // auth file — validate() rejects it, but the
+                            // path is on disk. Surface the empty case so
+                            // a support reader doesn't trust a useless
+                            // token file.
+                            let auth_status = match std::fs::read(&auth_path) {
+                                Ok(b) if b.iter().any(|c| !c.is_ascii_whitespace()) => "exists",
+                                Ok(_) => "EMPTY",
+                                Err(_) => "MISSING",
+                            };
+                            let diag = format!(
+                                "cadenza {ver}\nprotocol: {proto}\ndata dir: {data}\nauth file: {auth} ({auth_status})\nsocket: {socket}",
+                                ver = env!("CARGO_PKG_VERSION"),
+                                proto = cadenza_proto::MAX_PROTOCOL,
+                                data = dir.display(),
+                                auth = auth_path.display(),
+                            );
+                            match arboard::Clipboard::new()
+                                .and_then(|mut cb| cb.set_text(&diag))
+                            {
+                                Ok(_) => tracing::info!("diagnostic copied to clipboard"),
+                                Err(e) => tracing::warn!(error = ?e, "failed to copy diagnostic"),
+                            }
                         }
                         "revogar" => {
                             let dir = data_dir();
@@ -335,6 +379,7 @@ struct TrayLabels {
     lang_en: String,
     reiniciar: String,
     revogar: String,
+    copiar_diag: String,
     sair: String,
 }
 
@@ -353,6 +398,7 @@ impl TrayLabels {
             lang_en: i18n.t("tray-lang-en"),
             reiniciar: i18n.t("tray-restart"),
             revogar: i18n.t("tray-revoke-token"),
+            copiar_diag: i18n.t("tray-copy-diag"),
             sair: i18n.t("tray-quit"),
         }
     }

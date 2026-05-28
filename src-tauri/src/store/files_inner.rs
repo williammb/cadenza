@@ -447,4 +447,39 @@ mod tests {
         // read_task surfaces the error.
         assert!(matches!(s.read_task("BAD"), Err(StoreError::BadFrontmatter(_))));
     }
+
+    // Verifies the retry path inside `acquire_lock`: a background thread holds
+    // the sidecar lock file while the main thread's `set_estado` spins with
+    // exponential backoff; once the holder releases (~200 ms), the update
+    // succeeds rather than timing out.
+    #[test]
+    fn concurrent_write_retries_after_lock_release() {
+        use std::time::Duration;
+
+        let dir = TempDir::new().unwrap();
+        let s = Store::new(dir.path()).unwrap();
+        s.create_task(&t("L", Estado::Fazendo)).unwrap();
+
+        // Take the sidecar lock so Store::with_locked spins in acquire_lock.
+        let lock_path = s.lock_path_for("L");
+        let lf = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .open(&lock_path)
+            .unwrap();
+        FileExt::try_lock_exclusive(&lf).expect("initial lock must succeed");
+
+        let dir_path = dir.path().to_path_buf();
+        let handle = std::thread::spawn(move || {
+            Store::new(dir_path).unwrap().set_estado("L", Estado::Feito)
+        });
+
+        // Release after 200 ms — well within the 3-second deadline.
+        std::thread::sleep(Duration::from_millis(200));
+        FileExt::unlock(&lf).unwrap();
+
+        handle.join().unwrap().expect("set_estado must succeed once the lock is released");
+        assert_eq!(s.read_task("L").unwrap().estado, Estado::Feito);
+    }
 }

@@ -130,4 +130,11 @@ mod tests {
         });
         assert_eq!(r, "pt-BR");
     }
+
+    #[test]
+    fn all_none_resolves_to_supported_locale() {
+        // All explicit sources absent: falls through to OS locale then "en".
+        let r = resolve(LocaleSources::default());
+        assert!(r == "pt-BR" || r == "en", "unexpected locale: {r}");
+    }
 }

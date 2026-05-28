@@ -679,4 +679,34 @@ mod tests {
             .unwrap();
         assert!(got.is_none());
     }
+
+    #[tokio::test]
+    async fn set_titulo_preserves_other_fields() {
+        let (_d, repo) = mk().await;
+        repo.create_task(&t("Z", Estado::AFazer)).await.unwrap();
+        repo.set_titulo("Z", "new title").await.unwrap();
+        let got = repo.read_task("Z").await.unwrap();
+        assert_eq!(got.titulo, "new title");
+        assert_eq!(got.estado, Estado::AFazer);
+        assert_eq!(got.body, "body of Z");
+    }
+
+    #[tokio::test]
+    async fn update_task_body_replaces_body() {
+        let (_d, repo) = mk().await;
+        repo.create_task(&t("B", Estado::Fazendo)).await.unwrap();
+        repo.update_task_body("B", "replaced body").await.unwrap();
+        let got = repo.read_task("B").await.unwrap();
+        assert_eq!(got.body, "replaced body");
+        assert_eq!(got.titulo, "B title");
+        assert_eq!(got.estado, Estado::Fazendo);
+    }
+
+    #[tokio::test]
+    async fn delete_task_makes_it_not_found() {
+        let (_d, repo) = mk().await;
+        repo.create_task(&t("R", Estado::AFazer)).await.unwrap();
+        repo.delete_task("R").await.unwrap();
+        assert!(matches!(repo.read_task("R").await, Err(StoreError::NotFound(_))));
+    }
 }

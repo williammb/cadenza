@@ -27,6 +27,17 @@ pub fn canonicalize(input: &str) -> Option<&'static str> {
     }
 }
 
+/// Return the EN display alias for a PT canonical state.
+pub fn display_en(estado: &str) -> Option<&'static str> {
+    match estado {
+        "a_fazer" => Some("todo"),
+        "fazendo" => Some("doing"),
+        "aguardando_revisao" => Some("review"),
+        "feito" => Some("done"),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,5 +61,23 @@ mod tests {
     fn unknown_returns_none() {
         assert_eq!(canonicalize("WIP"), None);
         assert_eq!(canonicalize(""), None);
+    }
+
+    #[test]
+    fn pt_canonical_to_en_display() {
+        assert_eq!(display_en("a_fazer"), Some("todo"));
+        assert_eq!(display_en("fazendo"), Some("doing"));
+        assert_eq!(display_en("aguardando_revisao"), Some("review"));
+        assert_eq!(display_en("feito"), Some("done"));
+        assert_eq!(display_en("unknown"), None);
+        assert_eq!(display_en(""), None);
+    }
+
+    #[test]
+    fn canonicalize_and_display_en_are_inverses() {
+        for &en_alias in &["todo", "doing", "review", "done"] {
+            let pt = canonicalize(en_alias).unwrap();
+            assert_eq!(display_en(pt), Some(en_alias));
+        }
     }
 }

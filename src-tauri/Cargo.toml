@@ -45,6 +45,7 @@ sqlx = { workspace = true }
 keyring = { workspace = true }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
+arboard = "3"
 
 cadenza-proto = { workspace = true }
 cadenza-i18n = { workspace = true }

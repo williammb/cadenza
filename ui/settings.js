@@ -32,6 +32,11 @@ const skillProjectSelectEl = document.getElementById("skill-project-select");
 const skillProjectEmptyEl = document.getElementById("skill-project-empty");
 
 let currentConfig = blankConfig();
+let _refreshCallback = null;
+
+export function setSettingsRefreshCallback(fn) {
+  _refreshCallback = fn;
+}
 // Remember the backend at open() time. We only flag "restart needed"
 // when the user actually changes it — re-opening the modal with the
 // same backend shouldn't show a stale banner from a previous session.
@@ -169,6 +174,10 @@ function renderProjects(projects) {
     del.textContent = "×";
     del.setAttribute("aria-label", t("action-delete"));
     del.addEventListener("click", () => {
+      if (currentConfig.projects.length <= 1) {
+        setStatus(t("settings-projects-delete-last-error"), "error");
+        return;
+      }
       currentConfig.projects = currentConfig.projects.filter((q) => q.id !== p.id);
       renderProjects(currentConfig.projects);
     });
@@ -626,6 +635,7 @@ form.addEventListener("submit", async (e) => {
     setTimeout(() => {
       setStatus("");
       closeSettings();
+      _refreshCallback?.();
     }, 700);
   } catch (err) {
     setStatus(t("settings-save-error", { error: err }), "error");
