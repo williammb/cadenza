@@ -11,10 +11,10 @@ use cadenza_proto::{
     MAX_PROTOCOL,
 };
 use interprocess::local_socket::tokio::{prelude::*, Stream};
-#[cfg(windows)]
-use interprocess::local_socket::{GenericNamespaced, ToNsName};
 #[cfg(not(windows))]
 use interprocess::local_socket::{GenericFilePath, ToFsName};
+#[cfg(windows)]
+use interprocess::local_socket::{GenericNamespaced, ToNsName};
 use serde::{de::DeserializeOwned, Serialize};
 use std::io::ErrorKind;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};

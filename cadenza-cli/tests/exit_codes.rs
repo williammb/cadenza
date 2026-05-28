@@ -230,11 +230,16 @@ fn exit_20_proposal_rejected() {
     cli(&user, data.path())
         .args([
             "propose",
-            "--title", "Test proposal",
-            "--repro", "reproduce: step 1",
-            "--file", "src/foo.rs",
-            "--what-failed", "assertion fails",
-            "--action", "fix the bug",
+            "--title",
+            "Test proposal",
+            "--repro",
+            "reproduce: step 1",
+            "--file",
+            "src/foo.rs",
+            "--what-failed",
+            "assertion fails",
+            "--action",
+            "fix the bug",
         ])
         .assert()
         .failure()
@@ -258,11 +263,16 @@ fn exit_21_decision_timeout() {
     cli(&user, data.path())
         .args([
             "propose",
-            "--title", "Test proposal",
-            "--repro", "reproduce: step 1",
-            "--file", "src/foo.rs",
-            "--what-failed", "assertion fails",
-            "--action", "fix the bug",
+            "--title",
+            "Test proposal",
+            "--repro",
+            "reproduce: step 1",
+            "--file",
+            "src/foo.rs",
+            "--what-failed",
+            "assertion fails",
+            "--action",
+            "fix the bug",
         ])
         .assert()
         .failure()
@@ -277,10 +287,7 @@ fn exit_30_task_not_found() {
     let data = make_data_dir(Some("any-token"));
     let _srv = start_mock(
         &format!("cadenza-{user}"),
-        vec![
-            hello_ok(),
-            err_resp("task_not_found", "T-nonexistent"),
-        ],
+        vec![hello_ok(), err_resp("task_not_found", "T-nonexistent")],
     );
     cli(&user, data.path())
         .args(["log", "T-nonexistent", "progress update"])

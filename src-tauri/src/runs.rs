@@ -164,7 +164,10 @@ mod tests {
         let got = tr.get("T-1").unwrap();
         assert_eq!(got.agent, AgenteKind::ClaudeCode);
         assert_eq!(got.model, "claude-opus-4-7");
-        assert_eq!(got.conversation_id.as_deref(), Some("8f2a73e9-1111-2222-3333-444455556666"));
+        assert_eq!(
+            got.conversation_id.as_deref(),
+            Some("8f2a73e9-1111-2222-3333-444455556666")
+        );
     }
 
     #[test]
@@ -176,7 +179,10 @@ mod tests {
         run.conversation_id = None;
         tr.upsert("T-2", run).unwrap();
         tr.set_conversation_id("T-2", "thr-abc").unwrap();
-        assert_eq!(tr.get("T-2").unwrap().conversation_id.as_deref(), Some("thr-abc"));
+        assert_eq!(
+            tr.get("T-2").unwrap().conversation_id.as_deref(),
+            Some("thr-abc")
+        );
     }
 
     #[test]

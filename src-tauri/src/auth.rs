@@ -22,8 +22,8 @@ pub fn ensure_token(dir: &Path) -> Result<String> {
     fs::create_dir_all(dir).with_context(|| format!("mkdir {}", dir.display()))?;
     let path = token_path(dir);
     if path.exists() {
-        let token = fs::read_to_string(&path)
-            .with_context(|| format!("read {}", path.display()))?;
+        let token =
+            fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
         let token = token.trim().to_string();
         if !token.is_empty() {
             return Ok(token);
@@ -51,7 +51,10 @@ pub fn validate(dir: &Path, candidate: &str) -> Result<bool> {
         return Ok(false);
     }
     let stored = fs::read_to_string(&path)?;
-    Ok(constant_time_eq(stored.trim().as_bytes(), candidate.as_bytes()))
+    Ok(constant_time_eq(
+        stored.trim().as_bytes(),
+        candidate.as_bytes(),
+    ))
 }
 
 fn token_path(dir: &Path) -> PathBuf {

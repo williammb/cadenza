@@ -16,9 +16,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{
-    files_inner::Store as FileStore,
-    ideias_inner::IdeiaStore,
-    triage_inner::Triage as FileTriage,
+    files_inner::Store as FileStore, ideias_inner::IdeiaStore, triage_inner::Triage as FileTriage,
     DecisaoRegistro, Estado, Ideia, IdeiaStatus, NewProposta, Proposta, Repository, Result,
     StoreError, Task,
 };
@@ -33,8 +31,7 @@ pub struct FileRepository {
 
 impl FileRepository {
     pub fn new(home: &Path) -> Result<Self> {
-        let tasks = FileStore::new(home.join("tasks"))
-            .map_err(StoreError::Io)?;
+        let tasks = FileStore::new(home.join("tasks")).map_err(StoreError::Io)?;
         let triage = FileTriage::new(home.join("triage"))?;
         let ideias = IdeiaStore::new(home.join("inbox"))?;
         Ok(Self {

@@ -255,15 +255,13 @@ impl Repository for PgRepository {
     }
 
     async fn set_estado(&self, id: &str, estado: Estado) -> Result<()> {
-        let res = sqlx::query(
-            "UPDATE tasks SET estado = $1, updated_at_ms = $2 WHERE id = $3",
-        )
-        .bind(estado.as_str())
-        .bind(now_ms())
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx)?;
+        let res = sqlx::query("UPDATE tasks SET estado = $1, updated_at_ms = $2 WHERE id = $3")
+            .bind(estado.as_str())
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound(id.to_string()));
         }
@@ -271,15 +269,13 @@ impl Repository for PgRepository {
     }
 
     async fn set_titulo(&self, id: &str, titulo: &str) -> Result<()> {
-        let res = sqlx::query(
-            "UPDATE tasks SET titulo = $1, updated_at_ms = $2 WHERE id = $3",
-        )
-        .bind(titulo)
-        .bind(now_ms())
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx)?;
+        let res = sqlx::query("UPDATE tasks SET titulo = $1, updated_at_ms = $2 WHERE id = $3")
+            .bind(titulo)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound(id.to_string()));
         }
@@ -287,15 +283,13 @@ impl Repository for PgRepository {
     }
 
     async fn update_task_body(&self, id: &str, body: &str) -> Result<()> {
-        let res = sqlx::query(
-            "UPDATE tasks SET body = $1, updated_at_ms = $2 WHERE id = $3",
-        )
-        .bind(body)
-        .bind(now_ms())
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx)?;
+        let res = sqlx::query("UPDATE tasks SET body = $1, updated_at_ms = $2 WHERE id = $3")
+            .bind(body)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound(id.to_string()));
         }
@@ -326,15 +320,14 @@ impl Repository for PgRepository {
         } else {
             text.to_string()
         };
-        let res = sqlx::query(
-            "UPDATE tasks SET body = body || $1, updated_at_ms = $2 WHERE id = $3",
-        )
-        .bind(suffix)
-        .bind(now_ms())
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx)?;
+        let res =
+            sqlx::query("UPDATE tasks SET body = body || $1, updated_at_ms = $2 WHERE id = $3")
+                .bind(suffix)
+                .bind(now_ms())
+                .bind(id)
+                .execute(&self.pool)
+                .await
+                .map_err(map_sqlx)?;
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound(id.to_string()));
         }

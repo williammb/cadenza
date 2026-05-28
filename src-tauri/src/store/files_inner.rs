@@ -365,7 +365,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let s = Store::new(dir.path()).unwrap();
         s.create_task(&t("U", Estado::Fazendo)).unwrap();
-        s.update_task_body("U", "new body content\nmultiline").unwrap();
+        s.update_task_body("U", "new body content\nmultiline")
+            .unwrap();
 
         let got = s.read_task("U").unwrap();
         assert_eq!(got.estado, Estado::Fazendo);
@@ -424,11 +425,22 @@ mod tests {
         s.create_task(&t("L", Estado::Fazendo)).unwrap();
         let path = s.root.join("L.md");
 
-        let f1 = OpenOptions::new().read(true).write(true).open(&path).unwrap();
-        let f2 = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let f1 = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let f2 = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
 
         FileExt::try_lock_exclusive(&f1).expect("first lock should succeed");
-        assert!(FileExt::try_lock_exclusive(&f2).is_err(), "second lock must fail while first holds");
+        assert!(
+            FileExt::try_lock_exclusive(&f2).is_err(),
+            "second lock must fail while first holds"
+        );
 
         FileExt::unlock(&f1).unwrap();
         FileExt::try_lock_exclusive(&f2).expect("second lock should succeed after first unlocks");
@@ -445,7 +457,10 @@ mod tests {
         let listed = s.list_tasks(None).unwrap();
         assert!(listed.is_empty());
         // read_task surfaces the error.
-        assert!(matches!(s.read_task("BAD"), Err(StoreError::BadFrontmatter(_))));
+        assert!(matches!(
+            s.read_task("BAD"),
+            Err(StoreError::BadFrontmatter(_))
+        ));
     }
 
     // Verifies the retry path inside `acquire_lock`: a background thread holds
@@ -479,7 +494,10 @@ mod tests {
         std::thread::sleep(Duration::from_millis(200));
         FileExt::unlock(&lf).unwrap();
 
-        handle.join().unwrap().expect("set_estado must succeed once the lock is released");
+        handle
+            .join()
+            .unwrap()
+            .expect("set_estado must succeed once the lock is released");
         assert_eq!(s.read_task("L").unwrap().estado, Estado::Feito);
     }
 }

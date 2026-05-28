@@ -149,7 +149,8 @@ mod tests {
 
     #[test]
     fn server_frame_distinguishes_event_from_response() {
-        let event_line = r#"{"v":1,"id":null,"event":"proposta_pendente","data":{"proposta_id":"P-1"}}"#;
+        let event_line =
+            r#"{"v":1,"id":null,"event":"proposta_pendente","data":{"proposta_id":"P-1"}}"#;
         let resp_line = r#"{"v":1,"id":"3","ok":true,"result":{"decisao":"aceita"}}"#;
         match serde_json::from_str::<ServerFrame>(event_line).unwrap() {
             ServerFrame::Event(e) => assert_eq!(e.event, "proposta_pendente"),

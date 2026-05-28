@@ -39,7 +39,11 @@ pub fn show_proposta_pendente(app: &AppHandle, proposta: &Proposta) -> Result<()
     let body = i18n.t_with("notification-proposal-body", Some(&args));
     drop(i18n);
 
-    app.notification().builder().title(title).body(body).show()?;
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()?;
     tracing::info!(proposta_id = %proposta.proposta_id, "notification shown");
     Ok(())
 }
@@ -54,6 +58,10 @@ pub fn show_info(app: &AppHandle, title_key: &str, body_key: &str) -> Result<()>
     let title = i18n.t(title_key);
     let body = i18n.t(body_key);
     drop(i18n);
-    app.notification().builder().title(title).body(body).show()?;
+    app.notification()
+        .builder()
+        .title(title)
+        .body(body)
+        .show()?;
     Ok(())
 }

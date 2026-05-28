@@ -213,11 +213,7 @@ fn install_codex(
 
 // --- remove ----------------------------------------------------------------
 
-pub fn remove(
-    agents: &[Agent],
-    scope: Scope,
-    project_root: Option<&Path>,
-) -> Result<Vec<Outcome>> {
+pub fn remove(agents: &[Agent], scope: Scope, project_root: Option<&Path>) -> Result<Vec<Outcome>> {
     let mut report = Vec::with_capacity(agents.len());
     for agent in dedup_sorted(agents) {
         let outcome = match agent {
@@ -232,7 +228,12 @@ pub fn remove(
 fn remove_claude(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
     let path = claude_path(scope, project_root)?;
     if !path.exists() {
-        return Ok(Outcome::skipped(Agent::Claude, scope, &path, "not installed"));
+        return Ok(Outcome::skipped(
+            Agent::Claude,
+            scope,
+            &path,
+            "not installed",
+        ));
     }
     fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
     // Best-effort cleanup of the empty `cadenza/` skill folder.
@@ -252,10 +253,14 @@ fn remove_codex(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
             "AGENTS.md not present",
         ));
     }
-    let existing =
-        fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
+    let existing = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let Some((before, after)) = split_codex_block(&existing) else {
-        return Ok(Outcome::skipped(Agent::Codex, scope, &path, "no managed block"));
+        return Ok(Outcome::skipped(
+            Agent::Codex,
+            scope,
+            &path,
+            "no managed block",
+        ));
     };
     // Collapse whitespace at the boundary so we don't leave a blank gap.
     let joined = format!("{}{}", before.trim_end_matches('\n'), after);
@@ -325,7 +330,9 @@ fn parse_claude_locale(content: String) -> Option<String> {
     // body content — the EN file's first heading is "How to use Cadenza".
     if content.contains("# Cadenza — Como usar") {
         Some("pt-BR".into())
-    } else if content.contains("# Cadenza — How to use") || content.contains("# Cadenza - How to use") {
+    } else if content.contains("# Cadenza — How to use")
+        || content.contains("# Cadenza - How to use")
+    {
         Some("en".into())
     } else {
         None
@@ -400,14 +407,16 @@ fn split_codex_block(content: &str) -> Option<(String, String)> {
     if content.as_bytes().get(tail_start) == Some(&b'\n') {
         tail_start += 1;
     }
-    Some((content[..start_idx].to_string(), content[tail_start..].to_string()))
+    Some((
+        content[..start_idx].to_string(),
+        content[tail_start..].to_string(),
+    ))
 }
 
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("cadenza-tmp");
     {
-        let mut f =
-            fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
+        let mut f = fs::File::create(&tmp).with_context(|| format!("create {}", tmp.display()))?;
         f.write_all(bytes)
             .with_context(|| format!("write {}", tmp.display()))?;
         f.sync_all().ok();

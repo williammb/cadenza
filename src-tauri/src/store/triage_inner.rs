@@ -91,7 +91,9 @@ impl Triage {
             if !name.ends_with(".proposta.json") {
                 continue;
             }
-            let Ok(content) = fs::read_to_string(&path) else { continue };
+            let Ok(content) = fs::read_to_string(&path) else {
+                continue;
+            };
             let proposta: Proposta = match serde_json::from_str(&content) {
                 Ok(p) => p,
                 Err(e) => {
@@ -99,9 +101,10 @@ impl Triage {
                     continue;
                 }
             };
-            state
-                .by_key
-                .insert(proposta.idempotency_key.clone(), proposta.proposta_id.clone());
+            state.by_key.insert(
+                proposta.idempotency_key.clone(),
+                proposta.proposta_id.clone(),
+            );
             let decisao_exists = self.decisao_path(&proposta.proposta_id).exists();
             if !decisao_exists {
                 pending.push(proposta);
@@ -182,7 +185,9 @@ impl Triage {
             if !name.ends_with(".proposta.json") {
                 continue;
             }
-            let Ok(text) = fs::read_to_string(&path) else { continue };
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
             let Ok(p): std::result::Result<Proposta, _> = serde_json::from_str(&text) else {
                 continue;
             };
@@ -394,7 +399,11 @@ mod tests {
         let t2 = Triage::new(dir.path()).unwrap();
         let pending = t2.recover().unwrap();
 
-        assert_eq!(pending.len(), 1, "decided proposal must not be re-announced");
+        assert_eq!(
+            pending.len(),
+            1,
+            "decided proposal must not be re-announced"
+        );
         assert_eq!(pending[0].proposta_id, pending_id);
         let _ = decided_id;
     }

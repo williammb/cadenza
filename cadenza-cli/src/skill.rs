@@ -173,7 +173,10 @@ fn emit_report(report: &[Outcome], json: bool) {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into()));
+        println!(
+            "{}",
+            serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into())
+        );
     } else {
         for o in report {
             let mut line = format!(
@@ -208,7 +211,10 @@ fn emit_status(rows: &[StatusRow], json: bool) {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into()));
+        println!(
+            "{}",
+            serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into())
+        );
     } else {
         println!("{:<7} {:<8} {:<10} {}", "agent", "scope", "status", "path");
         for r in rows {

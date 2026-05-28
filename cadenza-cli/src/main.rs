@@ -130,8 +130,12 @@ fn main() -> ExitCode {
     if let Cmd::Skill(_) = cli.cmd {
         // Skill management is local-only: edits files under ~/.claude,
         // ~/.codex, or the current project. No app required.
-        let Cli { cmd, lang, json, .. } = cli;
-        let Cmd::Skill(skill_cmd) = cmd else { unreachable!() };
+        let Cli {
+            cmd, lang, json, ..
+        } = cli;
+        let Cmd::Skill(skill_cmd) = cmd else {
+            unreachable!()
+        };
         return match skill::run(skill_cmd, lang.as_deref(), json) {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -228,18 +232,18 @@ async fn run(cli: Cli) -> Result<()> {
         } => cmd_new_task(&mut client, cli.json, titulo, body, project, from_ideia).await?,
         Cmd::ListIdeias => cmd_list_ideias(&mut client, cli.json).await?,
         Cmd::ReadIdeia { ideia_id } => cmd_read_ideia(&mut client, cli.json, ideia_id).await?,
-        Cmd::CreateIdeia { titulo, body, project } => {
-            cmd_create_ideia(&mut client, cli.json, titulo, body, project).await?
-        }
+        Cmd::CreateIdeia {
+            titulo,
+            body,
+            project,
+        } => cmd_create_ideia(&mut client, cli.json, titulo, body, project).await?,
         Cmd::DeleteIdeia { ideia_id } => cmd_delete_ideia(&mut client, cli.json, ideia_id).await?,
         Cmd::Diag => unreachable!(),
         Cmd::Skill(_) => unreachable!(),
     }
 
     // Best-effort bye; don't fail the whole command if it errors.
-    let _: Result<ops::bye::Result> = client
-        .request(ops::OP_BYE, ops::bye::Args::default())
-        .await;
+    let _: Result<ops::bye::Result> = client.request(ops::OP_BYE, ops::bye::Args::default()).await;
     Ok(())
 }
 
@@ -332,8 +336,7 @@ async fn cmd_propose(
         what_failed,
         action,
     };
-    let started: ops::propose::Result =
-        client.request(ops::OP_PROPOSE, propose_args).await?;
+    let started: ops::propose::Result = client.request(ops::OP_PROPOSE, propose_args).await?;
     eprintln!("propose enviado — id={}", started.proposta_id);
 
     let timeout_ms = (timeout_min as u64).saturating_mul(60_000).min(30 * 60_000);
@@ -365,10 +368,9 @@ async fn cmd_propose(
     }
 
     if matches!(decision.decisao, cadenza_proto::Decisao::Rejeitada) {
-        return Err(anyhow::Error::new(WireError(cadenza_proto::ErrorBody::new(
-            "proposal_rejected",
-            "human rejected the proposal",
-        ))));
+        return Err(anyhow::Error::new(WireError(
+            cadenza_proto::ErrorBody::new("proposal_rejected", "human rejected the proposal"),
+        )));
     }
     Ok(())
 }
@@ -419,8 +421,7 @@ async fn cmd_new_task(
         project_id,
         from_ideia: from_ideia.filter(|s| !s.trim().is_empty()),
     };
-    let result: ops::create_task::Result =
-        client.request(ops::OP_CREATE_TASK, args).await?;
+    let result: ops::create_task::Result = client.request(ops::OP_CREATE_TASK, args).await?;
     if json {
         println!("{}", serde_json::to_string(&result)?);
     } else {
@@ -447,7 +448,12 @@ async fn cmd_list_ideias(client: &mut Client, json: bool) -> Result<()> {
 
 async fn cmd_read_ideia(client: &mut Client, json: bool, ideia_id: String) -> Result<()> {
     let ideia: ops::read_ideia::Result = client
-        .request(ops::OP_READ_IDEIA, ops::read_ideia::Args { id: ideia_id.clone() })
+        .request(
+            ops::OP_READ_IDEIA,
+            ops::read_ideia::Args {
+                id: ideia_id.clone(),
+            },
+        )
         .await?;
     match ideia {
         None => {
@@ -457,10 +463,12 @@ async fn cmd_read_ideia(client: &mut Client, json: bool, ideia_id: String) -> Re
                 eprintln!("ideia not found: {ideia_id}");
             }
             // Mesmo exit code que task_not_found.
-            return Err(anyhow::Error::new(WireError(cadenza_proto::ErrorBody::new(
-                "task_not_found",
-                format!("ideia not found: {ideia_id}"),
-            ))));
+            return Err(anyhow::Error::new(WireError(
+                cadenza_proto::ErrorBody::new(
+                    "task_not_found",
+                    format!("ideia not found: {ideia_id}"),
+                ),
+            )));
         }
         Some(i) => {
             if json {
@@ -490,8 +498,7 @@ async fn cmd_create_ideia(
         body,
         project_id,
     };
-    let ideia: ops::create_ideia::Result =
-        client.request(ops::OP_CREATE_IDEIA, args).await?;
+    let ideia: ops::create_ideia::Result = client.request(ops::OP_CREATE_IDEIA, args).await?;
     if json {
         println!("{}", serde_json::to_string(&ideia)?);
     } else {
@@ -533,7 +540,11 @@ fn run_diag() -> Result<()> {
     println!(
         "auth file: {} ({})",
         auth_path.display(),
-        if auth_path.exists() { "exists" } else { "MISSING" }
+        if auth_path.exists() {
+            "exists"
+        } else {
+            "MISSING"
+        }
     );
     println!("socket: {socket_hint}");
     Ok(())

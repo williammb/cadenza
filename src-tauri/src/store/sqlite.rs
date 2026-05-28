@@ -203,15 +203,13 @@ impl Repository for SqliteRepository {
     }
 
     async fn set_estado(&self, id: &str, estado: Estado) -> Result<()> {
-        let res = sqlx::query(
-            "UPDATE tasks SET estado = ?1, updated_at_ms = ?2 WHERE id = ?3",
-        )
-        .bind(estado.as_str())
-        .bind(now_ms())
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx)?;
+        let res = sqlx::query("UPDATE tasks SET estado = ?1, updated_at_ms = ?2 WHERE id = ?3")
+            .bind(estado.as_str())
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound(id.to_string()));
         }
@@ -219,15 +217,13 @@ impl Repository for SqliteRepository {
     }
 
     async fn set_titulo(&self, id: &str, titulo: &str) -> Result<()> {
-        let res = sqlx::query(
-            "UPDATE tasks SET titulo = ?1, updated_at_ms = ?2 WHERE id = ?3",
-        )
-        .bind(titulo)
-        .bind(now_ms())
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx)?;
+        let res = sqlx::query("UPDATE tasks SET titulo = ?1, updated_at_ms = ?2 WHERE id = ?3")
+            .bind(titulo)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound(id.to_string()));
         }
@@ -235,15 +231,13 @@ impl Repository for SqliteRepository {
     }
 
     async fn update_task_body(&self, id: &str, body: &str) -> Result<()> {
-        let res = sqlx::query(
-            "UPDATE tasks SET body = ?1, updated_at_ms = ?2 WHERE id = ?3",
-        )
-        .bind(body)
-        .bind(now_ms())
-        .bind(id)
-        .execute(&self.pool)
-        .await
-        .map_err(map_sqlx)?;
+        let res = sqlx::query("UPDATE tasks SET body = ?1, updated_at_ms = ?2 WHERE id = ?3")
+            .bind(body)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound(id.to_string()));
         }
@@ -280,15 +274,13 @@ impl Repository for SqliteRepository {
         if !text.ends_with('\n') {
             next.push('\n');
         }
-        sqlx::query(
-            "UPDATE tasks SET body = ?1, updated_at_ms = ?2 WHERE id = ?3",
-        )
-        .bind(next)
-        .bind(now_ms())
-        .bind(id)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_sqlx)?;
+        sqlx::query("UPDATE tasks SET body = ?1, updated_at_ms = ?2 WHERE id = ?3")
+            .bind(next)
+            .bind(now_ms())
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx)?;
         tx.commit().await.map_err(map_sqlx)?;
         Ok(())
     }
@@ -571,7 +563,10 @@ mod tests {
         repo.create_task(&t("B", Estado::Fazendo)).await.unwrap();
         repo.create_task(&t("C", Estado::Fazendo)).await.unwrap();
         repo.create_task(&t("D", Estado::Feito)).await.unwrap();
-        assert_eq!(repo.list_tasks(Some(Estado::Fazendo)).await.unwrap().len(), 2);
+        assert_eq!(
+            repo.list_tasks(Some(Estado::Fazendo)).await.unwrap().len(),
+            2
+        );
         assert_eq!(repo.list_tasks(None).await.unwrap().len(), 4);
     }
 
@@ -607,7 +602,10 @@ mod tests {
             Err(StoreError::AlreadyExists(_))
         ));
         repo.delete_task("D").await.unwrap();
-        assert!(matches!(repo.read_task("D").await, Err(StoreError::NotFound(_))));
+        assert!(matches!(
+            repo.read_task("D").await,
+            Err(StoreError::NotFound(_))
+        ));
     }
 
     #[tokio::test]
@@ -707,6 +705,9 @@ mod tests {
         let (_d, repo) = mk().await;
         repo.create_task(&t("R", Estado::AFazer)).await.unwrap();
         repo.delete_task("R").await.unwrap();
-        assert!(matches!(repo.read_task("R").await, Err(StoreError::NotFound(_))));
+        assert!(matches!(
+            repo.read_task("R").await,
+            Err(StoreError::NotFound(_))
+        ));
     }
 }

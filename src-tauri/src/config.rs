@@ -194,10 +194,8 @@ impl Config {
                 .with_context(|| format!("mkdir {}", parent.display()))?;
         }
         let tmp = path.with_extension("json.tmp");
-        let text = serde_json::to_string_pretty(self)
-            .context("serializing config")?;
-        write_synced(&tmp, text.as_bytes())
-            .with_context(|| format!("write {}", tmp.display()))?;
+        let text = serde_json::to_string_pretty(self).context("serializing config")?;
+        write_synced(&tmp, text.as_bytes()).with_context(|| format!("write {}", tmp.display()))?;
         std::fs::rename(&tmp, path)
             .with_context(|| format!("rename {} → {}", tmp.display(), path.display()))?;
         Ok(())
@@ -284,9 +282,7 @@ mod tests {
 
     #[test]
     fn rejects_empty_project_id() {
-        let f = write_tmp(
-            r#"{"data_version":1,"projects":[{"id":"","name":"x","path":"."}]}"#,
-        );
+        let f = write_tmp(r#"{"data_version":1,"projects":[{"id":"","name":"x","path":"."}]}"#);
         let err = Config::load_from(f.path()).unwrap_err();
         assert!(format!("{:#}", err).contains("empty id"));
     }
@@ -299,10 +295,8 @@ mod tests {
 
     #[test]
     fn missing_file_errors_with_path() {
-        let err = Config::load_from(Path::new(
-            "C:/no-such-path-cadenza-test/config.json",
-        ))
-        .unwrap_err();
+        let err =
+            Config::load_from(Path::new("C:/no-such-path-cadenza-test/config.json")).unwrap_err();
         assert!(format!("{:#}", err).contains("config.json"));
     }
 
@@ -315,11 +309,13 @@ mod tests {
 
     #[test]
     fn rejects_empty_project_name() {
-        let f = write_tmp(
-            r#"{"data_version":1,"projects":[{"id":"p1","name":"","path":"."}]}"#,
-        );
+        let f = write_tmp(r#"{"data_version":1,"projects":[{"id":"p1","name":"","path":"."}]}"#);
         let err = Config::load_from(f.path()).unwrap_err();
-        assert!(format!("{:#}", err).contains("empty name"), "got: {:#}", err);
+        assert!(
+            format!("{:#}", err).contains("empty name"),
+            "got: {:#}",
+            err
+        );
     }
 
     #[test]

@@ -91,11 +91,7 @@ impl AppState {
         let task_runs = Arc::new(TaskRuns::load(&home)?);
 
         // Amarra tasks órfãs ao primeiro projeto. Idempotente.
-        ensure_default_project_and_bind_orphans(
-            &config,
-            &task_projects,
-            repo.as_ref(),
-        )?;
+        ensure_default_project_and_bind_orphans(&config, &task_projects, repo.as_ref())?;
 
         Ok(AppState {
             repo,
@@ -131,9 +127,8 @@ fn ensure_default_project_and_bind_orphans(
     // Bloqueante / síncrono: `repo.list_tasks` é async mas estamos
     // num init síncrono. Mesmo padrão usado por `build_repo` para
     // migrações de backend.
-    let tasks =
-        tauri::async_runtime::block_on(async { repo.list_tasks(None).await })
-            .map_err(|e| anyhow::anyhow!("list_tasks during orphan migration: {e}"))?;
+    let tasks = tauri::async_runtime::block_on(async { repo.list_tasks(None).await })
+        .map_err(|e| anyhow::anyhow!("list_tasks during orphan migration: {e}"))?;
 
     let mut bound = 0usize;
     for task in tasks {
@@ -159,9 +154,8 @@ fn build_repo(home: &std::path::Path, config: &Config) -> anyhow::Result<Arc<dyn
         StorageBackend::Files => Ok(files),
         StorageBackend::Sqlite => {
             let db_path = home.join("cadenza.db");
-            let sqlite: SqliteRepository = tauri::async_runtime::block_on(async {
-                SqliteRepository::open(&db_path).await
-            })?;
+            let sqlite: SqliteRepository =
+                tauri::async_runtime::block_on(async { SqliteRepository::open(&db_path).await })?;
             let sqlite = Arc::new(sqlite);
             let files_dyn: Arc<dyn Repository> = files.clone();
             let sqlite_dyn: Arc<dyn Repository> = sqlite.clone();
@@ -325,8 +319,7 @@ pub async fn set_estado(
     id: String,
     estado: String,
 ) -> Result<(), String> {
-    let parsed = Estado::parse(&estado)
-        .ok_or_else(|| format!("invalid estado: {estado}"))?;
+    let parsed = Estado::parse(&estado).ok_or_else(|| format!("invalid estado: {estado}"))?;
     state.repo.set_estado(&id, parsed).await.map_err(to_str_err)
 }
 
@@ -476,11 +469,7 @@ pub async fn decidir_proposta(
     state: State<'_, Arc<AppState>>,
     registro: DecisaoRegistro,
 ) -> Result<(), String> {
-    state
-        .repo
-        .write_decisao(registro)
-        .await
-        .map_err(to_str_err)
+    state.repo.write_decisao(registro).await.map_err(to_str_err)
 }
 
 /// Used by the CLI's `propose` path (will go through the NDJSON socket
@@ -1085,17 +1074,12 @@ pub fn read_task_run(
 }
 
 #[tauri::command]
-pub fn list_task_runs(
-    state: State<'_, Arc<AppState>>,
-) -> Result<HashMap<String, TaskRun>, String> {
+pub fn list_task_runs(state: State<'_, Arc<AppState>>) -> Result<HashMap<String, TaskRun>, String> {
     Ok(state.task_runs.snapshot())
 }
 
 #[tauri::command]
-pub fn clear_task_run(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-) -> Result<(), String> {
+pub fn clear_task_run(state: State<'_, Arc<AppState>>, task_id: String) -> Result<(), String> {
     state.task_runs.forget(&task_id).map_err(to_str_err)
 }
 
@@ -1144,7 +1128,9 @@ pub async fn create_ideia(
             return Err(format!("unknown project_id: {pid}"));
         }
     }
-    let id = args.id.unwrap_or_else(|| format!("I-{}", Uuid::new_v4().simple()));
+    let id = args
+        .id
+        .unwrap_or_else(|| format!("I-{}", Uuid::new_v4().simple()));
     let created_at_ms = chrono::Utc::now().timestamp_millis();
     let ideia = Ideia {
         id,
@@ -1159,10 +1145,7 @@ pub async fn create_ideia(
 }
 
 #[tauri::command]
-pub async fn delete_ideia(
-    state: State<'_, Arc<AppState>>,
-    id: String,
-) -> Result<(), String> {
+pub async fn delete_ideia(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
     state.repo.delete_ideia(&id).await.map_err(to_str_err)
 }
 
@@ -1309,12 +1292,7 @@ pub fn skill_install(
     force: bool,
     project_path: Option<String>,
 ) -> Result<Vec<skills_core::Outcome>, String> {
-    let locale = state
-        .i18n
-        .lock()
-        .map_err(to_str_err)?
-        .active()
-        .to_string();
+    let locale = state.i18n.lock().map_err(to_str_err)?.active().to_string();
     let root = project_path.as_deref().map(std::path::Path::new);
     skills_core::install(&agents, scope, &locale, force, root).map_err(to_str_err)
 }
@@ -1330,9 +1308,7 @@ pub fn skill_remove(
 }
 
 #[tauri::command]
-pub fn skill_status(
-    project_path: Option<String>,
-) -> Result<Vec<skills_core::StatusRow>, String> {
+pub fn skill_status(project_path: Option<String>) -> Result<Vec<skills_core::StatusRow>, String> {
     let root = project_path.as_deref().map(std::path::Path::new);
     Ok(skills_core::status(root))
 }

@@ -75,8 +75,22 @@ pub fn plan_launch(
     let model = model.trim();
 
     match kind {
-        AgenteKind::ClaudeCode => plan_claude(command, model, cwd, task_id, project_id, existing_conversation_id),
-        AgenteKind::Codex => plan_codex(command, model, cwd, task_id, project_id, existing_conversation_id),
+        AgenteKind::ClaudeCode => plan_claude(
+            command,
+            model,
+            cwd,
+            task_id,
+            project_id,
+            existing_conversation_id,
+        ),
+        AgenteKind::Codex => plan_codex(
+            command,
+            model,
+            cwd,
+            task_id,
+            project_id,
+            existing_conversation_id,
+        ),
     }
 }
 
@@ -206,8 +220,14 @@ pub fn find_codex_session_uuid(capture: &CodexCapture) -> Option<String> {
     None
 }
 
-fn collect_jsonl_newer_than(dir: &Path, threshold: SystemTime, out: &mut Vec<(SystemTime, String)>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+fn collect_jsonl_newer_than(
+    dir: &Path,
+    threshold: SystemTime,
+    out: &mut Vec<(SystemTime, String)>,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let Ok(ft) = entry.file_type() else { continue };
         let path = entry.path();
@@ -248,13 +268,10 @@ fn extract_uuid_suffix(stem: &str) -> Option<String> {
         return None;
     }
     let candidate = &stem[stem.len() - 36..];
-    let valid = candidate
-        .chars()
-        .enumerate()
-        .all(|(i, c)| match i {
-            8 | 13 | 18 | 23 => c == '-',
-            _ => c.is_ascii_hexdigit(),
-        });
+    let valid = candidate.chars().enumerate().all(|(i, c)| match i {
+        8 | 13 | 18 | 23 => c == '-',
+        _ => c.is_ascii_hexdigit(),
+    });
     if valid {
         Some(candidate.to_string())
     } else {
@@ -284,7 +301,10 @@ mod tests {
         assert_eq!(cmd, "claude");
         let args = &plan.spawn.args;
         // Should contain --session-id <uuid> --model <m>
-        let i = args.iter().position(|a| a == "--session-id").expect("--session-id");
+        let i = args
+            .iter()
+            .position(|a| a == "--session-id")
+            .expect("--session-id");
         let uuid = &args[i + 1];
         assert_eq!(uuid.len(), 36, "uuid arg should be 36 chars, got {uuid}");
         let m = args.iter().position(|a| a == "--model").expect("--model");

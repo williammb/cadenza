@@ -28,8 +28,7 @@ pub fn init() -> Result<WorkerGuard, std::io::Error> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
     let (non_blocking, guard) = tracing_appender::non_blocking(appender);
 
-    let filter = EnvFilter::try_from_env("CADENZA_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = EnvFilter::try_from_env("CADENZA_LOG").unwrap_or_else(|_| EnvFilter::new("info"));
 
     let file_layer = fmt::layer().with_writer(non_blocking).with_ansi(false);
     let stderr_layer = fmt::layer().with_writer(std::io::stderr).with_ansi(true);

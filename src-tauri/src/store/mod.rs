@@ -98,7 +98,15 @@ mod id_validation_tests {
 
     #[test]
     fn rejects_path_traversal() {
-        for bad in ["..", "../auth", "../../etc/passwd", "foo/bar", "foo\\bar", ".", ""] {
+        for bad in [
+            "..",
+            "../auth",
+            "../../etc/passwd",
+            "foo/bar",
+            "foo\\bar",
+            ".",
+            "",
+        ] {
             assert!(
                 matches!(validate_id(bad), Err(StoreError::BadData(_))),
                 "expected BadData for {bad:?}"
@@ -110,13 +118,19 @@ mod id_validation_tests {
     fn rejects_absolute_paths() {
         assert!(matches!(validate_id("/abs"), Err(StoreError::BadData(_))));
         if cfg!(windows) {
-            assert!(matches!(validate_id("C:\\abs"), Err(StoreError::BadData(_))));
+            assert!(matches!(
+                validate_id("C:\\abs"),
+                Err(StoreError::BadData(_))
+            ));
         }
     }
 
     #[test]
     fn rejects_nul_byte() {
-        assert!(matches!(validate_id("foo\0bar"), Err(StoreError::BadData(_))));
+        assert!(matches!(
+            validate_id("foo\0bar"),
+            Err(StoreError::BadData(_))
+        ));
     }
 }
 

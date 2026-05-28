@@ -8,9 +8,7 @@
 #![allow(dead_code)]
 
 use anyhow::{Context, Result};
-use portable_pty::{
-    native_pty_system, CommandBuilder, ExitStatus, MasterPty, PtyPair, PtySize,
-};
+use portable_pty::{native_pty_system, CommandBuilder, ExitStatus, MasterPty, PtyPair, PtySize};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
@@ -74,13 +72,9 @@ impl SpawnConfig {
     /// executable to PATH so the agent can find `cadenza-cli` without
     /// the user having to install it separately — both binaries ship
     /// from the same install root.
-    pub fn cadenza_env(
-        mut self,
-        project_id: &str,
-        task_id: &str,
-        claude_session_id: &str,
-    ) -> Self {
-        self.env.push(("TASKAI_PROJECT_ID".into(), project_id.into()));
+    pub fn cadenza_env(mut self, project_id: &str, task_id: &str, claude_session_id: &str) -> Self {
+        self.env
+            .push(("TASKAI_PROJECT_ID".into(), project_id.into()));
         self.env.push(("TASKAI_TASK_ID".into(), task_id.into()));
         self.env
             .push(("CLAUDE_SESSION_ID".into(), claude_session_id.into()));
@@ -96,8 +90,7 @@ impl SpawnConfig {
     /// O `task_id` passado para `cadenza_env` deve ser um placeholder
     /// estável (ex. `IDEIA-<id>`) — usado só para logs/tracing.
     pub fn ideia_env(mut self, ideia_id: &str, ideia_body: &str) -> Self {
-        self.env
-            .push(("CADENZA_IDEIA_ID".into(), ideia_id.into()));
+        self.env.push(("CADENZA_IDEIA_ID".into(), ideia_id.into()));
         self.env
             .push(("CADENZA_IDEIA_BODY".into(), ideia_body.into()));
         self
@@ -296,9 +289,7 @@ impl PtyHandle {
         }
 
         let PtyPair { slave, master } = pair;
-        let child = slave
-            .spawn_command(cmd)
-            .context("spawn_command failed")?;
+        let child = slave.spawn_command(cmd).context("spawn_command failed")?;
         // Drop the slave so the child's stdio is the only end with the
         // slave side; when the child closes, reads on the master see EOF.
         drop(slave);
@@ -307,9 +298,7 @@ impl PtyHandle {
     }
 
     pub fn try_clone_reader(&self) -> Result<Box<dyn Read + Send>> {
-        self.master
-            .try_clone_reader()
-            .context("try_clone_reader")
+        self.master.try_clone_reader().context("try_clone_reader")
     }
 
     pub fn take_writer(&self) -> Result<Box<dyn Write + Send>> {
@@ -379,7 +368,10 @@ mod tests {
             }
         }
         let out = String::from_utf8_lossy(&buf);
-        assert!(out.contains("hi"), "expected 'hi' in PTY output, got: {out:?}");
+        assert!(
+            out.contains("hi"),
+            "expected 'hi' in PTY output, got: {out:?}"
+        );
     }
 
     #[test]

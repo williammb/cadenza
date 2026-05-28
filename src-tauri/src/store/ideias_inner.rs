@@ -215,9 +215,6 @@ mod tests {
     fn delete_missing_errors_not_found() {
         let d = TempDir::new().unwrap();
         let store = mk(&d);
-        assert!(matches!(
-            store.delete("ZZ"),
-            Err(IdeiaError::NotFound(_))
-        ));
+        assert!(matches!(store.delete("ZZ"), Err(IdeiaError::NotFound(_))));
     }
 }

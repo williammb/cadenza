@@ -21,10 +21,10 @@ use cadenza_proto::{
     Decisao, DecisaoRegistro, Ideia, IdeiaStatus, MAX_PROTOCOL, MIN_PROTOCOL,
 };
 use interprocess::local_socket::{tokio::prelude::*, ListenerOptions};
-#[cfg(windows)]
-use interprocess::local_socket::{GenericNamespaced, ToNsName};
 #[cfg(not(windows))]
 use interprocess::local_socket::{GenericFilePath, ToFsName};
+#[cfg(windows)]
+use interprocess::local_socket::{GenericNamespaced, ToNsName};
 use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -214,7 +214,12 @@ where
             return Ok(());
         }
         Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-            send_err(&tx, None, ErrorBody::new("line_too_long", "line exceeds 1 MiB")).await;
+            send_err(
+                &tx,
+                None,
+                ErrorBody::new("line_too_long", "line exceeds 1 MiB"),
+            )
+            .await;
             drop(tx);
             let _ = writer_handle.await;
             return Ok(());
@@ -325,8 +330,12 @@ where
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
                 // Line cap exceeded — signal and close the connection
                 // (we can't trust where the next `\n` lands).
-                send_err(&tx, None, ErrorBody::new("line_too_long", "line exceeds 1 MiB"))
-                    .await;
+                send_err(
+                    &tx,
+                    None,
+                    ErrorBody::new("line_too_long", "line exceeds 1 MiB"),
+                )
+                .await;
                 break;
             }
             Err(e) => {
@@ -386,8 +395,7 @@ async fn dispatch(
 
     match req.op.as_str() {
         OP_LIST_TASKS => {
-            let args: ops::list_tasks::Args =
-                serde_json::from_value(req.args).map_err(bad_args)?;
+            let args: ops::list_tasks::Args = serde_json::from_value(req.args).map_err(bad_args)?;
             let filter = args
                 .estado
                 .as_deref()
@@ -399,8 +407,7 @@ async fn dispatch(
             to_value(&tasks)
         }
         OP_CURRENT_TASK => {
-            let _: ops::current_task::Args =
-                serde_json::from_value(req.args).map_err(bad_args)?;
+            let _: ops::current_task::Args = serde_json::from_value(req.args).map_err(bad_args)?;
             let current: ops::current_task::Result = repo
                 .current_task()
                 .await
@@ -408,8 +415,7 @@ async fn dispatch(
             to_value(&current)
         }
         OP_APPEND_LOG => {
-            let args: ops::append_log::Args =
-                serde_json::from_value(req.args).map_err(bad_args)?;
+            let args: ops::append_log::Args = serde_json::from_value(req.args).map_err(bad_args)?;
             check_id(&args.task_id)?;
             repo.append_log(&args.task_id, &args.text)
                 .await
@@ -423,8 +429,7 @@ async fn dispatch(
             to_value(&ops::append_log::Result { ok: true })
         }
         OP_PROPOSE => {
-            let args: ops::propose::Args =
-                serde_json::from_value(req.args).map_err(bad_args)?;
+            let args: ops::propose::Args = serde_json::from_value(req.args).map_err(bad_args)?;
             let proposta = repo
                 .propose(args)
                 .await
@@ -489,8 +494,7 @@ async fn dispatch(
             to_value(&result)
         }
         OP_LIST_IDEIAS => {
-            let _: ops::list_ideias::Args =
-                serde_json::from_value(req.args).map_err(bad_args)?;
+            let _: ops::list_ideias::Args = serde_json::from_value(req.args).map_err(bad_args)?;
             let ideias = repo
                 .list_ideias()
                 .await
@@ -498,8 +502,7 @@ async fn dispatch(
             to_value(&ideias)
         }
         OP_READ_IDEIA => {
-            let args: ops::read_ideia::Args =
-                serde_json::from_value(req.args).map_err(bad_args)?;
+            let args: ops::read_ideia::Args = serde_json::from_value(req.args).map_err(bad_args)?;
             check_id(&args.id)?;
             let ideia = repo
                 .read_ideia(&args.id)
@@ -548,10 +551,7 @@ async fn dispatch(
             "hello_already_done",
             "hello may only be sent once",
         )),
-        other => Err(ErrorBody::new(
-            "unknown_op",
-            format!("unknown op: {other}"),
-        )),
+        other => Err(ErrorBody::new("unknown_op", format!("unknown op: {other}"))),
     }
 }
 
@@ -568,7 +568,11 @@ async fn create_task_op(
         return Err(ErrorBody::new("bad_args", "project_id is required"));
     }
     {
-        let cfg = deps.state.config.lock().map_err(|e| internal(&e.to_string()))?;
+        let cfg = deps
+            .state
+            .config
+            .lock()
+            .map_err(|e| internal(&e.to_string()))?;
         if !cfg.projects.iter().any(|p| p.id == pid) {
             return Err(ErrorBody::new(
                 "unknown_project",
@@ -644,7 +648,11 @@ async fn create_ideia_op(
         return Err(ErrorBody::new("bad_args", "project_id is required"));
     }
     {
-        let cfg = deps.state.config.lock().map_err(|e| internal(&e.to_string()))?;
+        let cfg = deps
+            .state
+            .config
+            .lock()
+            .map_err(|e| internal(&e.to_string()))?;
         if !cfg.projects.iter().any(|p| p.id == pid) {
             return Err(ErrorBody::new(
                 "unknown_project",
@@ -679,12 +687,9 @@ async fn create_ideia_op(
 /// in `feito` directly. We append the summary as a log line and move
 /// the task to `aguardando_revisao`, so the human still has final say.
 async fn done_op(repo: &dyn Repository, args: &ops::done::Args) -> Result<(), ErrorBody> {
-    repo.append_log(
-        &args.task_id,
-        &format!("[done request] {}", args.summary),
-    )
-    .await
-    .map_err(|e| not_found_or_internal(&e))?;
+    repo.append_log(&args.task_id, &format!("[done request] {}", args.summary))
+        .await
+        .map_err(|e| not_found_or_internal(&e))?;
     repo.set_estado(&args.task_id, cadenza_proto::Estado::AguardandoRevisao)
         .await
         .map_err(|e| not_found_or_internal(&e))?;
@@ -726,9 +731,7 @@ fn check_hello(
         Ok(true) => {}
         Ok(false) => return Err(ErrorBody::new("auth_failed", "invalid token")),
         Err(e) => {
-            return Err(
-                ErrorBody::new("internal", format!("auth check failed: {e}")).retryable(),
-            )
+            return Err(ErrorBody::new("internal", format!("auth check failed: {e}")).retryable())
         }
     }
     Ok(ops::hello::Result {

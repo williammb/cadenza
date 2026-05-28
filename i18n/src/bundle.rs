@@ -160,7 +160,9 @@ fn build_bundle(locale: &str) -> Bundle {
 
     if let Some(dir) = LOCALES_DIR.get_dir(locale) {
         for file in dir.files() {
-            let Some(s) = file.contents_utf8() else { continue };
+            let Some(s) = file.contents_utf8() else {
+                continue;
+            };
             match FluentResource::try_new(s.to_string()) {
                 Ok(res) => {
                     if let Err(errs) = bundle.add_resource(Arc::new(res)) {
@@ -258,7 +260,10 @@ mod tests {
         let i18n = I18n::new("pt-BR");
         let dict = i18n.dump_namespace_strings("ui");
         assert!(dict.contains_key("board-column-todo"));
-        assert_eq!(dict.get("board-column-todo").map(String::as_str), Some("A Fazer"));
+        assert_eq!(
+            dict.get("board-column-todo").map(String::as_str),
+            Some("A Fazer")
+        );
     }
 
     #[test]
