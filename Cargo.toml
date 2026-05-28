@@ -30,7 +30,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 chrono = { version = "0.4", default-features = false, features = ["serde", "std", "clock"] }
 fs2 = "0.4"
 dirs = "5"
-fluent-bundle = "0.15"
+fluent-bundle = "0.16"
 intl-memoizer = "0.5"
 unic-langid = "0.9"
 include_dir = "0.7"
