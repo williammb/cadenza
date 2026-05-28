@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Cadenza IPC wire protocol (NDJSON) — shared types between app and CLI"
+publish = false
 
 [lib]
 path = "src/lib.rs"

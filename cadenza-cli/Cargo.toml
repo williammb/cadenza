@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Cadenza CLI — used by AI agents to drive tasks over the local socket"
+publish = false
 
 [[bin]]
 name = "cadenza-cli"

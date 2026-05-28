@@ -5,6 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Cadenza Fluent i18n bundle loader + locale resolver — shared between app and CLI"
+publish = false
 
 [lib]
 path = "src/lib.rs"

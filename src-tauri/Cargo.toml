@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 description = "Cadenza desktop app — Tauri 2.x tray app for AI agent task management"
 default-run = "cadenza"
+publish = false
 
 [lib]
 name = "cadenza_lib"
