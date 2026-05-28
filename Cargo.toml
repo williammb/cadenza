@@ -40,7 +40,7 @@ portable-pty = "0.8"
 interprocess = { version = "2", features = ["tokio"] }
 rand = "0.8"
 base64 = "0.22"
-sqlx = { version = "0.8", default-features = false, features = [
+sqlx = { version = "0.9", default-features = false, features = [
     "sqlite",
     "postgres",
     "runtime-tokio",
