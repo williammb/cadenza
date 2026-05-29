@@ -58,6 +58,7 @@ pub struct RemoveOpts {
 pub enum CliAgent {
     Claude,
     Codex,
+    Antigravity,
 }
 
 impl From<CliAgent> for Agent {
@@ -65,6 +66,7 @@ impl From<CliAgent> for Agent {
         match a {
             CliAgent::Claude => Agent::Claude,
             CliAgent::Codex => Agent::Codex,
+            CliAgent::Antigravity => Agent::Antigravity,
         }
     }
 }
@@ -124,22 +126,26 @@ fn prompt_agents(action: &str) -> Result<Vec<Agent>> {
     let stdin = io::stdin();
     if !stdin.is_terminal() {
         anyhow::bail!(
-            "no --agent given and stdin is not a TTY; pass --agent claude, --agent codex, or --agent claude,codex"
+            "no --agent given and stdin is not a TTY; pass --agent claude, --agent codex, --agent antigravity, or comma-separate (e.g. --agent claude,codex,antigravity)"
         );
     }
     eprintln!("Which agent(s) to {action}?");
     eprintln!("  [1] claude");
     eprintln!("  [2] codex");
-    eprintln!("  [3] both");
+    eprintln!("  [3] antigravity");
+    eprintln!("  [4] all");
     eprint!("> ");
     io::stderr().flush().ok();
     let mut line = String::new();
     stdin.read_line(&mut line)?;
     let trimmed = line.trim();
+    let all = || vec![Agent::Claude, Agent::Codex, Agent::Antigravity];
     match trimmed {
         "1" | "claude" => Ok(vec![Agent::Claude]),
         "2" | "codex" => Ok(vec![Agent::Codex]),
-        "3" | "both" | "all" | "" => Ok(vec![Agent::Claude, Agent::Codex]),
+        "3" | "antigravity" => Ok(vec![Agent::Antigravity]),
+        // "both" kept as a back-compat alias; it now means every agent.
+        "4" | "all" | "both" | "" => Ok(all()),
         other => anyhow::bail!("invalid choice: {other:?}"),
     }
 }

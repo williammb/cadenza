@@ -33,6 +33,9 @@ const modelHint = document.getElementById("start-agent-model-hint");
 const taskBadge = document.getElementById("start-agent-task-badge");
 const resumeBanner = document.getElementById("start-agent-resume-banner");
 const resumeIdEl = document.getElementById("start-agent-resume-id");
+const worktreeInfoEl = document.getElementById("start-agent-worktree-info");
+const branchValEl = document.getElementById("start-agent-branch-val");
+const worktreeValEl = document.getElementById("start-agent-worktree-val");
 const freshBtn = document.getElementById("btn-start-agent-fresh");
 const submitBtn = document.getElementById("btn-start-agent-submit");
 const statusEl = document.getElementById("start-agent-status");
@@ -70,6 +73,7 @@ export async function openStartAgent(targetId, opts = {}) {
   const defaultKind = run?.agent ?? config?.agente?.kind ?? "claude_code";
   kindSel.value = defaultKind;
   updateResumeBanner();
+  loadWorktreeInfo(targetId);
   await applyAgentPresence();
   if (!dialog.open) dialog.showModal();
   await populateModels(defaultKind, run?.model);
@@ -92,6 +96,37 @@ onAgentPresenceRefresh(() => {
 
 export function closeStartAgent() {
   if (dialog.open) dialog.close();
+}
+
+// Read-only display of where the task will run: which branch and worktree
+// the agent gets launched in (see start_task_agent's cwd resolution). Shown
+// for tasks only — ideia decomposition has no worktree association. Reuses
+// `task_worktree_defaults`, whose `current_branch` is the fallback when the
+// task has no stored branch. Bumped per open so a slow response for a
+// previously-opened task can't overwrite the fields of the task now shown.
+let worktreeInfoGen = 0;
+
+async function loadWorktreeInfo(targetId) {
+  const myGen = ++worktreeInfoGen;
+  if (currentMode !== "task") {
+    worktreeInfoEl.hidden = true;
+    return;
+  }
+  branchValEl.textContent = "";
+  worktreeValEl.textContent = "";
+  try {
+    const d = await invoke("task_worktree_defaults", { taskId: targetId });
+    if (myGen !== worktreeInfoGen) return; // a newer open superseded this one
+    branchValEl.textContent = d?.stored?.branch || d?.current_branch || "—";
+    worktreeValEl.textContent =
+      d?.stored?.worktree_path || t("start-agent-worktree-none") || "—";
+    worktreeInfoEl.hidden = false;
+  } catch {
+    if (myGen !== worktreeInfoGen) return;
+    // No project mapping / not a git repo — keep the block hidden rather than
+    // surfacing an error here; the task modal already reports git problems.
+    worktreeInfoEl.hidden = true;
+  }
 }
 
 // Each (modal-open, kind) starts a fresh discovery generation. If the

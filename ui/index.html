@@ -269,6 +269,7 @@
           <select id="settings-agent-kind" name="agent-kind">
             <option value="claude_code" data-i18n="settings-agent-claude">Claude Code</option>
             <option value="codex" data-i18n="settings-agent-codex">Codex</option>
+            <option value="antigravity" data-i18n="settings-agent-antigravity">Antigravity</option>
           </select>
           <label class="field">
             <span data-i18n="settings-agent-command">Comando (opcional)</span>
@@ -476,6 +477,10 @@
                 <input type="checkbox" id="skill-agent-codex" checked />
                 <span data-i18n="settings-skills-agent-codex">Codex</span>
               </label>
+              <label class="skill-check">
+                <input type="checkbox" id="skill-agent-antigravity" checked />
+                <span data-i18n="settings-skills-agent-antigravity">Antigravity</span>
+              </label>
             </fieldset>
 
             <fieldset class="skill-group">
@@ -624,6 +629,10 @@
 
         <fieldset class="worktree-section" id="task-worktree-section" hidden>
           <legend data-i18n="task-worktree-legend">Worktree / Ramo</legend>
+          <label class="field field-checkbox">
+            <input type="checkbox" id="task-use-worktree" />
+            <span data-i18n="task-worktree-use">Usar worktree</span>
+          </label>
           <label class="field">
             <span data-i18n="task-field-branch">Ramo</span>
             <input type="text" id="task-branch" autocomplete="off" spellcheck="false" />
@@ -736,11 +745,23 @@
           >Iniciar nova</button>
         </div>
 
+        <div id="start-agent-worktree-info" class="worktree-info" hidden>
+          <span class="modal-hint">
+            <span data-i18n="start-agent-branch-label">Ramo</span>:
+            <code id="start-agent-branch-val"></code>
+          </span>
+          <span class="modal-hint">
+            <span data-i18n="start-agent-worktree-label">Worktree</span>:
+            <code id="start-agent-worktree-val"></code>
+          </span>
+        </div>
+
         <label class="field">
           <span data-i18n="start-agent-kind-label">Plataforma</span>
           <select id="start-agent-kind">
             <option value="claude_code" data-i18n="settings-agent-claude">Claude Code</option>
             <option value="codex" data-i18n="settings-agent-codex">Codex</option>
+            <option value="antigravity" data-i18n="settings-agent-antigravity">Antigravity</option>
           </select>
         </label>
 

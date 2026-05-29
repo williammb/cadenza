@@ -36,6 +36,9 @@ pub const DATA_VERSION: u32 = 1;
 pub enum AgenteKind {
     ClaudeCode,
     Codex,
+    /// Antigravity CLI (`agy`) — Google's Gemini-based terminal TUI
+    /// coding agent. Runs interactively under a PTY like the others.
+    Antigravity,
 }
 
 /// Where Cadenza persists tasks + triage. The `files` backend keeps
@@ -278,6 +281,16 @@ mod tests {
             AgenteKind::ClaudeCode
         );
         assert_eq!(cfg.agente.as_ref().unwrap().kind, AgenteKind::Codex);
+    }
+
+    #[test]
+    fn antigravity_kind_roundtrips() {
+        let f = write_tmp(r#"{"data_version":1,"agente":{"kind":"antigravity"}}"#);
+        let cfg = Config::load_from(f.path()).unwrap();
+        assert_eq!(cfg.agente.as_ref().unwrap().kind, AgenteKind::Antigravity);
+        // And serializes back to the snake_case wire form.
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"antigravity\""), "got: {json}");
     }
 
     #[test]

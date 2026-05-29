@@ -46,7 +46,8 @@ impl TaskProjects {
         self.lock().map.clone()
     }
 
-    #[cfg(test)]
+    /// Look up the project a task is mapped to, if any. Used to inherit
+    /// the project when materializing a derived task from a proposal.
     pub fn get(&self, task_id: &str) -> Option<String> {
         self.lock().map.get(task_id).cloned()
     }

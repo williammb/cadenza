@@ -739,6 +739,30 @@ dialog.modal[open] {
 }
 .worktree-section .modal-status { flex: none; }
 
+/* Inline checkbox row (e.g. "Use worktree") — overrides the column .field. */
+.field-checkbox {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+.field-checkbox input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+.field-checkbox > span { text-transform: none; letter-spacing: normal; }
+
+/* Read-only "where will this run" block in the start-agent modal. */
+.worktree-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0.1rem 0 0.2rem;
+}
+.worktree-info code {
+  font-size: 0.78rem;
+  color: var(--fg);
+}
+
 /* ============================= FORM ============================= */
 
 .field {
