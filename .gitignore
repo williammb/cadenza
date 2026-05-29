@@ -39,3 +39,4 @@ Thumbs.db
 # Local planning / review artifacts
 DESIGN-desktop*
 *.patch
+*.diff

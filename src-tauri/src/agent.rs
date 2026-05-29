@@ -103,8 +103,17 @@ fn binary_on_path(name: &str) -> bool {
     let Some(path_var) = std::env::var_os("PATH") else {
         return false;
     };
+    binary_in_path_var(name, &path_var)
+}
+
+/// Search `path_var` (a `PATH`-style list) for an executable named `name`.
+/// Split out from `binary_on_path` so tests can pass a synthetic `PATH`
+/// directly instead of mutating the process-wide env var — that mutation
+/// races other tests in the same binary that resolve binaries from `PATH`
+/// (e.g. the `git` spawns in `git::tests`).
+fn binary_in_path_var(name: &str, path_var: &std::ffi::OsStr) -> bool {
     let exts = path_extensions();
-    for dir in std::env::split_paths(&path_var) {
+    for dir in std::env::split_paths(path_var) {
         if dir.as_os_str().is_empty() {
             continue;
         }
@@ -515,37 +524,22 @@ mod tests {
         let file = dir.path().join(format!("{name}{ext}"));
         fs::write(&file, b"").unwrap();
 
-        let saved = std::env::var_os("PATH");
-        // Safety: tests in this module are single-threaded modifications
-        // of this env var; no other test in this file touches PATH.
-        unsafe {
-            std::env::set_var("PATH", dir.path());
-        }
-        let found = binary_on_path(name);
-        unsafe {
-            match saved {
-                Some(v) => std::env::set_var("PATH", v),
-                None => std::env::remove_var("PATH"),
-            }
-        }
-        assert!(found, "expected to find {name}{ext} in synthetic PATH");
+        // Pass the synthetic PATH directly rather than mutating the
+        // process-wide env var, which would race other tests that resolve
+        // binaries from PATH (e.g. the `git` spawns in `git::tests`).
+        assert!(
+            binary_in_path_var(name, dir.path().as_os_str()),
+            "expected to find {name}{ext} in synthetic PATH"
+        );
     }
 
     #[test]
     fn binary_on_path_returns_false_when_missing() {
         let dir = TempDir::new().unwrap();
-        let saved = std::env::var_os("PATH");
-        unsafe {
-            std::env::set_var("PATH", dir.path());
-        }
-        let found = binary_on_path("cadenza-definitely-not-installed");
-        unsafe {
-            match saved {
-                Some(v) => std::env::set_var("PATH", v),
-                None => std::env::remove_var("PATH"),
-            }
-        }
-        assert!(!found);
+        assert!(!binary_in_path_var(
+            "cadenza-definitely-not-installed",
+            dir.path().as_os_str()
+        ));
     }
 
     #[test]

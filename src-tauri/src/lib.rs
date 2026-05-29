@@ -13,6 +13,7 @@ mod agent;
 mod auth;
 mod commands;
 mod config;
+mod git;
 mod ipc;
 mod models;
 mod notify;
@@ -127,6 +128,10 @@ pub fn run() {
             // task ↔ worktree/branch
             commands::list_task_worktrees,
             commands::set_task_worktree,
+            commands::task_worktree_defaults,
+            commands::create_task_worktree,
+            commands::remove_task_worktree,
+            commands::switch_task_branch,
             // ideias (Inbox)
             commands::list_ideias,
             commands::read_ideia,

@@ -36,6 +36,8 @@ const skillStatusTableBodyEl = document.getElementById("skill-status-table-body"
 const skillProjectPickerEl = document.getElementById("skill-project-picker");
 const skillProjectSelectEl = document.getElementById("skill-project-select");
 const skillProjectEmptyEl = document.getElementById("skill-project-empty");
+const modelsBodyEl = document.getElementById("settings-models-body");
+const modelsStatusEl = document.getElementById("settings-models-status");
 
 let currentConfig = blankConfig();
 let _refreshCallback = null;
@@ -126,6 +128,7 @@ function populateForm(cfg) {
   pgBlock.hidden = backend !== "postgres";
 
   renderProjects(cfg.projects ?? []);
+  refreshModelsStatus();
 }
 
 function populatePgForm(pg) {
@@ -245,6 +248,83 @@ function readForm() {
 function setStatus(msg, kind) {
   statusEl.textContent = msg ?? "";
   statusEl.className = "modal-status" + (kind ? ` ${kind}` : "");
+}
+
+// ─────────────────────────── models menu ────────────────────────────
+//
+// Model discovery is the slow (~15 s per agent) `/model` PTY probe. It
+// lives here — triggered explicitly per agent via "Carregar" — instead
+// of in the start-agent modal, which only reads the cached result. The
+// backend persists discovered lists to config.json so they survive
+// restarts (cached_only reads return them instantly).
+
+const MODEL_KIND_LABELS = {
+  claude_code: "settings-skills-agent-claude",
+  codex: "settings-skills-agent-codex",
+};
+
+function setModelsStatus(msg, kind) {
+  modelsStatusEl.textContent = msg ?? "";
+  modelsStatusEl.className = "modal-status" + (kind ? ` ${kind}` : "");
+}
+
+// Render one row per agent kind from the *cached* lists only (no probe),
+// so opening Settings is instant.
+async function refreshModelsStatus() {
+  modelsBodyEl.replaceChildren();
+  for (const kind of ["claude_code", "codex"]) {
+    let entries = [];
+    try {
+      entries = await invoke("list_agent_models", { agentKind: kind, cachedOnly: true });
+    } catch {
+      entries = [];
+    }
+
+    const tr = document.createElement("tr");
+
+    const tdAgent = document.createElement("td");
+    tdAgent.textContent = t(MODEL_KIND_LABELS[kind]);
+
+    const tdCount = document.createElement("td");
+    if (entries.length) {
+      tdCount.textContent = t("settings-models-loaded", { count: entries.length });
+      tdCount.className = "skill-status-yes";
+    } else {
+      tdCount.textContent = t("settings-models-none");
+      tdCount.className = "skill-status-no";
+    }
+
+    const tdCurrent = document.createElement("td");
+    const current = entries.find((m) => m.current);
+    tdCurrent.textContent = current ? current.label || current.id : "—";
+
+    const tdAction = document.createElement("td");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "btn btn-small";
+    btn.textContent = t("settings-models-load") || "Carregar";
+    btn.addEventListener("click", () => loadModelsForKind(kind));
+    tdAction.append(btn);
+
+    tr.append(tdAgent, tdCount, tdCurrent, tdAction);
+    modelsBodyEl.append(tr);
+  }
+}
+
+// Run the discovery probe for one agent kind (refresh=true), then
+// re-render the cached view.
+async function loadModelsForKind(kind) {
+  setModelsStatus(t("settings-models-loading") || "Carregando modelos…");
+  try {
+    await invoke("list_agent_models", { agentKind: kind, refresh: true });
+    setModelsStatus("");
+  } catch (e) {
+    setModelsStatus(
+      typeof e === "string" ? e : t("settings-skills-error", { error: e }),
+      "error",
+    );
+  }
+  await refreshModelsStatus();
 }
 
 // ─────────────────────────── event wiring ───────────────────────────
@@ -640,6 +720,11 @@ document.getElementById("btn-skill-remove").addEventListener("click", () => {
 document.getElementById("btn-skill-refresh").addEventListener("click", async () => {
   setSkillStatus("");
   await refreshSkillStatus();
+});
+
+document.getElementById("btn-models-refresh").addEventListener("click", async () => {
+  setModelsStatus("");
+  await refreshModelsStatus();
 });
 
 skillProjectSelectEl.addEventListener("change", () => {

@@ -30,10 +30,22 @@ const deleteBtn = document.getElementById("btn-delete-task");
 const startBtn = document.getElementById("btn-start-task");
 const statusEl = document.getElementById("task-status");
 
+// Worktree / branch section — edit mode only.
+const worktreeSection = document.getElementById("task-worktree-section");
+const branchEl = document.getElementById("task-branch");
+const worktreePathEl = document.getElementById("task-worktree-path");
+const createWorktreeBtn = document.getElementById("btn-create-worktree");
+const switchBranchBtn = document.getElementById("btn-switch-branch");
+const removeWorktreeBtn = document.getElementById("btn-remove-worktree");
+const worktreeStatusEl = document.getElementById("worktree-status");
+
 let mode = "create"; // "create" | "edit"
 let editingId = null;
 let original = null;
 let onClosedRefresh = null;
+// Bumped on each worktree-defaults load so a stale in-flight response from a
+// previously-opened task can't overwrite the fields of the task now open.
+let worktreeLoadGen = 0;
 
 export function setRefreshCallback(fn) {
   onClosedRefresh = fn;
@@ -52,6 +64,7 @@ export async function openNewTask(prefill = {}) {
   deleteBtn.hidden = true;
   startBtn.hidden = true;
   projectFieldEl.hidden = false;
+  worktreeSection.hidden = true; // no task id yet → nothing to attach a worktree to
   setStatus("");
 
   // Populate the project selector.
@@ -98,8 +111,37 @@ export async function openEditTask(id) {
   deleteBtn.hidden = false;
   startBtn.hidden = false;
   projectFieldEl.hidden = true;
+  worktreeSection.hidden = false;
+  loadWorktreeDefaults(id);
   if (!dialog.open) dialog.showModal();
   tituloEl.focus();
+}
+
+// Pre-fill the worktree section in one round-trip. Branch defaults to the
+// project's current branch (unless the task already has one stored); the
+// worktree path defaults to the suggested sibling path. Git failures
+// (e.g. the project isn't a git repo) leave the fields editable and just
+// show a hint — they don't block editing the rest of the task.
+async function loadWorktreeDefaults(id) {
+  const myGen = ++worktreeLoadGen;
+  setWorktreeStatus("");
+  branchEl.value = "";
+  worktreePathEl.value = "";
+  try {
+    const d = await invoke("task_worktree_defaults", { taskId: id });
+    if (myGen !== worktreeLoadGen) return; // a newer task was opened meanwhile
+    branchEl.value = d?.stored?.branch || d?.current_branch || "";
+    worktreePathEl.value =
+      d?.stored?.worktree_path || d?.suggested_worktree_path || "";
+  } catch (e) {
+    if (myGen !== worktreeLoadGen) return;
+    setWorktreeStatus(t("task-worktree-defaults-error", { error: e }), "error");
+  }
+}
+
+function setWorktreeStatus(msg, kind) {
+  worktreeStatusEl.textContent = msg ?? "";
+  worktreeStatusEl.className = "modal-status" + (kind ? ` ${kind}` : "");
 }
 
 export function closeTaskModal() {
@@ -139,6 +181,69 @@ deleteBtn.addEventListener("click", async () => {
     onClosedRefresh?.();
   } catch (e) {
     setStatus(t("task-error", { error: e }), "error");
+  }
+});
+
+// ─────────────────── worktree / branch actions (edit mode) ───────────────────
+// These run real git in the project repo and keep the modal open so the
+// user can see the result/error and keep working with the branch fields.
+
+createWorktreeBtn.addEventListener("click", async () => {
+  if (mode !== "edit" || !editingId) return;
+  const branch = branchEl.value.trim();
+  const worktreePath = worktreePathEl.value.trim();
+  if (!branch || !worktreePath) {
+    setWorktreeStatus(t("task-worktree-fields-required"), "error");
+    return;
+  }
+  setWorktreeStatus(t("task-worktree-working"));
+  try {
+    const info = await invoke("create_task_worktree", {
+      taskId: editingId,
+      branch,
+      worktreePath,
+    });
+    branchEl.value = info?.branch ?? branch;
+    worktreePathEl.value = info?.worktree_path ?? worktreePath;
+    setWorktreeStatus(t("task-worktree-created"), "ok");
+    onClosedRefresh?.();
+  } catch (e) {
+    setWorktreeStatus(t("task-worktree-error", { error: e }), "error");
+  }
+});
+
+switchBranchBtn.addEventListener("click", async () => {
+  if (mode !== "edit" || !editingId) return;
+  const branch = branchEl.value.trim();
+  if (!branch) {
+    setWorktreeStatus(t("task-worktree-fields-required"), "error");
+    return;
+  }
+  setWorktreeStatus(t("task-worktree-working"));
+  try {
+    const info = await invoke("switch_task_branch", {
+      taskId: editingId,
+      branch,
+    });
+    branchEl.value = info?.branch ?? branch;
+    setWorktreeStatus(t("task-worktree-switched", { branch }), "ok");
+    onClosedRefresh?.();
+  } catch (e) {
+    setWorktreeStatus(t("task-worktree-error", { error: e }), "error");
+  }
+});
+
+removeWorktreeBtn.addEventListener("click", async () => {
+  if (mode !== "edit" || !editingId) return;
+  if (!confirm(t("confirm-remove-worktree"))) return;
+  setWorktreeStatus(t("task-worktree-working"));
+  try {
+    await invoke("remove_task_worktree", { taskId: editingId });
+    worktreePathEl.value = "";
+    setWorktreeStatus(t("task-worktree-removed"), "ok");
+    onClosedRefresh?.();
+  } catch (e) {
+    setWorktreeStatus(t("task-worktree-error", { error: e }), "error");
   }
 });
 

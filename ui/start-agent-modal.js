@@ -28,6 +28,8 @@ const dialog = document.getElementById("start-agent-modal");
 const form = document.getElementById("start-agent-form");
 const kindSel = document.getElementById("start-agent-kind");
 const modelSel = document.getElementById("start-agent-model");
+const modelText = document.getElementById("start-agent-model-text");
+const modelHint = document.getElementById("start-agent-model-hint");
 const taskBadge = document.getElementById("start-agent-task-badge");
 const resumeBanner = document.getElementById("start-agent-resume-banner");
 const resumeIdEl = document.getElementById("start-agent-resume-id");
@@ -69,8 +71,6 @@ export async function openStartAgent(targetId, opts = {}) {
   kindSel.value = defaultKind;
   updateResumeBanner();
   await applyAgentPresence();
-  // Open the modal before kicking off discovery so the user sees the
-  // loading state immediately instead of staring at a frozen card list.
   if (!dialog.open) dialog.showModal();
   await populateModels(defaultKind, run?.model);
 }
@@ -102,29 +102,29 @@ let modelLoadGen = 0;
 
 async function populateModels(kind, preselectedId) {
   const myGen = ++modelLoadGen;
-  modelSel.replaceChildren();
-  const loading = document.createElement("option");
-  loading.value = "";
-  loading.textContent = t("start-agent-model-loading") || "Carregando modelos…";
-  loading.disabled = true;
-  loading.selected = true;
-  modelSel.append(loading);
-  modelSel.disabled = true;
   submitBtn.disabled = true;
 
+  // Read-only, cached lookup — no PTY probe, so this is instant. Model
+  // discovery lives in Settings → Modelos (see settings.js); the task
+  // modal never triggers the slow ~15 s spawn.
   let entries;
   try {
-    entries = await invoke("list_agent_models", { agentKind: kind });
-  } catch (e) {
-    if (myGen !== modelLoadGen) return;
-    modelSel.replaceChildren();
-    modelSel.disabled = true;
-    submitBtn.disabled = false; // let the user cancel; submit guard catches empty model
-    setStatus(typeof e === "string" ? e : t("task-error", { error: e }), "error");
-    return;
+    entries = await invoke("list_agent_models", { agentKind: kind, cachedOnly: true });
+  } catch {
+    entries = [];
   }
   if (myGen !== modelLoadGen) return;
 
+  if (!entries.length) {
+    // Nothing loaded for this platform yet — fall back to a free-text
+    // model id so the user is never blocked, and point them at Settings.
+    showModelText(preselectedId ?? "");
+    submitBtn.disabled = false;
+    setStatus("");
+    return;
+  }
+
+  showModelSelect();
   modelSel.replaceChildren();
   let foundPreselected = false;
   for (const m of entries) {
@@ -157,6 +157,25 @@ async function populateModels(kind, preselectedId) {
   setStatus("");
 }
 
+// Show the dropdown (models are loaded); hide the free-text fallback.
+function showModelSelect() {
+  modelSel.hidden = false;
+  modelSel.disabled = false;
+  modelText.hidden = true;
+  modelHint.hidden = true;
+}
+
+// Show the free-text id input + the "load them in Settings" hint, and
+// hide the (empty) dropdown.
+function showModelText(value) {
+  modelSel.replaceChildren();
+  modelSel.hidden = true;
+  modelSel.disabled = true;
+  modelText.value = value || "";
+  modelText.hidden = false;
+  modelHint.hidden = false;
+}
+
 function updateResumeBanner() {
   const canResume =
     currentRun &&
@@ -179,7 +198,7 @@ function shortenId(id) {
 }
 
 function readModel() {
-  return modelSel.value || "";
+  return (modelText.hidden ? modelSel.value : modelText.value.trim()) || "";
 }
 
 function setStatus(msg, kind) {
@@ -213,11 +232,12 @@ document
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
   if (!currentTaskId) return;
+  // An empty model is allowed: when nothing is loaded (free-text fallback
+  // left blank) we start without a model so the agent falls back to its
+  // own configured default instead of blocking the user — a safety net if
+  // model discovery is broken. The backend omits the --model/-m flag when
+  // the string is empty (see agent::plan_claude_launch / plan_codex_launch).
   const model = readModel();
-  if (!model) {
-    setStatus(t("start-agent-model-required") || "Escolha um modelo.", "error");
-    return;
-  }
   const agentKind = kindSel.value;
   // Hard-block when the picked agent isn't installed. The dropdown
   // already disables non-installed options, but the user's saved

@@ -151,6 +151,13 @@ pub struct Config {
     /// `postgres` block falls back to files with a warning log.
     #[serde(default)]
     pub postgres: Option<PgConfig>,
+
+    /// Per-agent discovered model lists, cached so the ~15 s `/model`
+    /// probe only runs when the user explicitly clicks "Carregar modelos"
+    /// in Settings. Seeds the in-memory `AppState.agent_models` cache at
+    /// startup. `None`/absent until the first discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_models: Option<Vec<crate::models::CachedModels>>,
 }
 
 fn default_data_version() -> u32 {
@@ -168,6 +175,7 @@ impl Default for Config {
             active_project_id: None,
             storage_backend: StorageBackend::default(),
             postgres: None,
+            agent_models: None,
         }
     }
 }

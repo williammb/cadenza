@@ -175,7 +175,7 @@ fn cli_augmented_path() -> Option<String> {
 /// over batch shims), and only wraps with cmd.exe when the resolved
 /// target is a batch file.
 #[cfg(windows)]
-fn resolve_command(command: &str) -> (String, Vec<String>) {
+pub(crate) fn resolve_command(command: &str) -> (String, Vec<String>) {
     use std::env;
     use std::path::Path;
 
@@ -229,8 +229,39 @@ fn resolve_command(command: &str) -> (String, Vec<String>) {
 }
 
 #[cfg(not(windows))]
-fn resolve_command(command: &str) -> (String, Vec<String>) {
+pub(crate) fn resolve_command(command: &str) -> (String, Vec<String>) {
     (command.to_string(), Vec::new())
+}
+
+/// Scan `chunk` for the ConPTY Device-Status-Report query (`ESC[6n`),
+/// tracking partial matches across calls via `state`, and reply with a
+/// cursor-position report (`ESC[1;1R`) through `writer` when the full
+/// sequence is seen. Windows ConPTY withholds the child's output until the
+/// terminal answers this query at boot; xterm.js is meant to answer from the
+/// webview but the reply isn't reliably delivered, so we answer here too (a
+/// duplicate reply is harmless). Unix PTYs never send the query, so this is a
+/// no-op there. `state` must persist across reads — any ESC (re)starts the
+/// match so a stray/aborted escape can't swallow the real query.
+pub(crate) fn answer_dsr_cpr(
+    state: &mut u8,
+    chunk: &[u8],
+    writer: &std::sync::Mutex<Box<dyn Write + Send>>,
+) {
+    for &b in chunk {
+        match (*state, b) {
+            (_, 0x1B) => *state = 1,
+            (1, b'[') => *state = 2,
+            (2, b'6') => *state = 3,
+            (3, b'n') => {
+                if let Ok(mut w) = writer.lock() {
+                    let _ = w.write_all(b"\x1b[1;1R");
+                    let _ = w.flush();
+                }
+                *state = 0;
+            }
+            _ => *state = 0,
+        }
+    }
 }
 
 /// Owned PTY + child handle. The reader is cloned out via
