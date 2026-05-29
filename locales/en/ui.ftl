@@ -14,7 +14,7 @@ ideia-field-project = Project
 ideia-field-body = Free-form notes
 ideia-project-required = Pick a project.
 confirm-delete-ideia = Delete this idea? This cannot be undone.
-task-project-required = Pick an active project before creating a task.
+task-project-required = Pick a project for this task.
 
 topbar-new-task = + New task
 topbar-new-task-short = New task
@@ -51,6 +51,8 @@ settings-agent-kind = Kind
 settings-agent-claude = Claude Code
 settings-agent-codex = Codex
 settings-agent-command = Command (optional, overrides PATH)
+settings-agent-not-installed = (not installed)
+settings-agent-not-installed-tooltip = Couldn't find this agent. We looked for the CLI binary on PATH and for its config folder under your home directory. Install the CLI or run it at least once before using it here.
 settings-saved = Settings saved.
 settings-save-error = Save failed: { $error }
 
@@ -118,6 +120,8 @@ settings-skills-project-required = Pick a project before installing/removing at 
 task-modal-title-new = New task
 task-modal-title-edit = Edit task
 task-field-titulo = Title
+task-field-project = Project
+task-project-placeholder = — Select project —
 task-field-estado = State
 task-field-body = Description (markdown)
 task-error = Error: { $error }
@@ -160,9 +164,8 @@ card-start-resume-aria = Resume saved conversation
 start-agent-title = Start agent
 start-agent-kind-label = Platform
 start-agent-model-label = Model
-start-agent-model-other = Other…
-start-agent-model-other-label = Model identifier
-start-agent-model-other-placeholder = e.g. claude-opus-4-7
+start-agent-model-loading = Loading models…
+start-agent-model-saved = saved
 start-agent-model-required = Pick a model.
 start-agent-resume-banner = Resume saved conversation
 start-agent-fresh = Start new
@@ -171,12 +174,10 @@ start-agent-action-start = Start
 start-agent-action-resume = Resume
 start-agent-launching = Starting agent…
 
-model-claude-opus-4-7 = Claude Opus 4.7
-model-claude-sonnet-4-6 = Claude Sonnet 4.6
-model-claude-haiku-4-5 = Claude Haiku 4.5
-model-gpt-5-5 = gpt-5.5
-model-gpt-5-4 = gpt-5.4
-model-gpt-5-4-mini = gpt-5.4-mini
-model-gpt-5-3-codex = gpt-5.3-codex
-model-gpt-5-3-codex-spark = gpt-5.3-codex-spark
-model-gpt-5-2 = gpt-5.2
+# Non-blocking banner at the top of the window when the updater finds
+# a new release. The same strings feed the OS notification fired by
+# notify::show_info — `dump_namespace_strings("ui")` already covers
+# notify because the Fluent bundle merges every .ftl in the locale.
+update-available-title = Update available
+update-available-body = A new version of Cadenza is ready.
+update-restart-now = Restart now

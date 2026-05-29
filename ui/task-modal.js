@@ -22,6 +22,8 @@ const form = document.getElementById("task-form");
 const titleEl = document.getElementById("task-modal-title");
 const idBadge = document.getElementById("task-id-badge");
 const tituloEl = document.getElementById("task-titulo");
+const projectFieldEl = document.getElementById("task-project-field");
+const projectEl = document.getElementById("task-project");
 const estadoEl = document.getElementById("task-estado");
 const bodyEl = document.getElementById("task-body");
 const deleteBtn = document.getElementById("btn-delete-task");
@@ -32,9 +34,6 @@ let mode = "create"; // "create" | "edit"
 let editingId = null;
 let original = null;
 let onClosedRefresh = null;
-// Carried from openNewTask({ projectId }) so the create flow can bind
-// the freshly-minted task to the active project in one transaction.
-let pendingProjectId = null;
 
 export function setRefreshCallback(fn) {
   onClosedRefresh = fn;
@@ -44,7 +43,6 @@ export async function openNewTask(prefill = {}) {
   mode = "create";
   editingId = null;
   original = null;
-  pendingProjectId = prefill.projectId ?? null;
   titleEl.textContent = t("task-modal-title-new");
   idBadge.hidden = true;
   idBadge.textContent = "";
@@ -53,7 +51,28 @@ export async function openNewTask(prefill = {}) {
   bodyEl.value = prefill.body ?? "";
   deleteBtn.hidden = true;
   startBtn.hidden = true;
+  projectFieldEl.hidden = false;
   setStatus("");
+
+  // Populate the project selector.
+  let projects = [];
+  try {
+    const cfg = await invoke("get_config");
+    projects = cfg?.projects ?? [];
+  } catch (_) {}
+  projectEl.replaceChildren();
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = t("task-project-placeholder");
+  projectEl.append(placeholder);
+  for (const p of projects) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name;
+    projectEl.append(opt);
+  }
+  projectEl.value = prefill.projectId ?? "";
+
   if (!dialog.open) dialog.showModal();
   tituloEl.focus();
 }
@@ -78,6 +97,7 @@ export async function openEditTask(id) {
   bodyEl.value = task.body ?? "";
   deleteBtn.hidden = false;
   startBtn.hidden = false;
+  projectFieldEl.hidden = true;
   if (!dialog.open) dialog.showModal();
   tituloEl.focus();
 }
@@ -133,10 +153,8 @@ form.addEventListener("submit", async (e) => {
   const body = bodyEl.value;
 
   if (mode === "create") {
-    // Toda task precisa de projeto. Se a UI não passou um projectId
-    // no prefill (topbar em "Todos os projetos"), bloqueia a criação
-    // com mensagem clara — o backend rejeitaria de qualquer forma.
-    if (!pendingProjectId) {
+    const projectId = projectEl.value || null;
+    if (!projectId) {
       setStatus(t("task-project-required"), "error");
       return;
     }
@@ -146,7 +164,7 @@ form.addEventListener("submit", async (e) => {
       const id = await invoke("next_task_id");
       await invoke("create_task", {
         task: { id, titulo, estado, responsavel: DEFAULT_RESPONSAVEL, body },
-        projectId: pendingProjectId,
+        projectId,
       });
       closeTaskModal();
       onClosedRefresh?.();

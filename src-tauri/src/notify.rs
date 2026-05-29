@@ -26,7 +26,7 @@ use crate::commands::AppState;
 /// Show a notification announcing a pending proposal. Uses the current
 /// active locale's strings from `notification-proposal-{title,body}`.
 pub fn show_proposta_pendente(app: &AppHandle, proposta: &Proposta) -> Result<()> {
-    let state = app.state::<AppState>();
+    let state = app.state::<std::sync::Arc<AppState>>();
     let i18n = state
         .i18n
         .lock()
@@ -50,7 +50,7 @@ pub fn show_proposta_pendente(app: &AppHandle, proposta: &Proposta) -> Result<()
 
 /// Generic informational notification (e.g. "update available").
 pub fn show_info(app: &AppHandle, title_key: &str, body_key: &str) -> Result<()> {
-    let state = app.state::<AppState>();
+    let state = app.state::<std::sync::Arc<AppState>>();
     let i18n = state
         .i18n
         .lock()

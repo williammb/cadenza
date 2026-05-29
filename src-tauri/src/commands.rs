@@ -26,6 +26,7 @@ use crate::store::{
     Task,
 };
 use crate::terminal::TerminalSession;
+use crate::worktrees::{TaskWorktrees, WorktreeInfo};
 
 /// Tauri-managed app state.
 ///
@@ -46,9 +47,23 @@ pub struct AppState {
     /// id). Persists to `~/.cadenza/task-runs.json`. Drives the
     /// "Iniciar" vs "Continuar" decision in the UI.
     pub task_runs: Arc<TaskRuns>,
+    /// task_id → worktree/branch side mapping. Lives in
+    /// `~/.cadenza/task-worktrees.json` — keeps the YAML frontmatter
+    /// format frozen for Node.js compat.
+    pub task_worktrees: Arc<TaskWorktrees>,
     /// AppHandle for emitting events (e.g. `task_run_changed` from the
     /// async Codex-uuid capture task). Set once during `setup()`.
     pub app_handle: Mutex<Option<tauri::AppHandle>>,
+    /// Per-agent cache of the `/model` menu entries. Populated lazily by
+    /// `list_agent_models` (each call spawns the agent's CLI under a PTY
+    /// and parses the rendered menu — ~10-15 s, so the result is
+    /// memoized for the rest of the process lifetime). `refresh=true`
+    /// on the command bypasses the cache, after which the new list
+    /// replaces the old one.
+    /// Keyed by `(kind, resolved command)` so changing the
+    /// `config.agente.command` override invalidates the cache instead of
+    /// returning a list discovered from the previous binary.
+    pub agent_models: Mutex<HashMap<(AgenteKind, String), Vec<crate::models::ModelEntry>>>,
     /// Monotonic counter bumped by the tray "Revoke CLI token" handler.
     /// IPC connections capture the current value at hello-time; each
     /// dispatch checks against the live counter and rejects ops when
@@ -89,6 +104,7 @@ impl AppState {
 
         let task_projects = Arc::new(TaskProjects::load(&home)?);
         let task_runs = Arc::new(TaskRuns::load(&home)?);
+        let task_worktrees = Arc::new(TaskWorktrees::load(&home)?);
 
         // Amarra tasks órfãs ao primeiro projeto. Idempotente.
         ensure_default_project_and_bind_orphans(&config, &task_projects, repo.as_ref())?;
@@ -100,7 +116,9 @@ impl AppState {
             sessions: Mutex::new(HashMap::new()),
             task_projects,
             task_runs,
+            task_worktrees,
             app_handle: Mutex::new(None),
+            agent_models: Mutex::new(HashMap::new()),
             token_epoch: AtomicU64::new(0),
         })
     }
@@ -244,12 +262,17 @@ pub async fn list_tasks(
     estado: Option<String>,
 ) -> Result<Vec<Task>, String> {
     let filter = estado.as_deref().and_then(Estado::parse);
-    state.repo.list_tasks(filter).await.map_err(to_str_err)
+    let tasks = state.repo.list_tasks(filter).await.map_err(to_str_err)?;
+    Ok(tasks
+        .into_iter()
+        .map(|t| state.task_worktrees.enrich(t))
+        .collect())
 }
 
 #[tauri::command]
 pub async fn read_task(state: State<'_, Arc<AppState>>, id: String) -> Result<Task, String> {
-    state.repo.read_task(&id).await.map_err(to_str_err)
+    let task = state.repo.read_task(&id).await.map_err(to_str_err)?;
+    Ok(state.task_worktrees.enrich(task))
 }
 
 /// Compute the next sequential task id (`T-<n>`) by scanning existing
@@ -357,6 +380,9 @@ pub async fn delete_task(state: State<'_, Arc<AppState>>, id: String) -> Result<
     if let Err(e) = state.task_runs.forget(&id) {
         tracing::warn!(error = ?e, task = %id, "task_runs.forget failed");
     }
+    if let Err(e) = state.task_worktrees.forget(&id) {
+        tracing::warn!(error = ?e, task = %id, "task_worktrees.forget failed");
+    }
     Ok(())
 }
 
@@ -385,6 +411,40 @@ pub fn set_task_project(
     state
         .task_projects
         .set(&task_id, project_id.as_deref())
+        .map_err(to_str_err)
+}
+
+/// Snapshot of every task→worktree/branch mapping. Currently unused by
+/// the board — `list_tasks`/`read_task`/`current_task` already enrich
+/// each task with `worktree_path`/`branch` inline (see
+/// `TaskWorktrees::enrich`), so there is no client-side join. Kept as a
+/// command for a future board view that needs the mapping standalone;
+/// do not remove the inline enrichment on the assumption the UI joins here.
+#[tauri::command]
+pub fn list_task_worktrees(
+    state: State<'_, Arc<AppState>>,
+) -> Result<HashMap<String, WorktreeInfo>, String> {
+    Ok(state.task_worktrees.snapshot())
+}
+
+/// Set (or clear) the worktree/branch for a task. Passing both as
+/// `None` removes the entry.
+#[tauri::command]
+pub fn set_task_worktree(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+    worktree_path: Option<String>,
+    branch: Option<String>,
+) -> Result<(), String> {
+    state
+        .task_worktrees
+        .set(
+            &task_id,
+            WorktreeInfo {
+                worktree_path,
+                branch,
+            },
+        )
         .map_err(to_str_err)
 }
 
@@ -422,7 +482,8 @@ pub async fn set_titulo(
 /// CLI's `cadenza current` maps here.
 #[tauri::command]
 pub async fn current_task(state: State<'_, Arc<AppState>>) -> Result<Option<Task>, String> {
-    state.repo.current_task().await.map_err(to_str_err)
+    let task = state.repo.current_task().await.map_err(to_str_err)?;
+    Ok(task.map(|t| state.task_worktrees.enrich(t)))
 }
 
 // ───────────────────────── triage ─────────────────────────
@@ -704,6 +765,41 @@ pub fn get_config(state: State<'_, Arc<AppState>>) -> Result<Config, String> {
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
     tracing::info!("restart requested from UI");
+    app.restart();
+}
+
+/// Manually poll the updater. Same code path as the 24h ticker — emits
+/// `update_available` + OS notification when there's a newer build.
+/// Invoked by the UI when the user wants to check on demand (e.g. from
+/// a settings entry or after dismissing the banner).
+#[tauri::command]
+pub async fn check_update(app: tauri::AppHandle) {
+    crate::check_for_updates(&app).await;
+}
+
+/// Download the pending release and relaunch the app into it. Backs
+/// the "Reiniciar agora" button on the `update_available` banner; on
+/// success the call site never observes the `Ok(())` because
+/// `app.restart()` exits the process. Surfaces an `Err` when the
+/// updater handle is missing, the check itself failed, or there's
+/// nothing to install (i.e. the banner was stale because the user
+/// caught up via the tray "Reiniciar" item already).
+#[tauri::command]
+pub async fn install_update_and_restart(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(to_str_err)?;
+    let update = updater
+        .check()
+        .await
+        .map_err(to_str_err)?
+        .ok_or_else(|| "no update available".to_string())?;
+    let version = update.version.clone();
+    tracing::info!(version = %version, "downloading update");
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(to_str_err)?;
+    tracing::info!(version = %version, "update installed; restarting");
     app.restart();
 }
 
@@ -1316,6 +1412,73 @@ pub fn skill_status(project_path: Option<String>) -> Result<Vec<skills_core::Sta
 #[tauri::command]
 pub fn app_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
+}
+
+#[tauri::command]
+pub fn list_installed_agents() -> Vec<agent::AgentPresence> {
+    agent::list_installed_agents()
+}
+
+/// Discover the models the agent's CLI exposes via its interactive
+/// `/model` menu. The first call per `agent_kind` per process spawns
+/// the binary under a PTY, drives it to the menu, parses the rendered
+/// frame, and caches the result. Subsequent calls return the cached
+/// list. `refresh=true` skips the cache and re-runs discovery.
+///
+/// We honor the *global* `Config.agente.command` override (project-level
+/// overrides aren't applied here — model availability is per agent
+/// install, not per project — and threading a task_id through this
+/// surface would be a larger change for marginal correctness).
+#[tauri::command]
+pub async fn list_agent_models(
+    state: State<'_, Arc<AppState>>,
+    agent_kind: AgenteKind,
+    refresh: Option<bool>,
+) -> Result<Vec<crate::models::ModelEntry>, String> {
+    let command = {
+        let cfg = state.config.lock().map_err(to_str_err)?;
+        cfg.agente
+            .as_ref()
+            .and_then(|a| a.command.clone())
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|| agent::default_command(agent_kind).to_string())
+    };
+    let cache_key = (agent_kind, command.clone());
+    if !refresh.unwrap_or(false) {
+        if let Some(cached) = state
+            .agent_models
+            .lock()
+            .map_err(to_str_err)?
+            .get(&cache_key)
+        {
+            return Ok(cached.clone());
+        }
+    }
+    // `discover_models` blocks ~10-15 s on PTY warmup + tail. Move it
+    // off the tauri runtime so command dispatch (and the UI) stay
+    // responsive.
+    let cmd_for_spawn = command.clone();
+    let entries = tauri::async_runtime::spawn_blocking(move || {
+        // predismiss_enters=1: claude shows a trust dialog on first
+        // launch in an unknown cwd; codex shows an onboarding step.
+        // One Enter handles both with no false negative on already-
+        // trusted setups (the extra Enter becomes a no-op at the prompt).
+        crate::models::discover_models(&cmd_for_spawn, agent_kind, 8, 6, 1)
+    })
+    .await
+    .map_err(to_str_err)?
+    .map_err(|e| format!("discover_models({command}): {e}"))?;
+    if entries.is_empty() {
+        return Err(format!(
+            "no models parsed from `{command}` — the agent's `/model` menu likely changed shape; please report this"
+        ));
+    }
+    state
+        .agent_models
+        .lock()
+        .map_err(to_str_err)?
+        .insert(cache_key, entries.clone());
+    Ok(entries)
 }
 
 #[cfg(test)]

@@ -15,7 +15,7 @@ use cadenza_proto::{
     ops::{
         self, OP_APPEND_LOG, OP_AWAIT_DECISION, OP_BYE, OP_CREATE_IDEIA, OP_CREATE_TASK,
         OP_CURRENT_TASK, OP_DELETE_IDEIA, OP_DONE, OP_HELLO, OP_LIST_IDEIAS, OP_LIST_TASKS,
-        OP_PROPOSE, OP_READ_IDEIA, OP_SET_IDEIA_STATUS,
+        OP_PROPOSE, OP_READ_IDEIA, OP_SET_IDEIA_STATUS, OP_SET_TASK_WORKTREE,
     },
     wire::{ErrorBody, Event, Request, Response},
     Decisao, DecisaoRegistro, Ideia, IdeiaStatus, MAX_PROTOCOL, MIN_PROTOCOL,
@@ -404,7 +404,11 @@ async fn dispatch(
                 .list_tasks(filter)
                 .await
                 .map_err(|e| not_found_or_internal(&e))?;
-            to_value(&tasks)
+            let enriched: Vec<_> = tasks
+                .into_iter()
+                .map(|t| deps.state.task_worktrees.enrich(t))
+                .collect();
+            to_value(&enriched)
         }
         OP_CURRENT_TASK => {
             let _: ops::current_task::Args = serde_json::from_value(req.args).map_err(bad_args)?;
@@ -412,7 +416,24 @@ async fn dispatch(
                 .current_task()
                 .await
                 .map_err(|e| not_found_or_internal(&e))?;
-            to_value(&current)
+            let enriched = current.map(|t| deps.state.task_worktrees.enrich(t));
+            to_value(&enriched)
+        }
+        OP_SET_TASK_WORKTREE => {
+            let args: ops::set_task_worktree::Args =
+                serde_json::from_value(req.args).map_err(bad_args)?;
+            check_id(&args.task_id)?;
+            deps.state
+                .task_worktrees
+                .set(
+                    &args.task_id,
+                    crate::worktrees::WorktreeInfo {
+                        worktree_path: args.worktree_path,
+                        branch: args.branch,
+                    },
+                )
+                .map_err(|e| internal(&e.to_string()))?;
+            to_value(&ops::set_task_worktree::Result { ok: true })
         }
         OP_APPEND_LOG => {
             let args: ops::append_log::Args = serde_json::from_value(req.args).map_err(bad_args)?;
@@ -606,6 +627,8 @@ async fn create_task_op(
         estado: cadenza_proto::Estado::AFazer,
         responsavel: "humano".to_string(),
         body: args.body.clone(),
+        worktree_path: None,
+        branch: None,
     };
     deps.state
         .repo

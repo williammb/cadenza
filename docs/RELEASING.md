@@ -121,3 +121,90 @@ cargo tauri signer verify \
   --pub-key "$(cargo tauri signer generate --print-public-key ~/.cadenza-updater.key)" \
   Cadenza_0.1.4_x64-setup.exe
 ```
+
+---
+
+## Rollback verification
+
+`tauri-plugin-updater` does not watch for boot crashes and does not
+revert to the previous version on its own. Recovery from a bad release
+is **manual** on both ends: pull the bad release server-side so new
+clients stop being offered it, and reinstall the previous version
+client-side for users who already updated.
+
+### Server-side: pull the bad release
+
+When you discover that `vX.Y.Z` is broken:
+
+1. **Demote the broken GitHub Release.** Edit it on the Releases page
+   and either mark it *Draft* or *Pre-release*, or delete it. The
+   `/releases/latest/download/latest.json` redirect always resolves to
+   the most recent non-draft, non-pre-release release, so demoting the
+   bad one immediately falls the redirect back to the previous
+   release's `latest.json`. `check_for_updates` in
+   `src-tauri/src/lib.rs` will then see the older version and stop
+   offering the update to new clients.
+2. **(Optional) delete the tag** — `git push origin :refs/tags/vX.Y.Z`.
+   This only tidies the tag list; artifacts are attached to the Release,
+   not the tag, and running clients are unaffected.
+3. **Cut a fix release.** Bump `Cargo.toml` to `vX.Y.Z+1` with the fix
+   and follow the normal release flow. The new `latest.json` will
+   offer the fix to anyone still on the bad version — *if* their
+   install launches long enough to receive the prompt.
+
+CDN/edge caches on GitHub downloads can briefly serve the demoted
+`latest.json` after step 1; allow a few minutes before declaring the
+rollback effective.
+
+### Client-side: manual reinstall
+
+Users whose installed `vX.Y.Z` crashes before the in-app update prompt
+fires cannot receive a fix automatically — they have to reinstall the
+previous version themselves. User data in `~/.cadenza/` survives.
+
+- **Windows** — *Settings → Apps → Cadenza → Uninstall*, then download
+  `Cadenza_X.Y.(Z-1)_x64-setup.exe` from the GitHub Releases page and
+  run it.
+- **macOS** — Move `Cadenza.app` to Trash, download the previous
+  `.dmg`, reinstall.
+- **Linux** — Replace the AppImage with the previous version's binary.
+
+> AppImage and DMG bundles are not produced yet (Phase 5 partial);
+> Windows is the only platform with a published artifact today.
+
+### Rehearsing the procedure
+
+**Do not rehearse on the live `williammb/cadenza` repo.** Any tag pushed
+there above the current version will publish a broken installer to real
+users through the `endpoints` URL in `src-tauri/tauri.conf.json`. Use a
+throwaway fork instead:
+
+1. Fork the repo to a scratch account and clone it.
+2. In the fork's checkout, temporarily point the `endpoints` array in
+   `src-tauri/tauri.conf.json` at the fork's
+   `/releases/latest/download/latest.json`.
+3. From a known-good commit, tag `v0.0.1-rehearsal`. Let the release
+   workflow build, sign, and publish it.
+4. On the same branch, add `panic!("rollback rehearsal")` as the first
+   line of `run()` in `src-tauri/src/lib.rs`. Tag `v0.0.2-rehearsal`
+   and let the workflow publish it.
+5. Install `v0.0.1-rehearsal` on a test machine. Trigger an update
+   check from the tray, accept the prompt, and confirm
+   `v0.0.2-rehearsal` installs and panics on launch.
+6. Apply the **server-side** procedure to the fork: demote
+   `v0.0.2-rehearsal`. Confirm a fresh download from the fork's
+   `/releases/latest/...` now serves the `v0.0.1-rehearsal` installer
+   and `latest.json`.
+7. Apply the **client-side** procedure on the test machine: uninstall
+   the panicking build and reinstall `v0.0.1-rehearsal`. Confirm the
+   tray comes up on the old version and `~/.cadenza/` data is intact.
+8. Revert the `endpoints` change and delete the fork.
+
+Record the date and the result (pass/fail per step) at the bottom of
+this section after each rehearsal.
+
+#### Rehearsal log
+
+| Date | Operator | Outcome | Notes |
+|------|----------|---------|-------|
+| _pending_ | — | — | Initial rehearsal not yet performed. |

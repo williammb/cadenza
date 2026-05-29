@@ -1,0 +1,4 @@
+# Raw PTY byte captures used as model-parser fixtures. They contain
+# 0x0A bytes that are NOT line endings; EOL conversion would corrupt them
+# and break the tests in models.rs on checkout/CI. Treat as opaque binary.
+*.bin binary

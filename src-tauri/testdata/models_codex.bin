@@ -1,0 +1,180 @@
+[6n[?9001h[?1004h[m]0;C:\Users\wmb96\AppData\Local\OpenAI\Codex\bin\958d608b5e0546a5\codex.exe[?25h[?2004h]0;wmb96[?2026h[?25l[K[2m
+╭───────────────────────────────────────────────────────────────╮[22m[K[2m
+│ [38;5;6m[22m[1m✨ Update available![m [1m0.133.0 -> 0.135.0[22m[2m                       │[22m[K[2m
+│ [22mSee [38;5;6m[4mhttps://github.com/openai/codex[m for installation options.[2m │[22m[K[2m
+│                                                               │[22m[K[2m
+│ [22mSee full release notes:[2m                                       │[22m[K[2m
+│ [38;5;6m[22m[4mhttps://github.com/openai/codex/releases/latest[m[2m               │[22m[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[7;1H[?25h[0 q[?2026l[?25l[40;1H
+[2m[7;1H╰───────────────────────────────────────────────────────────────╯[22m                                                                           
+                                                                                                                                            [2m
+╭───────────────────────────────────────╮[22m                                                                                                   [2m
+│ >_ [22m[1mOpenAI Codex[22m[2m (v0.133.0)            │[22m                                                                                                   [2m
+│                                       │[22m                                                                                                   [2m
+│ model:     [3mloading[23m   [38;5;6m[22m/model[m[2m to change │[22m                                                                                                   [2m
+│ directory: [22m~[2m                          │[22m                                                                                                   [2m
+╰───────────────────────────────────────╯[22m                                                                                                   
+                                                                                                                                            
+                                                                                                                                            [1m
+›[22m [2mSummarize recent commits[22m                                                                                                                  
+                                                                                                                                            
+  [38;2;246;226;183mgpt-5.5 default[m[2m · [38;2;171;223;167m[22m~                                                                                                                       [m
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+                                                                                                                                            
+[17;3H[?25h[?2026h[0 q[?2026l[?25l[8;2H[K[9;42H[K
+[K
+[K
+[K
+[K
+[K[15;2H[K
+[K[17;27H[K[18;2H[K[19;22H[K[17;3H[?25h[?2026h[0 q[?25l[8;2H[K[9;42H[K
+[K
+[K
+[K
+[K
+[K[15;2H[K
+[K[17;27H[K[18;2H[K[19;22H[K[?25h[?2026l[?25l[17;3H[?25h[?2026h[0 q[?25l[8;2H[K[9;42H[K
+[K
+[K
+[K
+[K
+[K[15;2H[K
+[K[17;27H[K[18;2H[K[19;22H[K[?25h[?2026l[?25l[17;3H]0;⠹ wmb96[?25h]0;C:\WINDOWS\system32\cmd.exe ]0;⠸ wmb96[?2026h[0 q[?2026l[?2026h[0 q[?2026l[?2026h[0 q[?2026l[?25l[8;1H[K[2m
+╭─────────────────────────────────────────────╮[22m[K[2m
+│ >_ [22m[1mOpenAI Codex[22m[2m (v0.133.0)                  │[22m[K[2m
+│                                             │[22m[K[2m
+│ model:     [22mgpt-5.5 xhigh[2m   [38;5;6m[22m/model[m[2m to change │[22m[K[2m
+│ directory: [22m~[2m                                │[22m[K[2m
+╰─────────────────────────────────────────────╯[22m[K
+[K
+  [1mTip:[22m GPT-5.5 is now available in Codex. It's our strongest agentic coding model yet, built to reason through large codebases, check       
+  assumptions with tools, and keep going until the work is done.[K
+[K
+  Learn more: https://openai.com/index/introducing-gpt-5-5/[K
+[K
+• [2mStarting MCP servers (1/3): codegraph, codex_apps[22m [2m(0s • esc to interrupt)[22m[K
+[K
+[K[1m
+›[22m [2mSummarize recent commits[22m[K
+[K
+  [38;2;246;226;183mgpt-5.5 xhigh[m[2m · [38;2;171;223;167m[22m~[K[m
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[24;3H[?25h[?2026h[0 q[?25l[20;2H[K[21;76H[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[?25h[?2026l[?25l[24;3H[?25h]0;⠼ wmb96[?2026h[0 q[?2026l[?25l[20;2H[K[21;76H[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[24;3H[?25h[?2026h[0 q[?25l[20;2H[K[21;76H[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[?25h[?2026l[?25l[24;3H[?25h[?2026h[0 q[?25l[20;2H[K[21;76H[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[?25h[?2026l[?25l[24;3H[?25h]0;⠴ wmb96[?2026h[0 q[?2026l[?25l[20;2H[K[21;76H[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[24;3H[?25h[?2026h[0 q[?25l[20;2H[K[21;76H[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[?25h[?2026l[?25l[24;3H[?25h[?2026h[0 q[?2026l[?25l[20;2H[K[2m[21;25H2[9Cx_[2Cps[22m [2m(0s • esc to interrup[1C)[22m[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[24;3H[?25h]0;⠦ wmb96[?2026h[0 q[?2026l[?25l[20;2H[K[21;65H[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[24;3H[?25h[?2026h[0 q[?25l[20;2H[K[21;3HS[61C[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[21;4H[?25h[?2026l[?25l[24;3H[?25h[?2026h[0 q[?25l[20;2H[K[1m[21;3HS[22mt[60C[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[21;5H[?25h[?2026l[?25l[24;3H[?25h]0;⠧ wmb96[?2026h[0 q[?2026l[?25l[20;2H[K[1m[21;4Ht[22ma[59C[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[24;3H[?25h[?2026h[0 q[?25l[20;2H[K[1m[21;5Ha[22mr[58C[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[21;7H[?25h[?2026l[?25l[24;3H[?25h[?2026h[0 q[?25l[20;2H[K[1m[21;6Hr[22mt[57C[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[21;8H[?25h[?2026l[?25l[24;3H[?25h]0;⠇ wmb96[?2026h[0 q[?2026l[?25l[20;2H[K[1m[21;7Ht[22mi[56C[K[22;2H[K
+[K[24;27H[K[25;2H[K[26;20H[K[24;3H[?25h]0;wmb96[?2026h[0 q[?2026l[?25l[20;1H[K
+[K[1m
+›[22m [2mSummarize recent commits[22m[K
+[K
+  [38;2;246;226;183mgpt-5.5 xhigh[m[2m · [38;2;171;223;167m[22m~[K[m
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[22;3H[?25h[?2026h[0 q[?25l[20;2H[K
+[K[22;27H[K[23;2H[K[24;20H[K[?25h[?2026l[?25l[22;3H[?25h[?2026h[0 q[?25l[20;2H[K
+[K[22;3H/model[K[23;2H[K[38;5;6m[1m[24;3H/model  choose what model and reasoning effort to use[m[K[?25h[?2026l[?25l[22;9H[?25h[?2026h[?25l[20;1H[?25h[?2026l[K
+[K
+  [1mSelect Model and Effort[22m[K
+  [2mAccess legacy models by running codex -m <model_name> or in your config.toml[22m[K
+[K[38;5;6m[1m
+› 1. gpt-5.5 (current)    Frontier model for complex coding, research, and real-world work.[m[K
+  2. gpt-5.4[14X[2m[14CStrong model for everyday coding.[22m[K
+  3. gpt-5.4-mini[9X[2m[9CSmall, fast, and cost-efficient model for simpler coding tasks.[22m[K
+  4. gpt-5.3-codex        [2mCoding-optimized model.[22m[K
+  5. gpt-5.3-codex-spark  [2mUltra-fast coding model.[22m[K
+  6. gpt-5.2[14X[2m[14COptimized for professional work and long-running agents.[22m[K
+[K
+  [2mPress enter to confirm or esc to go back                                                                                                  [22m
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[?25l[140C

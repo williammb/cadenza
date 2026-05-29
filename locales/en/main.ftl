@@ -15,9 +15,6 @@ notification-action-accept = Accept
 notification-action-reject = Reject
 notification-action-open = Open window
 
-update-available-title = Update available
-update-available-body = A new version of Cadenza is ready. Restart now?
-
 # Prompt injected into the terminal when the agent is started from a
 # task. The agent reads this first message as user input, so it must
 # mention the `cadenza` skill (auto-discovered by Claude Code via its

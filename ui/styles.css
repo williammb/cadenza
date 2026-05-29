@@ -1516,6 +1516,46 @@ textarea::placeholder {
   cursor: grabbing;
 }
 
+/* ─────────────── Update banner ─────────────── */
+
+/* Non-blocking strip between the topbar and the board. Fired by the
+ * `update_available` Tauri event; the "Reiniciar agora" button calls
+ * install_update_and_restart, which downloads the release and exits
+ * the process via app.restart(). */
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.85rem;
+  padding: 0.55rem 1rem;
+  background: var(--warn-bg);
+  border-bottom: 1px solid var(--warn-border);
+  color: var(--warn-fg);
+  font-size: 0.82rem;
+}
+.update-banner[hidden] { display: none; }
+.update-banner-text {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.update-banner-text strong {
+  font-family: var(--font-feature);
+  font-weight: 600;
+}
+.update-banner-version {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  opacity: 0.75;
+}
+.update-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
 /* ─────────────── Reduce motion ─────────────── */
 
 @media (prefers-reduced-motion: reduce) {

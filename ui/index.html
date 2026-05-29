@@ -108,6 +108,35 @@
       </div>
     </header>
 
+    <div
+      id="update-banner"
+      class="update-banner"
+      role="status"
+      aria-live="polite"
+      hidden
+    >
+      <div class="update-banner-text">
+        <strong data-i18n="update-available-title">Atualização disponível</strong>
+        <span data-i18n="update-available-body">Uma nova versão do Cadenza está pronta.</span>
+        <code id="update-banner-version" class="update-banner-version"></code>
+      </div>
+      <div class="update-banner-actions">
+        <button
+          type="button"
+          class="btn btn-primary btn-small"
+          id="btn-update-restart"
+          data-i18n="update-restart-now"
+        >Reiniciar agora</button>
+        <button
+          type="button"
+          class="btn btn-icon"
+          id="btn-update-dismiss"
+          data-i18n-aria-label="action-close"
+          aria-label="Fechar"
+        >×</button>
+      </div>
+    </div>
+
     <main class="board" id="board">
       <section class="column column-inbox" data-tipo="ideia">
         <header>
@@ -537,6 +566,11 @@
           <input type="text" id="task-titulo" required />
         </label>
 
+        <label class="field" id="task-project-field">
+          <span data-i18n="task-field-project">Projeto</span>
+          <select id="task-project"></select>
+        </label>
+
         <label class="field">
           <span data-i18n="task-field-estado">Estado</span>
           <select id="task-estado">
@@ -659,16 +693,6 @@
         <label class="field">
           <span data-i18n="start-agent-model-label">Modelo</span>
           <select id="start-agent-model"></select>
-        </label>
-
-        <label class="field" id="start-agent-model-other-field" hidden>
-          <span data-i18n="start-agent-model-other-label">Identificador do modelo</span>
-          <input
-            type="text"
-            id="start-agent-model-other"
-            data-i18n-placeholder="start-agent-model-other-placeholder"
-            placeholder="claude-opus-4-7"
-          />
         </label>
 
         <footer class="modal-footer">

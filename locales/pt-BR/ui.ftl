@@ -14,7 +14,7 @@ ideia-field-project = Projeto
 ideia-field-body = Descrição livre
 ideia-project-required = Selecione um projeto.
 confirm-delete-ideia = Excluir esta ideia? Esta ação não pode ser desfeita.
-task-project-required = Selecione um projeto ativo antes de criar uma task.
+task-project-required = Selecione um projeto para esta task.
 
 topbar-new-task = + Nova task
 topbar-new-task-short = Nova task
@@ -51,6 +51,8 @@ settings-agent-kind = Tipo
 settings-agent-claude = Claude Code
 settings-agent-codex = Codex
 settings-agent-command = Comando (opcional, sobrescreve o PATH)
+settings-agent-not-installed = (não instalado)
+settings-agent-not-installed-tooltip = Não encontramos esse agente. Procuramos a CLI no PATH e a pasta de configuração na sua home. Instale a CLI ou rode-a ao menos uma vez antes de usar aqui.
 settings-saved = Configurações salvas.
 settings-save-error = Erro ao salvar: { $error }
 
@@ -118,6 +120,8 @@ settings-skills-project-required = Selecione um projeto antes de instalar/remove
 task-modal-title-new = Nova task
 task-modal-title-edit = Editar task
 task-field-titulo = Título
+task-field-project = Projeto
+task-project-placeholder = — Selecionar projeto —
 task-field-estado = Estado
 task-field-body = Descrição (markdown)
 task-error = Erro: { $error }
@@ -160,9 +164,8 @@ card-start-resume-aria = Continuar conversa salva
 start-agent-title = Iniciar agente
 start-agent-kind-label = Plataforma
 start-agent-model-label = Modelo
-start-agent-model-other = Outro…
-start-agent-model-other-label = Identificador do modelo
-start-agent-model-other-placeholder = ex.: claude-opus-4-7
+start-agent-model-loading = Carregando modelos…
+start-agent-model-saved = salvo
 start-agent-model-required = Escolha um modelo.
 start-agent-resume-banner = Continuar conversa salva
 start-agent-fresh = Iniciar nova
@@ -171,12 +174,10 @@ start-agent-action-start = Iniciar
 start-agent-action-resume = Continuar
 start-agent-launching = Iniciando agente…
 
-model-claude-opus-4-7 = Claude Opus 4.7
-model-claude-sonnet-4-6 = Claude Sonnet 4.6
-model-claude-haiku-4-5 = Claude Haiku 4.5
-model-gpt-5-5 = gpt-5.5
-model-gpt-5-4 = gpt-5.4
-model-gpt-5-4-mini = gpt-5.4-mini
-model-gpt-5-3-codex = gpt-5.3-codex
-model-gpt-5-3-codex-spark = gpt-5.3-codex-spark
-model-gpt-5-2 = gpt-5.2
+# Banner não-bloqueante exibido no topo da janela quando o updater
+# detecta uma nova versão. Mesmas strings alimentam a notificação OS
+# disparada por notify::show_info — `dump_namespace_strings("ui")` já
+# cobre o notify porque o bundle Fluent funde todos os .ftl do locale.
+update-available-title = Atualização disponível
+update-available-body = Uma nova versão do Cadenza está pronta.
+update-restart-now = Reiniciar agora

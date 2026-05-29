@@ -341,9 +341,56 @@ async function main() {
     // Idem para mudanças em ideias (criação via CLI, marcar como
     // destrinchada quando todas as tasks da decomposição foram criadas).
     await listen("ideias_changed", renderBoard);
+    // `check_for_updates` em lib.rs dispara este evento com a string da
+    // nova versão como payload. O banner é não-bloqueante e fica até
+    // o usuário clicar "Reiniciar agora" ou "×".
+    await listen("update_available", (e) => {
+      const version = typeof e?.payload === "string" ? e.payload : "";
+      showUpdateBanner(version);
+    });
   } catch (e) {
     console.warn("event subscribe failed", e);
   }
+  wireUpdateBanner();
+}
+
+// Version the user explicitly dismissed. The 24h ticker (and manual
+// check_update) re-emit `update_available` for the same pending build;
+// without this, dismissing the banner only hides it until the next
+// poll re-shows it for a version the user already waved off.
+let dismissedUpdateVersion = null;
+
+function showUpdateBanner(version) {
+  const banner = document.getElementById("update-banner");
+  if (!banner) return;
+  if (version && version === dismissedUpdateVersion) return;
+  const tag = document.getElementById("update-banner-version");
+  if (tag) tag.textContent = version ? `v${version}` : "";
+  banner.dataset.version = version || "";
+  banner.hidden = false;
+}
+
+function wireUpdateBanner() {
+  const banner = document.getElementById("update-banner");
+  const restartBtn = document.getElementById("btn-update-restart");
+  const dismissBtn = document.getElementById("btn-update-dismiss");
+  if (!banner || !restartBtn || !dismissBtn) return;
+  restartBtn.addEventListener("click", async () => {
+    restartBtn.disabled = true;
+    try {
+      // App relaunches mid-call; the promise never resolves in the
+      // happy path. A rejection means the install failed before the
+      // process restart — surface it so the user isn't stuck.
+      await invoke("install_update_and_restart");
+    } catch (err) {
+      restartBtn.disabled = false;
+      setStatus(`error: ${err}`);
+    }
+  });
+  dismissBtn.addEventListener("click", () => {
+    dismissedUpdateVersion = banner.dataset.version || "";
+    banner.hidden = true;
+  });
 }
 
 main().catch((err) => {

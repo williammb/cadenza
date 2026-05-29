@@ -145,6 +145,8 @@ fn task_from_row(row: &sqlx::postgres::PgRow) -> Result<Task> {
         estado,
         responsavel: row.try_get("responsavel").map_err(map_sqlx)?,
         body: row.try_get("body").map_err(map_sqlx)?,
+        worktree_path: None,
+        branch: None,
     })
 }
 

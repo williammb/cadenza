@@ -48,6 +48,18 @@ pub struct Task {
     /// real serde field so the frontend can read/send it.
     #[serde(default)]
     pub body: String,
+
+    /// Absolute path to the git worktree for this task. Stored in the
+    /// sidecar `~/.cadenza/task-worktrees.json` (not in the YAML
+    /// frontmatter — that format is frozen for Node.js compat). `None`
+    /// when no worktree is associated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+
+    /// Git branch associated with this task. Stored alongside
+    /// `worktree_path` in the sidecar. `None` when not set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
 }
 
 #[cfg(test)]

@@ -31,7 +31,7 @@ fn write_synced(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 /// change; older versions auto-migrate, newer versions refuse to load.
 pub const DATA_VERSION: u32 = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgenteKind {
     ClaudeCode,

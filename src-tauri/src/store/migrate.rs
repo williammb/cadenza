@@ -171,6 +171,8 @@ mod tests {
             estado,
             responsavel: "humano".into(),
             body: format!("body of {id}"),
+            worktree_path: None,
+            branch: None,
         }
     }
 

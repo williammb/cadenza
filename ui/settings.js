@@ -7,6 +7,12 @@
 //   change (don't wait for Save) so the UI reflects the choice live.
 
 import { loadLocale, t } from "./i18n.js";
+import {
+  loadAgentPresence,
+  decorateKindSelect,
+  decorateSkillCheckbox,
+  onAgentPresenceRefresh,
+} from "./agent-presence.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -69,8 +75,35 @@ export async function openSettings() {
   applySkillScopeVisibility();
   // populateForm → renderProjects already repopulates the skill project
   // select and refreshes status; no need to call them again here.
+  await applyAgentPresence();
   if (!dialog.open) dialog.showModal();
 }
+
+async function applyAgentPresence() {
+  // Force a fresh probe: the presence cache lives for the whole app
+  // session, so without this an agent installed since boot would stay
+  // flagged "(not installed)" — and the start-agent hard-block would
+  // keep refusing it — until a full restart.
+  const map = await loadAgentPresence({ force: true });
+  decorateKindSelect(agentKindSelectEl, map);
+  decorateSkillCheckbox(
+    skillAgentClaudeEl,
+    document.querySelector('label[for="skill-agent-claude"] span, #skill-agent-claude + span'),
+    map.get("claude_code"),
+  );
+  decorateSkillCheckbox(
+    skillAgentCodexEl,
+    document.querySelector('label[for="skill-agent-codex"] span, #skill-agent-codex + span'),
+    map.get("codex"),
+  );
+}
+
+// Re-decorate when the locale flips while the modal is open. The
+// translation pass overwrites the option labels, so the "(not
+// installed)" suffix has to be re-stamped each time.
+onAgentPresenceRefresh(() => {
+  if (dialog.open) applyAgentPresence();
+});
 
 export function closeSettings() {
   if (dialog.open) dialog.close();

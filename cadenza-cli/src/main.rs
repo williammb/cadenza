@@ -106,6 +106,17 @@ enum Cmd {
     },
     /// Delete an ideia.
     DeleteIdeia { ideia_id: String },
+    /// Associate a task with a git worktree path and/or branch.
+    /// Calling with no options clears the association.
+    SetWorktree {
+        task_id: String,
+        /// Absolute path to the git worktree directory.
+        #[arg(long, value_name = "PATH")]
+        path: Option<String>,
+        /// Git branch name for this task.
+        #[arg(long, value_name = "BRANCH")]
+        branch: Option<String>,
+    },
     /// Print runtime diagnostics.
     Diag,
     /// Install / remove the Cadenza skill in Claude or Codex.
@@ -238,6 +249,11 @@ async fn run(cli: Cli) -> Result<()> {
             project,
         } => cmd_create_ideia(&mut client, cli.json, titulo, body, project).await?,
         Cmd::DeleteIdeia { ideia_id } => cmd_delete_ideia(&mut client, cli.json, ideia_id).await?,
+        Cmd::SetWorktree {
+            task_id,
+            path,
+            branch,
+        } => cmd_set_worktree(&mut client, cli.json, task_id, path, branch).await?,
         Cmd::Diag => unreachable!(),
         Cmd::Skill(_) => unreachable!(),
     }
@@ -513,6 +529,29 @@ async fn cmd_delete_ideia(client: &mut Client, json: bool, ideia_id: String) -> 
             ops::OP_DELETE_IDEIA,
             ops::delete_ideia::Args { id: ideia_id },
         )
+        .await?;
+    if json {
+        println!("{{\"ok\":true}}");
+    } else {
+        println!("ok");
+    }
+    Ok(())
+}
+
+async fn cmd_set_worktree(
+    client: &mut Client,
+    json: bool,
+    task_id: String,
+    worktree_path: Option<String>,
+    branch: Option<String>,
+) -> Result<()> {
+    let args = cadenza_proto::ops::set_task_worktree::Args {
+        task_id,
+        worktree_path,
+        branch,
+    };
+    let _: cadenza_proto::ops::set_task_worktree::Result = client
+        .request(cadenza_proto::ops::OP_SET_TASK_WORKTREE, args)
         .await?;
     if json {
         println!("{{\"ok\":true}}");

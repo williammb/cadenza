@@ -266,6 +266,8 @@ fn read_file(path: &Path) -> Result<Task> {
         estado: meta.estado,
         responsavel: meta.responsavel,
         body,
+        worktree_path: None,
+        branch: None,
     })
 }
 
@@ -313,6 +315,8 @@ mod tests {
             estado,
             responsavel: "humano".into(),
             body: format!("body of {}", id),
+            worktree_path: None,
+            branch: None,
         }
     }
 

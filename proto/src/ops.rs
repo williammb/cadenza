@@ -32,6 +32,12 @@ pub const OP_CREATE_IDEIA: &str = "create_ideia";
 pub const OP_DELETE_IDEIA: &str = "delete_ideia";
 pub const OP_SET_IDEIA_STATUS: &str = "set_ideia_status";
 
+// Worktree System. Adicionado sob o protocolo atual (sem bump de
+// MIN/MAX_PROTOCOL): o dispatch casa pelo nome da op, não por número de
+// versão negociado, então qualquer par dentro da janela atual pode
+// chamá-la. Se a semântica algum dia exigir negociação, suba MAX_PROTOCOL.
+pub const OP_SET_TASK_WORKTREE: &str = "set_task_worktree";
+
 // ───────── event names
 
 pub const EV_PROPOSTA_PENDENTE: &str = "proposta_pendente";
@@ -252,6 +258,28 @@ pub mod delete_ideia {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Args {
         pub id: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        pub ok: bool,
+    }
+}
+
+// ───────── set_task_worktree
+
+pub mod set_task_worktree {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub task_id: String,
+        /// Absolute path to the git worktree. `None` clears the association.
+        #[serde(default)]
+        pub worktree_path: Option<String>,
+        /// Git branch name. `None` clears the association.
+        #[serde(default)]
+        pub branch: Option<String>,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]

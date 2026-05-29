@@ -14,6 +14,7 @@ mod auth;
 mod commands;
 mod config;
 mod ipc;
+mod models;
 mod notify;
 mod observ;
 mod projects;
@@ -22,6 +23,7 @@ mod secrets;
 mod spawn;
 mod store;
 mod terminal;
+mod worktrees;
 
 use commands::AppState;
 
@@ -122,6 +124,9 @@ pub fn run() {
             commands::list_task_projects,
             commands::set_task_project,
             commands::set_active_project,
+            // task ↔ worktree/branch
+            commands::list_task_worktrees,
+            commands::set_task_worktree,
             // ideias (Inbox)
             commands::list_ideias,
             commands::read_ideia,
@@ -134,10 +139,14 @@ pub fn run() {
             commands::set_pg_password,
             commands::clear_pg_password,
             commands::restart_app,
+            commands::check_update,
+            commands::install_update_and_restart,
             // skills (CLI snippet for Claude / Codex)
             commands::skill_install,
             commands::skill_remove,
             commands::skill_status,
+            commands::list_installed_agents,
+            commands::list_agent_models,
             commands::app_version,
         ])
         .setup(move |app| {
@@ -188,6 +197,27 @@ pub fn run() {
                     if let Err(e) = emit_handle.emit(&event, payload) {
                         tracing::warn!(error = ?e, event = %event, "emit failed");
                     }
+                }
+            });
+
+            // Updater: boot check + 24h recurring poll. `Interval::tick`
+            // resolves immediately on the first call, so we get the boot
+            // check for free without a separate up-front invocation.
+            // Failures (signature mismatch, network down, no release yet)
+            // are warn-level because they're expected in dev / offline
+            // runs and shouldn't drown out real errors.
+            let updater_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let mut ticker = tokio::time::interval(
+                    std::time::Duration::from_secs(60 * 60 * 24),
+                );
+                // Default Burst would replay every missed tick back-to-back
+                // after a multi-day suspend, firing a flurry of checks and
+                // OS notifications at once. Skip collapses them to one.
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    ticker.tick().await;
+                    check_for_updates(&updater_handle).await;
                 }
             });
 
@@ -348,6 +378,40 @@ fn focus_main(app: &tauri::AppHandle) {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
+    }
+}
+
+/// Poll the configured update endpoint once. Emits `update_available`
+/// (with the new version string) to the webview and surfaces an OS
+/// notification when there's something to install — the UI decides
+/// whether to prompt the user; we never auto-install.
+///
+/// Shared between the 24h ticker spawned in `setup()` and the
+/// `check_update` Tauri command (manual trigger from the UI).
+pub(crate) async fn check_for_updates(app: &tauri::AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = match app.updater() {
+        Ok(u) => u,
+        Err(e) => {
+            tracing::warn!(error = ?e, "updater handle unavailable");
+            return;
+        }
+    };
+    match updater.check().await {
+        Ok(Some(update)) => {
+            let version = update.version.clone();
+            tracing::info!(version = %version, "update available");
+            if let Err(e) = app.emit("update_available", &version) {
+                tracing::warn!(error = ?e, "emit update_available");
+            }
+            if let Err(e) =
+                notify::show_info(app, "update-available-title", "update-available-body")
+            {
+                tracing::warn!(error = ?e, "show update notification");
+            }
+        }
+        Ok(None) => tracing::debug!("no update available"),
+        Err(e) => tracing::warn!(error = ?e, "updater check failed"),
     }
 }
 

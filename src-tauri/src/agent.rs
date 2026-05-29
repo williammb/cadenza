@@ -53,6 +53,97 @@ pub fn default_command(kind: AgenteKind) -> &'static str {
     }
 }
 
+/// Per-agent install detection: whether the agent's CLI binary lives
+/// on `PATH` and/or its dotfile directory exists under `$HOME`.
+///
+/// `installed` is `on_path || has_config_dir` — the UI considers the
+/// agent usable if either signal is true. We expose the underlying
+/// signals so the UI can show a tooltip explaining what's missing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct AgentPresence {
+    pub kind: AgenteKind,
+    pub installed: bool,
+    pub on_path: bool,
+    pub has_config_dir: bool,
+}
+
+/// Return install presence for every supported agent. Stable order:
+/// Claude Code, Codex — matches the UI's option order.
+pub fn list_installed_agents() -> Vec<AgentPresence> {
+    [AgenteKind::ClaudeCode, AgenteKind::Codex]
+        .into_iter()
+        .map(detect_presence)
+        .collect()
+}
+
+fn detect_presence(kind: AgenteKind) -> AgentPresence {
+    let on_path = binary_on_path(default_command(kind));
+    let has_config_dir = config_dir_for(kind).map(|p| p.is_dir()).unwrap_or(false);
+    AgentPresence {
+        kind,
+        installed: on_path || has_config_dir,
+        on_path,
+        has_config_dir,
+    }
+}
+
+fn config_dir_for(kind: AgenteKind) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(match kind {
+        AgenteKind::ClaudeCode => home.join(".claude"),
+        AgenteKind::Codex => home.join(".codex"),
+    })
+}
+
+/// Look up `name` on `PATH`. On Windows we append each `PATHEXT` entry
+/// (defaulting to the standard list when the env var is missing); on
+/// Unix we match the bare name. Returns the first hit; we only care
+/// about presence, not the resolved path.
+fn binary_on_path(name: &str) -> bool {
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    let exts = path_extensions();
+    for dir in std::env::split_paths(&path_var) {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        for ext in &exts {
+            let mut candidate = dir.join(name);
+            if !ext.is_empty() {
+                let mut full = candidate.into_os_string();
+                full.push(ext);
+                candidate = PathBuf::from(full);
+            }
+            if candidate.is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn path_extensions() -> Vec<std::ffi::OsString> {
+    if cfg!(windows) {
+        let raw = std::env::var_os("PATHEXT")
+            .unwrap_or_else(|| std::ffi::OsString::from(".COM;.EXE;.BAT;.CMD"));
+        let lossy = raw.to_string_lossy().into_owned();
+        let mut out: Vec<std::ffi::OsString> = lossy
+            .split(';')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(std::ffi::OsString::from)
+            .collect();
+        // Also try the bare name — npm-style shims sometimes ship a
+        // PowerShell file named `claude.ps1` while a `claude` shim with
+        // no extension also exists (Git Bash setups).
+        out.push(std::ffi::OsString::new());
+        out
+    } else {
+        vec![std::ffi::OsString::new()]
+    }
+}
+
 /// Resolve the launch plan. `command_override` (if `Some`) wins over
 /// `default_command(kind)` — typically comes from `config.agente.command`
 /// or `project.agente.command`.
@@ -411,6 +502,61 @@ mod tests {
     fn extract_uuid_suffix_rejects_non_uuid_tail() {
         assert!(extract_uuid_suffix("hello").is_none());
         assert!(extract_uuid_suffix("rollout-not-a-uuid-here-but-long-enough-tail").is_none());
+    }
+
+    #[test]
+    fn binary_on_path_finds_file_in_isolated_path() {
+        // Build a synthetic PATH that contains a single dir holding a
+        // file named `mybin` (or `mybin.exe` on Windows). This avoids
+        // dependence on whatever the real PATH happens to carry.
+        let dir = TempDir::new().unwrap();
+        let ext = if cfg!(windows) { ".exe" } else { "" };
+        let name = "cadenza-probe-marker";
+        let file = dir.path().join(format!("{name}{ext}"));
+        fs::write(&file, b"").unwrap();
+
+        let saved = std::env::var_os("PATH");
+        // Safety: tests in this module are single-threaded modifications
+        // of this env var; no other test in this file touches PATH.
+        unsafe {
+            std::env::set_var("PATH", dir.path());
+        }
+        let found = binary_on_path(name);
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        assert!(found, "expected to find {name}{ext} in synthetic PATH");
+    }
+
+    #[test]
+    fn binary_on_path_returns_false_when_missing() {
+        let dir = TempDir::new().unwrap();
+        let saved = std::env::var_os("PATH");
+        unsafe {
+            std::env::set_var("PATH", dir.path());
+        }
+        let found = binary_on_path("cadenza-definitely-not-installed");
+        unsafe {
+            match saved {
+                Some(v) => std::env::set_var("PATH", v),
+                None => std::env::remove_var("PATH"),
+            }
+        }
+        assert!(!found);
+    }
+
+    #[test]
+    fn list_installed_agents_returns_both_kinds_in_stable_order() {
+        let rows = list_installed_agents();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].kind, AgenteKind::ClaudeCode);
+        assert_eq!(rows[1].kind, AgenteKind::Codex);
+        for row in &rows {
+            assert_eq!(row.installed, row.on_path || row.has_config_dir);
+        }
     }
 
     #[test]

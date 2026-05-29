@@ -9,40 +9,25 @@
 //     reads "Continuar". A small "Iniciar nova" button on the banner
 //     wipes the saved run (clear_task_run) so the next submit becomes
 //     a fresh session.
-//   - "Outro…" in the model dropdown reveals a free-text input.
-//
-// Per-agent model catalogues are kept inline; updating them is a
-// one-file change.
+//   - The model dropdown is populated by invoking `list_agent_models`,
+//     which spawns the agent CLI under a PTY and parses its `/model`
+//     menu. Result is cached backend-side per process. While the call
+//     is in flight, the dropdown is disabled and shows a placeholder.
 
 import { t } from "./i18n.js";
 import { attachTerminal } from "./terminal.js";
+import {
+  loadAgentPresence,
+  decorateKindSelect,
+  onAgentPresenceRefresh,
+} from "./agent-presence.js";
 
 const { invoke } = window.__TAURI__.core;
-
-const MODELS = {
-  claude_code: [
-    { id: "claude-opus-4-7", labelKey: "model-claude-opus-4-7", fallback: "Claude Opus 4.7" },
-    { id: "claude-sonnet-4-6", labelKey: "model-claude-sonnet-4-6", fallback: "Claude Sonnet 4.6" },
-    { id: "claude-haiku-4-5", labelKey: "model-claude-haiku-4-5", fallback: "Claude Haiku 4.5" },
-  ],
-  codex: [
-    { id: "gpt-5.5", labelKey: "model-gpt-5-5", fallback: "gpt-5.5" },
-    { id: "gpt-5.4", labelKey: "model-gpt-5-4", fallback: "gpt-5.4" },
-    { id: "gpt-5.4-mini", labelKey: "model-gpt-5-4-mini", fallback: "gpt-5.4-mini" },
-    { id: "gpt-5.3-codex", labelKey: "model-gpt-5-3-codex", fallback: "gpt-5.3-codex" },
-    { id: "gpt-5.3-codex-spark", labelKey: "model-gpt-5-3-codex-spark", fallback: "gpt-5.3-codex-spark" },
-    { id: "gpt-5.2", labelKey: "model-gpt-5-2", fallback: "gpt-5.2" },
-  ],
-};
-
-const OTHER_VALUE = "__other__";
 
 const dialog = document.getElementById("start-agent-modal");
 const form = document.getElementById("start-agent-form");
 const kindSel = document.getElementById("start-agent-kind");
 const modelSel = document.getElementById("start-agent-model");
-const otherField = document.getElementById("start-agent-model-other-field");
-const otherInput = document.getElementById("start-agent-model-other");
 const taskBadge = document.getElementById("start-agent-task-badge");
 const resumeBanner = document.getElementById("start-agent-resume-banner");
 const resumeIdEl = document.getElementById("start-agent-resume-id");
@@ -82,45 +67,94 @@ export async function openStartAgent(targetId, opts = {}) {
 
   const defaultKind = run?.agent ?? config?.agente?.kind ?? "claude_code";
   kindSel.value = defaultKind;
-  populateModels(defaultKind, run?.model);
   updateResumeBanner();
-
+  await applyAgentPresence();
+  // Open the modal before kicking off discovery so the user sees the
+  // loading state immediately instead of staring at a frozen card list.
   if (!dialog.open) dialog.showModal();
+  await populateModels(defaultKind, run?.model);
 }
+
+async function applyAgentPresence() {
+  // Force a fresh probe on open so an agent installed since boot is
+  // detected — the cache otherwise persists for the whole session and
+  // the submit-time hard-block below would keep refusing it.
+  const map = await loadAgentPresence({ force: true });
+  decorateKindSelect(kindSel, map);
+}
+
+// Re-decorate the kind select if the locale flips while the modal is
+// open — translations overwrite the option text, wiping the "(not
+// installed)" suffix added by decorateKindSelect.
+onAgentPresenceRefresh(() => {
+  if (dialog.open) applyAgentPresence();
+});
 
 export function closeStartAgent() {
   if (dialog.open) dialog.close();
 }
 
-function populateModels(kind, preselectedId) {
+// Each (modal-open, kind) starts a fresh discovery generation. If the
+// user flips the kind selector while a slow discovery is in flight, the
+// in-flight result for the old kind must not stomp the dropdown
+// belonging to the new kind. We track that via this monotonic counter.
+let modelLoadGen = 0;
+
+async function populateModels(kind, preselectedId) {
+  const myGen = ++modelLoadGen;
   modelSel.replaceChildren();
-  const list = MODELS[kind] ?? [];
+  const loading = document.createElement("option");
+  loading.value = "";
+  loading.textContent = t("start-agent-model-loading") || "Carregando modelos…";
+  loading.disabled = true;
+  loading.selected = true;
+  modelSel.append(loading);
+  modelSel.disabled = true;
+  submitBtn.disabled = true;
+
+  let entries;
+  try {
+    entries = await invoke("list_agent_models", { agentKind: kind });
+  } catch (e) {
+    if (myGen !== modelLoadGen) return;
+    modelSel.replaceChildren();
+    modelSel.disabled = true;
+    submitBtn.disabled = false; // let the user cancel; submit guard catches empty model
+    setStatus(typeof e === "string" ? e : t("task-error", { error: e }), "error");
+    return;
+  }
+  if (myGen !== modelLoadGen) return;
+
+  modelSel.replaceChildren();
   let foundPreselected = false;
-  for (const m of list) {
+  for (const m of entries) {
     const opt = document.createElement("option");
     opt.value = m.id;
-    opt.textContent = t(m.labelKey, {}) === m.labelKey ? m.fallback : t(m.labelKey);
+    opt.textContent = m.label || m.id;
     if (preselectedId === m.id) {
       opt.selected = true;
       foundPreselected = true;
+    } else if (!preselectedId && m.current) {
+      // Mirror the agent's own current selection when we have no
+      // saved-run hint — matches the value the agent would pick if
+      // invoked without `--model`, so the UI default tracks the CLI.
+      opt.selected = true;
     }
     modelSel.append(opt);
   }
-  const otherOpt = document.createElement("option");
-  otherOpt.value = OTHER_VALUE;
-  otherOpt.textContent = t("start-agent-model-other") || "Outro…";
-  modelSel.append(otherOpt);
-
-  // If preselectedId isn't in the catalogue (custom model from a prior
-  // run), reveal the other-field with that value.
+  // Preselected id (from a prior run) is no longer offered — keep it
+  // as a sticky option so the user can still resume on the same model
+  // without losing the choice, but tag it so they know it's stale.
   if (preselectedId && !foundPreselected) {
-    modelSel.value = OTHER_VALUE;
-    otherField.hidden = false;
-    otherInput.value = preselectedId;
-  } else {
-    otherField.hidden = true;
-    otherInput.value = "";
+    const opt = document.createElement("option");
+    opt.value = preselectedId;
+    opt.textContent = `${preselectedId} (${t("start-agent-model-saved") || "salvo"})`;
+    opt.selected = true;
+    modelSel.append(opt);
   }
+  modelSel.disabled = false;
+  submitBtn.disabled = false;
+  setStatus("");
 }
 
 function updateResumeBanner() {
@@ -145,11 +179,7 @@ function shortenId(id) {
 }
 
 function readModel() {
-  const v = modelSel.value;
-  if (v === OTHER_VALUE) {
-    return otherInput.value.trim();
-  }
-  return v;
+  return modelSel.value || "";
 }
 
 function setStatus(msg, kind) {
@@ -162,11 +192,6 @@ function setStatus(msg, kind) {
 kindSel.addEventListener("change", () => {
   populateModels(kindSel.value, currentRun?.agent === kindSel.value ? currentRun.model : null);
   updateResumeBanner();
-});
-
-modelSel.addEventListener("change", () => {
-  otherField.hidden = modelSel.value !== OTHER_VALUE;
-  if (modelSel.value === OTHER_VALUE) otherInput.focus();
 });
 
 freshBtn.addEventListener("click", async () => {
@@ -194,6 +219,14 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   const agentKind = kindSel.value;
+  // Hard-block when the picked agent isn't installed. The dropdown
+  // already disables non-installed options, but the user's saved
+  // default may itself be non-installed (we don't silently change it).
+  const presence = (await loadAgentPresence()).get(agentKind);
+  if (presence && !presence.installed) {
+    setStatus(t("settings-agent-not-installed-tooltip"), "error");
+    return;
+  }
   submitBtn.disabled = true;
   setStatus(t("start-agent-launching") || "Iniciando agente…");
   try {
