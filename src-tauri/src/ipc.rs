@@ -404,20 +404,30 @@ async fn dispatch(
                 .list_tasks(filter)
                 .await
                 .map_err(|e| not_found_or_internal(&e))?;
-            let enriched: Vec<_> = tasks
+            let mut enriched: Vec<_> = tasks
                 .into_iter()
                 .map(|t| deps.state.task_worktrees.enrich(t))
                 .collect();
+            let order = deps.state.task_order.snapshot();
+            crate::commands::sort_tasks_by_order(&mut enriched, &order);
             to_value(&enriched)
         }
         OP_CURRENT_TASK => {
             let _: ops::current_task::Args = serde_json::from_value(req.args).map_err(bad_args)?;
-            let current: ops::current_task::Result = repo
-                .current_task()
+            // Use the drag-priority order so `cadenza current` returns the
+            // topmost card in the fazendo column, matching what the board shows.
+            let tasks = repo
+                .list_tasks(Some(cadenza_proto::Estado::Fazendo))
                 .await
                 .map_err(|e| not_found_or_internal(&e))?;
-            let enriched = current.map(|t| deps.state.task_worktrees.enrich(t));
-            to_value(&enriched)
+            let mut enriched: Vec<_> = tasks
+                .into_iter()
+                .map(|t| deps.state.task_worktrees.enrich(t))
+                .collect();
+            let order = deps.state.task_order.snapshot();
+            crate::commands::sort_tasks_by_order(&mut enriched, &order);
+            let current: ops::current_task::Result = enriched.into_iter().next();
+            to_value(&current)
         }
         OP_SET_TASK_WORKTREE => {
             let args: ops::set_task_worktree::Args =

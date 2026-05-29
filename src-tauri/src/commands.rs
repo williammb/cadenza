@@ -5,6 +5,7 @@
 
 use cadenza_i18n::{locale, FluentArgs, I18n, LocaleSources};
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
@@ -16,6 +17,7 @@ use uuid::Uuid;
 
 use crate::agent::{self, CodexCapture, LaunchPlan};
 use crate::config::{AgenteKind, Config, PgConfig, PgSslMode, StorageBackend};
+use crate::ordering::TaskOrder;
 use crate::projects::TaskProjects;
 use crate::runs::{TaskRun, TaskRuns};
 use crate::secrets;
@@ -51,6 +53,11 @@ pub struct AppState {
     /// `~/.cadenza/task-worktrees.json` — keeps the YAML frontmatter
     /// format frozen for Node.js compat.
     pub task_worktrees: Arc<TaskWorktrees>,
+    /// Per-column card priority order. Lives in
+    /// `~/.cadenza/task-order.json` — keeps the YAML frontmatter format
+    /// frozen and the DB schemas untouched. Applied as a sort in
+    /// `list_tasks`; tasks absent from a column's list sort to the end.
+    pub task_order: Arc<TaskOrder>,
     /// AppHandle for emitting events (e.g. `task_run_changed` from the
     /// async Codex-uuid capture task). Set once during `setup()`.
     pub app_handle: Mutex<Option<tauri::AppHandle>>,
@@ -111,6 +118,7 @@ impl AppState {
         let task_projects = Arc::new(TaskProjects::load(&home)?);
         let task_runs = Arc::new(TaskRuns::load(&home)?);
         let task_worktrees = Arc::new(TaskWorktrees::load(&home)?);
+        let task_order = Arc::new(TaskOrder::load(&home)?);
 
         // Seed the in-memory model cache from any lists persisted in
         // config.json so the task-start modal shows models instantly
@@ -136,6 +144,7 @@ impl AppState {
             task_projects,
             task_runs,
             task_worktrees,
+            task_order,
             app_handle: Mutex::new(None),
             agent_models: Mutex::new(seeded_models),
             token_epoch: AtomicU64::new(0),
@@ -283,10 +292,48 @@ pub async fn list_tasks(
 ) -> Result<Vec<Task>, String> {
     let filter = estado.as_deref().and_then(Estado::parse);
     let tasks = state.repo.list_tasks(filter).await.map_err(to_str_err)?;
-    Ok(tasks
+    let mut tasks: Vec<Task> = tasks
         .into_iter()
         .map(|t| state.task_worktrees.enrich(t))
-        .collect())
+        .collect();
+    sort_tasks_by_order(&mut tasks, &state.task_order.snapshot());
+    Ok(tasks)
+}
+
+/// Sort tasks by the per-column priority order from `task-order.json`,
+/// in place. Tasks are kept grouped by estado (deterministic across
+/// backends); within a column, ids present in that column's list come
+/// first in list order, and any task not listed (a freshly created card,
+/// or one moved in out-of-band) sorts after them by ascending `T-<n>`
+/// number — so the newest task lands last. Stale ids in the list (a
+/// deleted task, or one whose estado changed) simply never match a real
+/// task and are ignored.
+pub(crate) fn sort_tasks_by_order(tasks: &mut [Task], order: &HashMap<String, Vec<String>>) {
+    tasks.sort_by(|a, b| {
+        let (ea, eb) = (a.estado.as_str(), b.estado.as_str());
+        if ea != eb {
+            return ea.cmp(eb);
+        }
+        let list = order.get(ea);
+        let rank = |id: &str| list.and_then(|l| l.iter().position(|x| x == id));
+        match (rank(&a.id), rank(&b.id)) {
+            (Some(i), Some(j)) => i.cmp(&j),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => task_num(&a.id)
+                .cmp(&task_num(&b.id))
+                .then_with(|| a.id.cmp(&b.id)),
+        }
+    });
+}
+
+/// Numeric component of a `T-<n>` id, or `u64::MAX` for any other shape
+/// so non-`T-` ids sort to the end. Used to keep unlisted tasks ordered
+/// newest-last.
+fn task_num(id: &str) -> u64 {
+    id.strip_prefix("T-")
+        .and_then(|n| n.parse::<u64>().ok())
+        .unwrap_or(u64::MAX)
 }
 
 #[tauri::command]
@@ -373,6 +420,21 @@ pub async fn set_estado(
     state.repo.set_estado(&id, parsed).await.map_err(to_str_err)
 }
 
+/// Persist the priority order of one column. The UI sends the full
+/// ordered id list for the affected estado after a drag-to-reorder (or
+/// cross-column drop), so the call is idempotent and self-correcting —
+/// it overwrites whatever was stored. Ordering is a GUI-only concern, so
+/// there is no matching NDJSON op: the CLI never reorders.
+#[tauri::command]
+pub async fn set_task_order(
+    state: State<'_, Arc<AppState>>,
+    estado: String,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    Estado::parse(&estado).ok_or_else(|| format!("invalid estado: {estado}"))?;
+    state.task_order.set(&estado, ids).map_err(to_str_err)
+}
+
 #[tauri::command]
 pub async fn append_log(
     state: State<'_, Arc<AppState>>,
@@ -409,6 +471,9 @@ pub async fn delete_task(state: State<'_, Arc<AppState>>, id: String) -> Result<
     }
     if let Err(e) = state.task_worktrees.forget(&id) {
         tracing::warn!(error = ?e, task = %id, "task_worktrees.forget failed");
+    }
+    if let Err(e) = state.task_order.forget(&id) {
+        tracing::warn!(error = ?e, task = %id, "task_order.forget failed");
     }
     Ok(())
 }
@@ -1981,5 +2046,107 @@ mod tests {
     fn highest_task_number_ignores_other_prefixes() {
         let ids = ["I-5", "T-2", "X-99"];
         assert_eq!(highest_task_number(ids.iter().copied()), 2);
+    }
+
+    use super::{sort_tasks_by_order, Estado, Task};
+    use std::collections::HashMap;
+
+    fn task(id: &str, estado: Estado) -> Task {
+        Task {
+            id: id.to_string(),
+            titulo: id.to_string(),
+            estado,
+            responsavel: "humano".to_string(),
+            body: String::new(),
+            worktree_path: None,
+            branch: None,
+        }
+    }
+
+    fn order(pairs: &[(&str, &[&str])]) -> HashMap<String, Vec<String>> {
+        pairs
+            .iter()
+            .map(|(e, ids)| (e.to_string(), ids.iter().map(|s| s.to_string()).collect()))
+            .collect()
+    }
+
+    fn ids(tasks: &[Task]) -> Vec<&str> {
+        tasks.iter().map(|t| t.id.as_str()).collect()
+    }
+
+    #[test]
+    fn ordered_ids_come_first_in_list_order() {
+        let mut tasks = vec![
+            task("T-1", Estado::AFazer),
+            task("T-3", Estado::AFazer),
+            task("T-5", Estado::AFazer),
+        ];
+        let order = order(&[("a_fazer", &["T-5", "T-1", "T-3"])]);
+        sort_tasks_by_order(&mut tasks, &order);
+        assert_eq!(ids(&tasks), ["T-5", "T-1", "T-3"]);
+    }
+
+    #[test]
+    fn unordered_appended_by_ascending_number() {
+        // T-2 is listed; T-1 and T-10 are not — they fall after, newest
+        // (higher number) last.
+        let mut tasks = vec![
+            task("T-10", Estado::AFazer),
+            task("T-1", Estado::AFazer),
+            task("T-2", Estado::AFazer),
+        ];
+        let order = order(&[("a_fazer", &["T-2"])]);
+        sort_tasks_by_order(&mut tasks, &order);
+        assert_eq!(ids(&tasks), ["T-2", "T-1", "T-10"]);
+    }
+
+    #[test]
+    fn stale_ids_in_list_are_ignored() {
+        // T-99 was deleted but lingers in the stored order — it must not
+        // panic or affect the real tasks.
+        let mut tasks = vec![task("T-1", Estado::AFazer), task("T-2", Estado::AFazer)];
+        let order = order(&[("a_fazer", &["T-99", "T-2", "T-1"])]);
+        sort_tasks_by_order(&mut tasks, &order);
+        assert_eq!(ids(&tasks), ["T-2", "T-1"]);
+    }
+
+    #[test]
+    fn new_task_lands_last() {
+        // No stored order at all: pure ascending-number, newest last.
+        let mut tasks = vec![
+            task("T-7", Estado::AFazer),
+            task("T-2", Estado::AFazer),
+            task("T-12", Estado::AFazer),
+        ];
+        sort_tasks_by_order(&mut tasks, &HashMap::new());
+        assert_eq!(ids(&tasks), ["T-2", "T-7", "T-12"]);
+    }
+
+    #[test]
+    fn cross_column_lands_last() {
+        // T-4 moved into `fazendo`, which has a stored order not yet
+        // mentioning it — it sorts after the listed cards.
+        let mut tasks = vec![
+            task("T-4", Estado::Fazendo),
+            task("T-1", Estado::Fazendo),
+            task("T-2", Estado::Fazendo),
+        ];
+        let order = order(&[("fazendo", &["T-2", "T-1"])]);
+        sort_tasks_by_order(&mut tasks, &order);
+        assert_eq!(ids(&tasks), ["T-2", "T-1", "T-4"]);
+    }
+
+    #[test]
+    fn tasks_stay_grouped_by_estado() {
+        let mut tasks = vec![
+            task("T-1", Estado::Fazendo),
+            task("T-2", Estado::AFazer),
+            task("T-3", Estado::Fazendo),
+            task("T-4", Estado::AFazer),
+        ];
+        sort_tasks_by_order(&mut tasks, &HashMap::new());
+        // a_fazer sorts before fazendo (lexicographic on as_str), each
+        // group internally ascending by number.
+        assert_eq!(ids(&tasks), ["T-2", "T-4", "T-1", "T-3"]);
     }
 }
