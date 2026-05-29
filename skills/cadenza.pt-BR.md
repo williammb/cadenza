@@ -16,10 +16,37 @@ o aplicativo Cadenza pelo socket local; o app **precisa estar aberto**.
 4. **Ao concluir:** `cadenza-cli done <id> "<resumo>"` — você **nunca**
    move uma task para "feito" sozinho; isso pede ao humano.
 
+## Planejando uma task (modo plano)
+
+Quando você for iniciado em **modo plano**, NÃO implemente nada. A task
+ainda está em `a_fazer`, então `cadenza-cli current` não a retorna —
+localize-a com `cadenza-cli list --json`.
+
+1. Leia a descrição breve da task.
+2. Entreviste o humano no terminal: faça perguntas de esclarecimento sobre
+   escopo, casos de borda e critérios de aceite — um lote focado por vez.
+3. Quando você e o humano combinarem, salve o plano refinado:
+
+   ```bash
+   cadenza-cli plan T-42 --body "## Objetivo
+   ...
+   ## Passos
+   1. ...
+   ## Aceite
+   - ..."
+   ```
+
+   Por padrão o plano é anexado como uma seção `## Plano`, preservando a
+   descrição original. Use `--replace` para sobrescrever o body inteiro, ou
+   omita `--body` para enviar o plano via stdin.
+4. **Não** chame `done` e **não** comece a codar. O humano inicia uma
+   execução separada que vai ler o plano que você salvou.
+
 ## Regras
 
 - Você só trabalha em tasks com `estado: fazendo`. Se `cadenza-cli current`
-  retornar `null`, pare e peça ao humano para começar uma task.
+  retornar `null`, pare e peça ao humano para começar uma task (a menos que
+  você esteja em modo plano — veja acima).
 - Sempre use `--json` quando estiver parseando saída. Os valores
   `estado` são canônicos em português (`a_fazer`, `fazendo`,
   `aguardando_revisao`, `feito`) e **não** mudam com `--lang`.

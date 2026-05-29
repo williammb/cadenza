@@ -72,6 +72,20 @@ enum Cmd {
     },
     /// Request completion — the human still has the final word.
     Done { task_id: String, summary: String },
+    /// Save a task's refined plan. Used in plan mode: the agent interviews
+    /// the human and persists the agreed plan. By default the plan is
+    /// appended as a `## Plano` section, preserving the original
+    /// description; pass `--replace` to overwrite the whole body. Omit
+    /// `--body` to read the plan from stdin.
+    Plan {
+        task_id: String,
+        /// Plan markdown. If omitted, read from stdin.
+        #[arg(long)]
+        body: Option<String>,
+        /// Replace the whole body instead of appending a `## Plano` section.
+        #[arg(long)]
+        replace: bool,
+    },
     /// Create a new task in `a_fazer`, bound to a project. Used by the
     /// "destrinchar ideia" flow: o agente chama isso N vezes para
     /// transformar uma ideia em tasks concretas. Defaults pegam do
@@ -235,6 +249,11 @@ async fn run(cli: Cli) -> Result<()> {
             .await?
         }
         Cmd::Done { task_id, summary } => cmd_done(&mut client, cli.json, task_id, summary).await?,
+        Cmd::Plan {
+            task_id,
+            body,
+            replace,
+        } => cmd_plan(&mut client, cli.json, task_id, body, replace).await?,
         Cmd::NewTask {
             titulo,
             body,
@@ -394,6 +413,42 @@ async fn cmd_propose(
 async fn cmd_done(client: &mut Client, json: bool, task_id: String, summary: String) -> Result<()> {
     let _: ops::done::Result = client
         .request(ops::OP_DONE, ops::done::Args { task_id, summary })
+        .await?;
+    if json {
+        println!("{{\"ok\":true}}");
+    } else {
+        println!("ok");
+    }
+    Ok(())
+}
+
+async fn cmd_plan(
+    client: &mut Client,
+    json: bool,
+    task_id: String,
+    body: Option<String>,
+    replace: bool,
+) -> Result<()> {
+    let body = match body {
+        Some(b) => b,
+        None => {
+            use std::io::Read;
+            let mut s = String::new();
+            std::io::stdin()
+                .read_to_string(&mut s)
+                .context("read plan body from stdin")?;
+            s
+        }
+    };
+    let _: ops::update_body::Result = client
+        .request(
+            ops::OP_UPDATE_BODY,
+            ops::update_body::Args {
+                task_id,
+                body,
+                append_plan: !replace,
+            },
+        )
         .await?;
     if json {
         println!("{{\"ok\":true}}");
@@ -624,3 +679,45 @@ impl std::fmt::Display for TokenError {
     }
 }
 impl std::error::Error for TokenError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    /// `plan <id> --body "..."` parses with append-by-default semantics.
+    #[test]
+    fn plan_with_body_parses() {
+        let cli = Cli::try_parse_from(["cadenza-cli", "plan", "T-1", "--body", "do X"]).unwrap();
+        match cli.cmd {
+            Cmd::Plan {
+                task_id,
+                body,
+                replace,
+            } => {
+                assert_eq!(task_id, "T-1");
+                assert_eq!(body.as_deref(), Some("do X"));
+                assert!(!replace);
+            }
+            other => panic!("expected Cmd::Plan, got {other:?}"),
+        }
+    }
+
+    /// `plan <id> --replace` with no `--body` → stdin path, replace=true.
+    #[test]
+    fn plan_replace_without_body_parses() {
+        let cli = Cli::try_parse_from(["cadenza-cli", "plan", "T-2", "--replace"]).unwrap();
+        match cli.cmd {
+            Cmd::Plan {
+                task_id,
+                body,
+                replace,
+            } => {
+                assert_eq!(task_id, "T-2");
+                assert!(body.is_none());
+                assert!(replace);
+            }
+            other => panic!("expected Cmd::Plan, got {other:?}"),
+        }
+    }
+}

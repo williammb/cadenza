@@ -43,9 +43,9 @@ const CODEX_MARKER_END: &str = "<!-- cadenza:end -->";
 
 const CLAUDE_SKILL_NAME: &str = "cadenza";
 const CLAUDE_SKILL_DESCRIPTION_PT: &str =
-    "Como gerenciar tarefas via o CLI `cadenza` (current, log, propose, done).";
+    "Como gerenciar tarefas via o CLI `cadenza` (current, log, plan, propose, done).";
 const CLAUDE_SKILL_DESCRIPTION_EN: &str =
-    "How to manage tasks via the `cadenza` CLI (current, log, propose, done).";
+    "How to manage tasks via the `cadenza` CLI (current, log, plan, propose, done).";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

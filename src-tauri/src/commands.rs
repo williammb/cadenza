@@ -1235,6 +1235,19 @@ pub struct StartTaskAgentResult {
     pub resumed: bool,
 }
 
+/// Whether `start_task_agent` runs the task or plans it. In `Plan` mode
+/// the agent is told to interview the human and persist a refined plan
+/// (via `cadenza-cli plan`) instead of implementing; the task stays in
+/// `a_fazer` and no run record is kept, so a later `Execute` run is a
+/// clean start that reads the saved plan from the task body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaskAgentMode {
+    #[default]
+    Execute,
+    Plan,
+}
+
 /// Launch the configured agent CLI (Claude Code / Codex) in a PTY
 /// running inside the task's project directory. The frontend then
 /// calls `pty_attach` with the returned `session_id` to stream output.
@@ -1254,7 +1267,10 @@ pub async fn start_task_agent(
     task_id: String,
     agent_kind: AgenteKind,
     model: String,
+    // Absent/null from older callers → `Execute`.
+    mode: Option<TaskAgentMode>,
 ) -> Result<StartTaskAgentResult, String> {
+    let mode = mode.unwrap_or_default();
     // 1. Task must exist and not be `feito`. The transition to `fazendo`
     //    (if not already there) happens AFTER a successful spawn — see
     //    step 5b — so a failed start doesn't leave the kanban moved.
@@ -1262,6 +1278,13 @@ pub async fn start_task_agent(
     if task.estado == Estado::Feito {
         return Err(format!(
             "task '{}' is in state '{}', can't start an agent on a completed task",
+            task_id,
+            task.estado.as_str()
+        ));
+    }
+    if mode == TaskAgentMode::Plan && task.estado != Estado::AFazer {
+        return Err(format!(
+            "task '{}' is in state '{}'; plan mode requires the task to be in a_fazer",
             task_id,
             task.estado.as_str()
         ));
@@ -1327,8 +1350,13 @@ pub async fn start_task_agent(
         ));
     }
 
-    // 3. Decide new vs resume from `task-runs.json`.
-    let existing = state.task_runs.get(&task_id);
+    // 3. Decide new vs resume from `task-runs.json`. Plan mode always
+    //    starts fresh: planning runs are never recorded, and matching an
+    //    earlier *execution* conversation would resume the wrong posture.
+    let existing = match mode {
+        TaskAgentMode::Plan => None,
+        TaskAgentMode::Execute => state.task_runs.get(&task_id),
+    };
     // Resume only when the saved entry agrees with the user's current
     // choice. Switching agent/model means a new conversation. (Claude
     // can change --model on resume but the agent kind has to match;
@@ -1381,7 +1409,7 @@ pub async fn start_task_agent(
     //     agent's UI initialize — writing before the input box is ready
     //     causes the bytes to be dropped on both Claude Code and Codex.
     if !resumed {
-        let prompt = render_initial_task_prompt(&state.i18n, &task_id, &task_titulo);
+        let prompt = render_initial_task_prompt(&state.i18n, &task_id, &task_titulo, mode);
         let session_for_prompt = session.clone();
         tauri::async_runtime::spawn(async move {
             send_initial_prompt(&session_for_prompt, &prompt).await;
@@ -1391,49 +1419,54 @@ pub async fn start_task_agent(
     // 5b. With the spawn confirmed, move the task to `fazendo` if it
     //     wasn't already. Logged-only on failure: the agent is already
     //     running, the user can move the card manually if needed.
-    if original_estado != Estado::Fazendo {
+    //     Plan mode leaves the task in `a_fazer` — planning happens
+    //     *before* execution, so the card must not move yet.
+    if mode == TaskAgentMode::Execute && original_estado != Estado::Fazendo {
         if let Err(e) = state.repo.set_estado(&task_id, Estado::Fazendo).await {
             tracing::warn!(error = ?e, task = %task_id, "set_estado(fazendo) after spawn failed");
         }
     }
 
-    // 6. Persist the run record.
-    let run = TaskRun {
-        agent: agent_kind,
-        model: model.clone(),
-        conversation_id: conversation_id_known.clone(),
-        last_started_at: chrono::Utc::now(),
-        last_session_id: Some(session_id.clone()),
-    };
-    if let Err(e) = state.task_runs.upsert(&task_id, run) {
-        tracing::warn!(error = ?e, task = %task_id, "task_runs.upsert failed");
-    }
+    // 6./7. Persist the run record and (Codex/Antigravity first-run only)
+    //        kick off async session-UUID capture — but ONLY for execution
+    //        runs. A planning run is intentionally not recorded so it can't
+    //        be resumed into a later execution; with no record there is also
+    //        nothing for the capture task to patch.
+    if mode == TaskAgentMode::Execute {
+        let run = TaskRun {
+            agent: agent_kind,
+            model: model.clone(),
+            conversation_id: conversation_id_known.clone(),
+            last_started_at: chrono::Utc::now(),
+            last_session_id: Some(session_id.clone()),
+        };
+        if let Err(e) = state.task_runs.upsert(&task_id, run) {
+            tracing::warn!(error = ?e, task = %task_id, "task_runs.upsert failed");
+        }
 
-    // 7. (Codex first-run only) spawn an async capture task that
-    //    polls ~/.codex/sessions/ until the new rollout file appears,
-    //    parses its UUID, and patches the run record.
-    if let Some(capture) = pending_codex_capture {
-        let task_runs = state.task_runs.clone();
-        let app_handle = state.app_handle.lock().ok().and_then(|h| h.clone());
-        let task_id_clone = task_id.clone();
-        tauri::async_runtime::spawn(async move {
-            let found = wait_for_codex_uuid(capture).await;
-            match found {
-                Some(uuid) => {
-                    if let Err(e) = task_runs.set_conversation_id(&task_id_clone, &uuid) {
-                        tracing::warn!(error = ?e, task = %task_id_clone, "set_conversation_id failed");
-                    } else {
-                        tracing::info!(task = %task_id_clone, uuid = %uuid, "captured codex session uuid");
-                        if let Some(app) = app_handle {
-                            let _ = app.emit("task_run_changed", &task_id_clone);
+        if let Some(capture) = pending_codex_capture {
+            let task_runs = state.task_runs.clone();
+            let app_handle = state.app_handle.lock().ok().and_then(|h| h.clone());
+            let task_id_clone = task_id.clone();
+            tauri::async_runtime::spawn(async move {
+                let found = wait_for_codex_uuid(capture).await;
+                match found {
+                    Some(uuid) => {
+                        if let Err(e) = task_runs.set_conversation_id(&task_id_clone, &uuid) {
+                            tracing::warn!(error = ?e, task = %task_id_clone, "set_conversation_id failed");
+                        } else {
+                            tracing::info!(task = %task_id_clone, uuid = %uuid, "captured codex session uuid");
+                            if let Some(app) = app_handle {
+                                let _ = app.emit("task_run_changed", &task_id_clone);
+                            }
                         }
                     }
+                    None => {
+                        tracing::warn!(task = %task_id_clone, "codex uuid capture timed out");
+                    }
                 }
-                None => {
-                    tracing::warn!(task = %task_id_clone, "codex uuid capture timed out");
-                }
-            }
-        });
+            });
+        }
     }
 
     Ok(StartTaskAgentResult {
@@ -1464,17 +1497,32 @@ async fn send_initial_prompt(session: &Arc<crate::terminal::TerminalSession>, pr
 }
 
 /// Resolve the localized initial prompt sent to the agent when a task
-/// is started fresh. Falls back to a plain English message if the
-/// `agent-initial-prompt` key isn't in either bundle.
-fn render_initial_task_prompt(i18n_slot: &Mutex<I18n>, task_id: &str, titulo: &str) -> String {
+/// is started fresh. The key depends on `mode`: execution uses
+/// `agent-initial-prompt`, planning uses `agent-planning-prompt`. Falls
+/// back to a plain English message if the key isn't in either bundle.
+fn render_initial_task_prompt(
+    i18n_slot: &Mutex<I18n>,
+    task_id: &str,
+    titulo: &str,
+    mode: TaskAgentMode,
+) -> String {
+    let key = match mode {
+        TaskAgentMode::Execute => "agent-initial-prompt",
+        TaskAgentMode::Plan => "agent-planning-prompt",
+    };
     let mut args = FluentArgs::new();
     args.set("task_id", task_id.to_string());
     args.set("titulo", titulo.to_string());
     match i18n_slot.lock() {
-        Ok(i18n) => i18n.t_with("agent-initial-prompt", Some(&args)),
-        Err(_) => format!(
-            "Use the `cadenza` skill to coordinate with Cadenza through cadenza-cli. Your task is {task_id} ({titulo}). Start by running `cadenza-cli current --json`."
-        ),
+        Ok(i18n) => i18n.t_with(key, Some(&args)),
+        Err(_) => match mode {
+            TaskAgentMode::Execute => format!(
+                "Use the `cadenza` skill to coordinate with Cadenza through cadenza-cli. Your task is {task_id} ({titulo}). Start by running `cadenza-cli current --json`."
+            ),
+            TaskAgentMode::Plan => format!(
+                "Use the `cadenza` skill to coordinate with Cadenza. You are in PLANNING mode for task {task_id} ({titulo}) — do NOT write or run any code yet. Read the task with `cadenza-cli list --json` and find {task_id}. Ask clarifying questions, in batches, until scope and acceptance criteria are clear. When we agree, save the plan by piping markdown into stdin: `cadenza-cli plan {task_id}` (omit --body so the plan is read from stdin). Do not mark anything done and do not start implementing — a separate execution run comes later."
+            ),
+        },
     }
 }
 

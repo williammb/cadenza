@@ -188,6 +188,7 @@ task-modal-start = Iniciar
 task-modal-start-aria = Iniciar agente para esta task
 card-start-aria = Iniciar agente
 card-start-resume-aria = Continuar conversa salva
+card-plan-aria = Planejar task antes de executar
 
 start-agent-title = Iniciar agente
 start-agent-branch-label = Ramo
@@ -204,6 +205,8 @@ start-agent-fresh = Iniciar nova
 start-agent-fresh-confirm = Apagar conversa salva e iniciar uma nova?
 start-agent-action-start = Iniciar
 start-agent-action-resume = Continuar
+start-agent-action-plan = Planejar
+start-agent-title-plan = Planejar task
 start-agent-launching = Iniciando agente…
 
 # Banner não-bloqueante exibido no topo da janela quando o updater

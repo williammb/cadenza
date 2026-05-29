@@ -15,7 +15,7 @@ use cadenza_proto::{
     ops::{
         self, OP_APPEND_LOG, OP_AWAIT_DECISION, OP_BYE, OP_CREATE_IDEIA, OP_CREATE_TASK,
         OP_CURRENT_TASK, OP_DELETE_IDEIA, OP_DONE, OP_HELLO, OP_LIST_IDEIAS, OP_LIST_TASKS,
-        OP_PROPOSE, OP_READ_IDEIA, OP_SET_IDEIA_STATUS, OP_SET_TASK_WORKTREE,
+        OP_PROPOSE, OP_READ_IDEIA, OP_SET_IDEIA_STATUS, OP_SET_TASK_WORKTREE, OP_UPDATE_BODY,
     },
     wire::{ErrorBody, Event, Request, Response},
     Decisao, DecisaoRegistro, Ideia, IdeiaStatus, MAX_PROTOCOL, MIN_PROTOCOL,
@@ -503,6 +503,31 @@ async fn dispatch(
             ));
             to_value(&ops::done::Result { ok: true })
         }
+        OP_UPDATE_BODY => {
+            let args: ops::update_body::Args =
+                serde_json::from_value(req.args).map_err(bad_args)?;
+            check_id(&args.task_id)?;
+            let new_body = if args.append_plan {
+                // Read-modify-write so the original description is kept and a
+                // re-plan replaces the previous `## Plano` block rather than
+                // stacking duplicates.
+                let task = repo
+                    .read_task(&args.task_id)
+                    .await
+                    .map_err(|e| not_found_or_internal(&e))?;
+                append_plan_section(&task.body, &args.body)
+            } else {
+                args.body
+            };
+            repo.update_task_body(&args.task_id, &new_body)
+                .await
+                .map_err(|e| not_found_or_internal(&e))?;
+            let _ = deps.webview_events.try_send((
+                ops::EV_TASKS_CHANGED.to_string(),
+                serde_json::json!({ "task_id": args.task_id }),
+            ));
+            to_value(&ops::update_body::Result { ok: true })
+        }
         OP_CREATE_TASK => {
             let args: ops::create_task::Args =
                 serde_json::from_value(req.args).map_err(bad_args)?;
@@ -719,6 +744,45 @@ async fn done_op(repo: &dyn Repository, args: &ops::done::Args) -> Result<(), Er
     Ok(())
 }
 
+/// Append (or replace) a `## Plano` section in a task body. The original
+/// description above the heading is preserved; re-planning drops the prior
+/// `## Plano` block before re-appending so the section never stacks.
+fn append_plan_section(existing: &str, plan: &str) -> String {
+    const HEADING: &str = "## Plano";
+    let base = match locate_line_heading(existing, HEADING) {
+        Some(idx) => existing[..idx].trim_end().to_string(),
+        None => existing.trim_end().to_string(),
+    };
+    let plan = plan.trim();
+    if base.is_empty() {
+        format!("{HEADING}\n\n{plan}\n")
+    } else {
+        format!("{base}\n\n{HEADING}\n\n{plan}\n")
+    }
+}
+
+/// Return the byte index at which `heading` begins, only when it occupies an
+/// entire line (not a prefix of a longer heading like `## Planos futuros`).
+fn locate_line_heading(text: &str, heading: &str) -> Option<usize> {
+    let terminates_line = |offset: usize| -> bool {
+        let rest = &text[offset + heading.len()..];
+        rest.is_empty() || rest.starts_with('\n') || rest.starts_with('\r')
+    };
+    if text.starts_with(heading) && terminates_line(0) {
+        return Some(0);
+    }
+    let prefix = format!("\n{heading}");
+    let mut from = 0;
+    while let Some(rel) = text[from..].find(prefix.as_str()) {
+        let candidate = from + rel + 1; // byte offset of the `#`
+        if terminates_line(candidate) {
+            return Some(candidate);
+        }
+        from += rel + 1;
+    }
+    None
+}
+
 // ───────── hello validation ─────────────────────────────────────────────────
 
 /// Reject a protocol number that falls outside the negotiated window.
@@ -902,5 +966,48 @@ mod tests {
         assert!(MIN_PROTOCOL > 0, "test assumes MIN_PROTOCOL > 0");
         let err = check_protocol(MIN_PROTOCOL - 1).unwrap_err();
         assert_eq!(err.code, "protocol_too_old");
+    }
+
+    /// Empty body → just the heading + plan.
+    #[test]
+    fn append_plan_into_empty_body() {
+        let out = append_plan_section("", "Faça X depois Y");
+        assert_eq!(out, "## Plano\n\nFaça X depois Y\n");
+    }
+
+    /// Body without a plan section → original kept, plan appended below.
+    #[test]
+    fn append_plan_preserves_description() {
+        let out = append_plan_section("Descrição breve.", "Passo 1\nPasso 2");
+        assert_eq!(out, "Descrição breve.\n\n## Plano\n\nPasso 1\nPasso 2\n");
+    }
+
+    /// Re-planning replaces the previous `## Plano` block instead of stacking.
+    #[test]
+    fn append_plan_replaces_existing_section() {
+        let existing = "Descrição breve.\n\n## Plano\n\nPlano antigo\n";
+        let out = append_plan_section(existing, "Plano novo");
+        assert_eq!(out, "Descrição breve.\n\n## Plano\n\nPlano novo\n");
+        // Idempotent across repeated re-plans — no duplicate headings.
+        assert_eq!(out.matches("## Plano").count(), 1);
+    }
+
+    /// A heading that starts with "## Plano" but continues with more text
+    /// (e.g. "## Planos de contingência") must NOT be treated as the plan
+    /// section — it is part of the description and must be preserved.
+    #[test]
+    fn append_plan_does_not_match_heading_prefix() {
+        let existing = "Descrição.\n\n## Planos de contingência\nX\n";
+        let out = append_plan_section(existing, "Novo plano");
+        assert!(
+            out.contains("## Planos de contingência"),
+            "original section must be preserved"
+        );
+        assert!(
+            out.contains("## Plano\n\nNovo plano"),
+            "plan section must be appended"
+        );
+        // Exactly one `## Plano` section appended; original heading not falsely matched.
+        assert_eq!(out.matches("## Plano\n").count(), 1);
     }
 }

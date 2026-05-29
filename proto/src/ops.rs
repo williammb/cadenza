@@ -38,6 +38,11 @@ pub const OP_SET_IDEIA_STATUS: &str = "set_ideia_status";
 // chamá-la. Se a semântica algum dia exigir negociação, suba MAX_PROTOCOL.
 pub const OP_SET_TASK_WORKTREE: &str = "set_task_worktree";
 
+// Plan mode: rewrite a task's body (used by `cadenza-cli plan`). Added
+// under the current protocol window, same rationale as the worktree op
+// above — dispatch matches on the op name, not a negotiated version.
+pub const OP_UPDATE_BODY: &str = "update_body";
+
 // ───────── event names
 
 pub const EV_PROPOSTA_PENDENTE: &str = "proposta_pendente";
@@ -280,6 +285,34 @@ pub mod set_task_worktree {
         /// Git branch name. `None` clears the association.
         #[serde(default)]
         pub branch: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        pub ok: bool,
+    }
+}
+
+// ───────── update_body
+
+pub mod update_body {
+    use serde::{Deserialize, Serialize};
+
+    /// Rewrite a task's markdown body. Used by `cadenza-cli plan` so a
+    /// planning agent can persist the refined plan. When `append_plan`
+    /// is true (default) the server keeps the existing body and appends
+    /// (or replaces) a `## Plano` section; when false it overwrites the
+    /// whole body.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub task_id: String,
+        pub body: String,
+        #[serde(default = "default_append_plan")]
+        pub append_plan: bool,
+    }
+
+    fn default_append_plan() -> bool {
+        true
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
