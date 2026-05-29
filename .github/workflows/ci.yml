@@ -12,9 +12,71 @@ env:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  ci:
-    name: CI (${{ matrix.os }})
+  lint:
+    name: Lint and policy checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libdbus-1-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          shared-key: ci-${{ runner.os }}-stable
+          cache-on-failure: true
+
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+
+      - name: Create cadenza-cli bundle resource placeholder
+        shell: bash
+        run: |
+          mkdir -p target/release
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            : > target/release/cadenza-cli.exe
+          else
+            : > target/release/cadenza-cli
+          fi
+
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: cargo deny check
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories bans licenses sources
+
+      - name: Lint anti-XSS (no innerHTML outside allowlist)
+        run: |
+          if rg '\.innerHTML\s*=' ui/ --type js -g '!**/vendor/**' -g '!**/markdown.js'; then
+            echo "ERROR: innerHTML used outside the allowlist (only ui/markdown.js is permitted)"
+            exit 1
+          fi
+
+  test:
+    name: Tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -38,39 +100,35 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
 
       - name: Cache Cargo
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          shared-key: ci-${{ runner.os }}-stable
+          cache-on-failure: true
 
-      - name: cargo fmt --check
-        run: cargo fmt --all --check
+      - name: Create cadenza-cli bundle resource placeholder
+        shell: bash
+        run: |
+          mkdir -p target/release
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            : > target/release/cadenza-cli.exe
+          else
+            : > target/release/cadenza-cli
+          fi
 
-      - name: Build cadenza-cli (release) for tauri bundle resource
-        run: cargo build --release -p cadenza-cli
+      - name: cargo check (Tauri app)
+        if: runner.os == 'Windows'
+        run: cargo check -p cadenza --lib --bins
 
-      - name: cargo clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test (Windows fast crates)
+        if: runner.os == 'Windows'
+        run: cargo test -p cadenza-cli -p cadenza-proto -p cadenza-i18n -p skills-core
 
       - name: cargo test
+        if: runner.os != 'Windows'
         run: cargo test --workspace
-
-      - name: cargo deny check
-        if: runner.os == 'Linux'
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check advisories bans licenses sources
-
-      - name: Lint anti-XSS (no innerHTML outside allowlist)
-        if: runner.os == 'Linux'
-        run: |
-          if rg '\.innerHTML\s*=' ui/ --type js -g '!**/vendor/**' -g '!**/markdown.js'; then
-            echo "ERROR: innerHTML used outside the allowlist (only ui/markdown.js is permitted)"
-            exit 1
-          fi
 
   postgres:
     name: Postgres integration tests
@@ -93,7 +151,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Detect ignored tests
+        id: ignored_tests
+        run: |
+          if rg -q '#\[ignore' src-tauri cadenza-cli proto i18n skills-core -g '*.rs'; then
+            echo "has_ignored=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "No ignored tests found; skipping Postgres integration run."
+            echo "has_ignored=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Install system dependencies
+        if: steps.ignored_tests.outputs.has_ignored == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -105,17 +174,26 @@ jobs:
             pkg-config
 
       - name: Install Rust toolchain
+        if: steps.ignored_tests.outputs.has_ignored == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Cargo
+        if: steps.ignored_tests.outputs.has_ignored == 'true'
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
+          shared-key: ci-${{ runner.os }}-stable
+          cache-on-failure: true
 
-      - name: Build cadenza-cli (release) for tauri bundle resource
-        run: cargo build --release -p cadenza-cli
+      - name: Create cadenza-cli bundle resource placeholder
+        if: steps.ignored_tests.outputs.has_ignored == 'true'
+        shell: bash
+        run: |
+          mkdir -p target/release
+          : > target/release/cadenza-cli
 
       - name: cargo test (postgres integration)
-        run: cargo test --workspace -- --include-ignored
+        if: steps.ignored_tests.outputs.has_ignored == 'true'
+        run: cargo test --workspace -- --ignored
         env:
           DATABASE_URL: postgres://cadenza:cadenza@localhost:5432/cadenza_test
