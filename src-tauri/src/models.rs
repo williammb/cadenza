@@ -53,6 +53,7 @@ pub fn parse_models(bytes: &[u8], kind: AgenteKind) -> Vec<ModelEntry> {
     match kind {
         AgenteKind::ClaudeCode => parse_claude(&frame),
         AgenteKind::Codex => parse_codex(&frame),
+        AgenteKind::Antigravity => parse_antigravity(&frame),
     }
 }
 
@@ -99,6 +100,20 @@ fn capture_model_menu(
     for a in &prefix_args {
         cmd.arg(a);
     }
+    // Isolate the probe's environment exactly like the real agent spawn
+    // (PtyHandle::spawn): start empty and forward only the allowlist, so
+    // API keys / OAuth tokens / AWS creds from Cadenza's own process env
+    // don't leak into the spawned agent during `/model` discovery. PATH is
+    // then overridden with the augmented search path so the agent and any
+    // sub-tools it shells out to (e.g. node) resolve on a GUI launch whose
+    // inherited PATH is just /usr/bin:/bin:/usr/sbin:/sbin.
+    cmd.env_clear();
+    for name in crate::spawn::FORWARD_ENV_ALLOWLIST {
+        if let Some(val) = std::env::var_os(name) {
+            cmd.env(name, val);
+        }
+    }
+    cmd.env("PATH", crate::spawn::search_path());
     let mut child = pair
         .slave
         .spawn_command(cmd)
@@ -463,6 +478,60 @@ fn parse_codex(frame: &[String]) -> Vec<ModelEntry> {
     entries
 }
 
+/// Parse the Antigravity (`agy`) `/model` menu.
+///
+/// TODO(agy-verify): `agy` is not installed on the dev machine, so the
+/// exact menu rendering (header text, the "current" marker glyph, and
+/// whether ids carry a vendor prefix) is unconfirmed — unlike `parse_codex`
+/// which keys on the verified `gpt-` prefix and `(current)` marker. This
+/// parser is deliberately lenient: it takes the first token of each
+/// numbered row as the model id once past a "model"-mentioning header, and
+/// treats common selection markers as "current". Once a real
+/// `testdata/models_antigravity.bin` fixture is captured, tighten the
+/// header anchor / id filter / current detection to match and lock it with
+/// a fixture test (mirroring `parse_codex_fixture_*`).
+fn parse_antigravity(frame: &[String]) -> Vec<ModelEntry> {
+    // Anchor on the menu header the same way parse_claude/parse_codex do
+    // ("select model" / "/model") rather than any line merely containing
+    // the word "model" — a bare "model" substring matches banner/help
+    // chrome and would start extraction before the real menu, scraping
+    // non-model rows. If no header is found we fall back to scanning from
+    // the top, which the numbered-row + id heuristics below still gate.
+    let start = frame
+        .iter()
+        .position(|l| {
+            let lower = l.to_lowercase();
+            lower.contains("select model") || lower.contains("/model")
+        })
+        .unwrap_or(0);
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in frame.iter().skip(start) {
+        let Some((_, rest)) = match_numbered_row(line) else {
+            continue;
+        };
+        let id = rest.split_whitespace().next().unwrap_or("").to_string();
+        // Skip obviously non-model tokens (menu chrome). A model id has no
+        // spaces and is reasonably short; this is heuristic until verified.
+        if id.is_empty() || id.len() > 60 {
+            continue;
+        }
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let current = rest.contains("(current)") || line.contains('√') || line.contains('●');
+        entries.push(ModelEntry {
+            id: id.clone(),
+            label: rest.trim().to_string(),
+            current,
+        });
+        if entries.len() >= 12 {
+            break;
+        }
+    }
+    entries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -509,6 +578,29 @@ mod tests {
         );
         let current = entries.iter().find(|e| e.current).expect("a current row");
         assert_eq!(current.id, "gpt-5.5");
+    }
+
+    #[test]
+    fn parse_antigravity_synthetic_menu_lists_models() {
+        // No real `agy` fixture yet (agy not installed) — this synthetic
+        // frame locks the lenient parser's row extraction against an
+        // ASSUMED `/model` layout. Replace with a captured
+        // testdata/models_antigravity.bin once agy is available, then
+        // tighten parse_antigravity to the real format.
+        let synthetic = concat!(
+            "Select model\r\n",
+            "  1. gemini-3.1-pro  (current)\r\n",
+            "  2. gemini-3.5-flash\r\n",
+            "  3. claude-sonnet\r\n",
+        );
+        let entries = parse_models(synthetic.as_bytes(), AgenteKind::Antigravity);
+        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["gemini-3.1-pro", "gemini-3.5-flash", "claude-sonnet"]
+        );
+        let current = entries.iter().find(|e| e.current).expect("a current row");
+        assert_eq!(current.id, "gemini-3.1-pro");
     }
 
     #[test]

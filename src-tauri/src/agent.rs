@@ -50,6 +50,7 @@ pub fn default_command(kind: AgenteKind) -> &'static str {
     match kind {
         AgenteKind::ClaudeCode => "claude",
         AgenteKind::Codex => "codex",
+        AgenteKind::Antigravity => "agy",
     }
 }
 
@@ -68,20 +69,28 @@ pub struct AgentPresence {
 }
 
 /// Return install presence for every supported agent. Stable order:
-/// Claude Code, Codex — matches the UI's option order.
+/// Claude Code, Codex, Antigravity — matches the UI's option order.
 pub fn list_installed_agents() -> Vec<AgentPresence> {
-    [AgenteKind::ClaudeCode, AgenteKind::Codex]
-        .into_iter()
-        .map(detect_presence)
-        .collect()
+    [
+        AgenteKind::ClaudeCode,
+        AgenteKind::Codex,
+        AgenteKind::Antigravity,
+    ]
+    .into_iter()
+    .map(detect_presence)
+    .collect()
 }
 
 fn detect_presence(kind: AgenteKind) -> AgentPresence {
     let on_path = binary_on_path(default_command(kind));
     let has_config_dir = config_dir_for(kind).map(|p| p.is_dir()).unwrap_or(false);
+    // `on_path` stays faithful to PATH; the off-PATH locator (e.g. the
+    // OpenAI Codex store) only contributes to `installed` so the agent is
+    // still considered usable when we can auto-detect its binary.
+    let located = crate::spawn::locate_agent_binary(default_command(kind)).is_some();
     AgentPresence {
         kind,
-        installed: on_path || has_config_dir,
+        installed: on_path || has_config_dir || located,
         on_path,
         has_config_dir,
     }
@@ -92,6 +101,11 @@ fn config_dir_for(kind: AgenteKind) -> Option<PathBuf> {
     Some(match kind {
         AgenteKind::ClaudeCode => home.join(".claude"),
         AgenteKind::Codex => home.join(".codex"),
+        // TODO(agy-verify): confirm the dir `agy` actually creates.
+        // Docs point at `~/.gemini/antigravity-cli` (skills/MCP config)
+        // and `~/.config/antigravity` (config.toml). `.gemini` is the
+        // one tied to agent state, so prefer it for presence detection.
+        AgenteKind::Antigravity => home.join(".gemini").join("antigravity-cli"),
     })
 }
 
@@ -100,10 +114,10 @@ fn config_dir_for(kind: AgenteKind) -> Option<PathBuf> {
 /// Unix we match the bare name. Returns the first hit; we only care
 /// about presence, not the resolved path.
 fn binary_on_path(name: &str) -> bool {
-    let Some(path_var) = std::env::var_os("PATH") else {
-        return false;
-    };
-    binary_in_path_var(name, &path_var)
+    // Use the augmented search PATH (Homebrew, ~/.local/bin, npm-global,
+    // …) so presence detection matches how the agent is actually resolved
+    // on a GUI launch with a stripped PATH. See `spawn::search_path`.
+    binary_in_path_var(name, &crate::spawn::search_path())
 }
 
 /// Search `path_var` (a `PATH`-style list) for an executable named `name`.
@@ -184,6 +198,14 @@ pub fn plan_launch(
             existing_conversation_id,
         ),
         AgenteKind::Codex => plan_codex(
+            command,
+            model,
+            cwd,
+            task_id,
+            project_id,
+            existing_conversation_id,
+        ),
+        AgenteKind::Antigravity => plan_antigravity(
             command,
             model,
             cwd,
@@ -298,6 +320,85 @@ fn codex_sessions_root() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".codex")
+        .join("sessions")
+}
+
+/// Plan for the Antigravity CLI (`agy`). Structurally like Codex: `agy`
+/// generates its own conversation id, so the id is unknown until we
+/// capture it from disk after the process boots. The differences from
+/// Codex are the resume flag (`--conversation <id>` rather than a
+/// `resume <id>` subcommand) and the session store location.
+///
+/// Capture degrades gracefully: the reused `find_codex_session_uuid`
+/// walker looks for the newest `*.jsonl` with a trailing UUID under
+/// `antigravity_sessions_root()`. If `agy`'s on-disk format differs (the
+/// exact store is unverified — see the TODO below), the walker simply
+/// finds nothing, `conversation_id` stays `None`, and every start is a
+/// fresh conversation. No broken `--conversation` call, no error.
+fn plan_antigravity(
+    command: String,
+    model: &str,
+    cwd: &Path,
+    task_id: &str,
+    project_id: &str,
+    existing_conversation_id: Option<&str>,
+) -> LaunchPlan {
+    let mut args: Vec<String> = Vec::new();
+
+    match existing_conversation_id {
+        Some(id) => {
+            // Resume by id. Per `agy --help`, `--conversation <id>`
+            // resumes a previous conversation. Skip --model on resume for
+            // the same reason as Codex: the model is pinned to the saved
+            // session.
+            args.push("--conversation".to_string());
+            args.push(id.to_string());
+        }
+        None => {
+            if !model.is_empty() {
+                args.push("--model".to_string());
+                args.push(model.to_string());
+            }
+        }
+    };
+
+    // Seed CLAUDE_SESSION_ID for the cadenza-cli skill the same way as
+    // the other agents — empty on a fresh `agy` run (id not yet known).
+    let conv_seed = existing_conversation_id.unwrap_or("");
+
+    let cfg = SpawnConfig::new(command)
+        .args(args)
+        .cwd(cwd)
+        .size(DEFAULT_COLS, DEFAULT_ROWS)
+        .cadenza_env(project_id, task_id, conv_seed);
+
+    let pending_capture = if existing_conversation_id.is_none() {
+        Some(CodexCapture {
+            sessions_root: antigravity_sessions_root(),
+            started_at: SystemTime::now(),
+        })
+    } else {
+        None
+    };
+
+    LaunchPlan {
+        spawn: cfg,
+        conversation_id_known: existing_conversation_id.map(String::from),
+        pending_codex_capture: pending_capture,
+    }
+}
+
+fn antigravity_sessions_root() -> PathBuf {
+    // TODO(agy-verify): `agy` is not installed on the dev machine, so the
+    // session-store path and filename/id format are unconfirmed. The docs
+    // point at `~/.gemini/antigravity-cli/` for agent state; the capture
+    // reuses the codex jsonl+UUID-suffix walker. If `agy` stores sessions
+    // elsewhere or with a different id format, capture returns None and
+    // resume is disabled (graceful) until this is verified empirically.
+    dirs::home_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join(".gemini")
+        .join("antigravity-cli")
         .join("sessions")
 }
 
@@ -471,6 +572,53 @@ mod tests {
     }
 
     #[test]
+    fn antigravity_new_session_marks_pending_capture() {
+        let plan = plan_launch(
+            AgenteKind::Antigravity,
+            "gemini-3.1-pro",
+            None,
+            Path::new("/tmp/proj"),
+            "T-3",
+            "proj-c",
+            None,
+        );
+        assert_eq!(plan.spawn.command, "agy");
+        let args = &plan.spawn.args;
+        let m = args.iter().position(|a| a == "--model").expect("--model");
+        assert_eq!(args[m + 1], "gemini-3.1-pro");
+        assert!(!args.iter().any(|a| a == "--conversation"));
+        assert!(plan.conversation_id_known.is_none());
+        // agy generates its own id → capture pending, like Codex.
+        assert!(plan.pending_codex_capture.is_some());
+    }
+
+    #[test]
+    fn antigravity_resume_uses_conversation_flag_and_skips_model() {
+        let plan = plan_launch(
+            AgenteKind::Antigravity,
+            "gemini-3.1-pro",
+            None,
+            Path::new("/tmp/proj"),
+            "T-3",
+            "proj-c",
+            Some("019d4891-0feb-78a2-8f90-841686dc0175"),
+        );
+        let args = &plan.spawn.args;
+        let i = args
+            .iter()
+            .position(|a| a == "--conversation")
+            .expect("--conversation");
+        assert_eq!(args[i + 1], "019d4891-0feb-78a2-8f90-841686dc0175");
+        // No --model on resume — the session pins the model.
+        assert!(!args.iter().any(|a| a == "--model"));
+        assert!(plan.pending_codex_capture.is_none());
+        assert_eq!(
+            plan.conversation_id_known.as_deref(),
+            Some("019d4891-0feb-78a2-8f90-841686dc0175")
+        );
+    }
+
+    #[test]
     fn command_override_wins() {
         let plan = plan_launch(
             AgenteKind::ClaudeCode,
@@ -543,13 +691,18 @@ mod tests {
     }
 
     #[test]
-    fn list_installed_agents_returns_both_kinds_in_stable_order() {
+    fn list_installed_agents_returns_all_kinds_in_stable_order() {
         let rows = list_installed_agents();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].kind, AgenteKind::ClaudeCode);
         assert_eq!(rows[1].kind, AgenteKind::Codex);
+        assert_eq!(rows[2].kind, AgenteKind::Antigravity);
         for row in &rows {
-            assert_eq!(row.installed, row.on_path || row.has_config_dir);
+            // `installed` may also be set by the off-PATH binary locator,
+            // so it's a superset of the on_path/config-dir signals.
+            if row.on_path || row.has_config_dir {
+                assert!(row.installed);
+            }
         }
     }
 

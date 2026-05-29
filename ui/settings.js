@@ -30,6 +30,7 @@ const pgStatusEl = document.getElementById("pg-status");
 const pgSaveBtn = document.getElementById("btn-pg-save");
 const skillAgentClaudeEl = document.getElementById("skill-agent-claude");
 const skillAgentCodexEl = document.getElementById("skill-agent-codex");
+const skillAgentAntigravityEl = document.getElementById("skill-agent-antigravity");
 const skillForceEl = document.getElementById("skill-force");
 const skillStatusEl = document.getElementById("skill-status");
 const skillStatusTableBodyEl = document.getElementById("skill-status-table-body");
@@ -97,6 +98,13 @@ async function applyAgentPresence() {
     skillAgentCodexEl,
     document.querySelector('label[for="skill-agent-codex"] span, #skill-agent-codex + span'),
     map.get("codex"),
+  );
+  decorateSkillCheckbox(
+    skillAgentAntigravityEl,
+    document.querySelector(
+      'label[for="skill-agent-antigravity"] span, #skill-agent-antigravity + span',
+    ),
+    map.get("antigravity"),
   );
 }
 
@@ -261,6 +269,7 @@ function setStatus(msg, kind) {
 const MODEL_KIND_LABELS = {
   claude_code: "settings-skills-agent-claude",
   codex: "settings-skills-agent-codex",
+  antigravity: "settings-skills-agent-antigravity",
 };
 
 function setModelsStatus(msg, kind) {
@@ -272,7 +281,7 @@ function setModelsStatus(msg, kind) {
 // so opening Settings is instant.
 async function refreshModelsStatus() {
   modelsBodyEl.replaceChildren();
-  for (const kind of ["claude_code", "codex"]) {
+  for (const kind of ["claude_code", "codex", "antigravity"]) {
     let entries = [];
     try {
       entries = await invoke("list_agent_models", { agentKind: kind, cachedOnly: true });
@@ -551,6 +560,7 @@ function readSkillAgents() {
   const agents = [];
   if (skillAgentClaudeEl.checked) agents.push("claude");
   if (skillAgentCodexEl.checked) agents.push("codex");
+  if (skillAgentAntigravityEl.checked) agents.push("antigravity");
   return agents;
 }
 

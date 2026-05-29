@@ -21,7 +21,7 @@ use crate::runs::{TaskRun, TaskRuns};
 use crate::secrets;
 use crate::spawn::{PtyHandle, SpawnConfig};
 use crate::store::{
-    migrate, DecisaoRegistro, Estado, FileRepository, Ideia, IdeiaStatus, NewProposta,
+    migrate, Decisao, DecisaoRegistro, Estado, FileRepository, Ideia, IdeiaStatus, NewProposta,
     PgConnectionParams, PgRepository, PgSslModeChoice, Proposta, Repository, SqliteRepository,
     Task,
 };
@@ -70,6 +70,12 @@ pub struct AppState {
     /// they don't match so a revoked-mid-session connection can't keep
     /// driving the server until it disconnects on its own.
     pub token_epoch: AtomicU64,
+    /// Serializes the accept-materialization path in `decidir_proposta`.
+    /// Tauri runs commands concurrently, so a double-clicked "Accept"
+    /// would otherwise let two calls both read "no prior decision" and
+    /// each mint a derived task. Holding this across read→create→write
+    /// makes the second caller observe the first's decision and reuse it.
+    pub decision_lock: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -133,6 +139,7 @@ impl AppState {
             app_handle: Mutex::new(None),
             agent_models: Mutex::new(seeded_models),
             token_epoch: AtomicU64::new(0),
+            decision_lock: tokio::sync::Mutex::new(()),
         })
     }
 }
@@ -299,7 +306,14 @@ pub async fn read_task(state: State<'_, Arc<AppState>>, id: String) -> Result<Ta
 /// safely, and the UI does this in one user-initiated submit.
 #[tauri::command]
 pub async fn next_task_id(state: State<'_, Arc<AppState>>) -> Result<String, String> {
-    let tasks = state.repo.list_tasks(None).await.map_err(to_str_err)?;
+    mint_next_task_id(state.repo.as_ref()).await
+}
+
+/// Compute the next sequential `T-<n>` id from the repo's current tasks.
+/// Shared by `next_task_id` (UI pre-fill) and `create_task_from_proposta`
+/// (derived-task materialization) so the id scheme lives in one place.
+async fn mint_next_task_id(repo: &dyn Repository) -> Result<String, String> {
+    let tasks = repo.list_tasks(None).await.map_err(to_str_err)?;
     let next = highest_task_number(tasks.iter().map(|t| t.id.as_str())) + 1;
     Ok(format!("T-{next}"))
 }
@@ -729,12 +743,116 @@ pub async fn read_decisao(
 
 /// Persist a decision — frontend calls this from the modal or the
 /// notification action handler.
+///
+/// When the decision is `Aceita` and no `task_id` was supplied, we
+/// materialize the derived task here and stamp its id into the registro
+/// before persisting. Doing it backend-side keeps create+decision atomic:
+/// the UI can't crash between the two steps and leave a proposal accepted
+/// without a task. (`Mesclada` carries an existing `task_id`; `Rejeitada`
+/// keeps `task_id = None` — neither creates anything.)
 #[tauri::command]
 pub async fn decidir_proposta(
     state: State<'_, Arc<AppState>>,
-    registro: DecisaoRegistro,
+    mut registro: DecisaoRegistro,
 ) -> Result<(), String> {
+    if registro.decisao == Decisao::Aceita && registro.task_id.is_none() {
+        // Serializa read→create→write para que um duplo-clique não deixe
+        // duas chamadas concorrentes lerem "sem decisão" e materializarem
+        // duas tasks. O segundo a entrar enxerga a decisão do primeiro e
+        // reaproveita a task. (Re-tentativa após crash entre create e
+        // write ainda pode duplicar — fechar essa janela exige persistir
+        // create+decisão numa transação, o que depende do backend.)
+        let _guard = state.decision_lock.lock().await;
+        let existing = state
+            .repo
+            .read_decisao(&registro.proposta_id)
+            .await
+            .map_err(to_str_err)?
+            .and_then(|d| d.task_id);
+        let task_id = match existing {
+            Some(id) => id,
+            None => create_task_from_proposta(&state, &registro.proposta_id).await?,
+        };
+        registro.task_id = Some(task_id);
+        return state.repo.write_decisao(registro).await.map_err(to_str_err);
+    }
     state.repo.write_decisao(registro).await.map_err(to_str_err)
+}
+
+/// Materialize the derived task for an accepted proposal and return its
+/// new `T-<n>` id. The project is inherited from the proposal's `parent`
+/// task (via the task→project mapping), falling back to the active
+/// project; errors when neither is known, since `create_task` requires a
+/// valid project.
+async fn create_task_from_proposta(state: &AppState, proposta_id: &str) -> Result<String, String> {
+    let proposta = state
+        .repo
+        .read_proposta(proposta_id)
+        .await
+        .map_err(to_str_err)?
+        .ok_or_else(|| format!("proposta not found: {proposta_id}"))?;
+
+    // Projeto: herda do parent, senão usa o projeto ativo do config.
+    let project_id = proposta
+        .parent
+        .as_deref()
+        .and_then(|p| state.task_projects.get(p))
+        .or_else(|| {
+            state
+                .config
+                .lock()
+                .ok()
+                .and_then(|cfg| cfg.active_project_id.clone())
+        })
+        .ok_or_else(|| {
+            "cannot create derived task: proposta has no parent project and no active project is set"
+                .to_string()
+        })?;
+
+    // Mesmo guard de `create_task`: o projeto precisa existir no config
+    // (pode ter sido removido entre a proposta e a aceitação).
+    {
+        let cfg = state.config.lock().map_err(to_str_err)?;
+        if !cfg.projects.iter().any(|p| p.id == project_id) {
+            return Err(format!("unknown project_id: {project_id}"));
+        }
+    }
+
+    // Mint a sequential T-<n>, matching the in-app and CLI create paths.
+    let task_id = mint_next_task_id(state.repo.as_ref()).await?;
+
+    let task = Task {
+        id: task_id.clone(),
+        titulo: proposta.title.clone(),
+        estado: Estado::AFazer,
+        responsavel: "humano".to_string(),
+        body: proposta_to_body(&proposta),
+        worktree_path: None,
+        branch: None,
+    };
+    state.repo.create_task(&task).await.map_err(to_str_err)?;
+    state
+        .task_projects
+        .set(&task_id, Some(&project_id))
+        .map_err(to_str_err)?;
+    emit_tasks_changed(state, &task_id);
+    Ok(task_id)
+}
+
+/// Render an accepted proposal into the derived task's markdown body so
+/// the task keeps the full context the agent reported. Mirrors the fields
+/// shown in the triage modal (pt-BR primary locale).
+fn proposta_to_body(p: &Proposta) -> String {
+    let mut body = String::new();
+    let file = p.file.trim();
+    if !file.is_empty() {
+        body.push_str(&format!("**Arquivo:** {file}\n\n"));
+    }
+    body.push_str(&format!("## Como reproduzir\n{}\n\n", p.repro.trim()));
+    body.push_str(&format!("## O que falhou\n{}\n\n", p.what_failed.trim()));
+    body.push_str(&format!("## Ação proposta\n{}\n", p.action.trim()));
+    body.push_str(&format!("\n---\nDerivada da proposta {}.\n", p.proposta_id));
+    body
 }
 
 /// Used by the CLI's `propose` path (will go through the NDJSON socket
@@ -1699,7 +1817,24 @@ pub async fn list_agent_models(
     })
     .await
     .map_err(to_str_err)?
-    .map_err(|e| format!("discover_models({command}): {e}"))?;
+    .map_err(|e| {
+        let msg = e.to_string();
+        // Spawn couldn't find the binary anywhere (PATH + standard install
+        // locations). Give an actionable hint instead of the raw os error.
+        // Covers the Windows ("os error 2") and Unix/portable-pty
+        // ("No viable candidates found in PATH …") not-found phrasings.
+        if msg.contains("os error 2")
+            || msg.contains("cannot find the file")
+            || msg.contains("No viable candidates")
+        {
+            format!(
+                "`{command}` not found on PATH or in its standard install location. \
+                 Set its full path in Settings → agent command, or install it on your PATH."
+            )
+        } else {
+            format!("discover_models({command}): {msg}")
+        }
+    })?;
     if entries.is_empty() {
         return Err(format!(
             "no models parsed from `{command}` — the agent's `/model` menu likely changed shape; please report this"
@@ -1739,7 +1874,41 @@ pub async fn list_agent_models(
 
 #[cfg(test)]
 mod tests {
-    use super::highest_task_number;
+    use super::{highest_task_number, proposta_to_body, Proposta};
+
+    fn sample_proposta() -> Proposta {
+        Proposta {
+            proposta_id: "P-abc123".to_string(),
+            idempotency_key: "key".to_string(),
+            parent: Some("T-28".to_string()),
+            title: "Bug X".to_string(),
+            repro: "abrir o modal".to_string(),
+            file: "ui/triage-modal.js".to_string(),
+            what_failed: "task_id null hardcoded".to_string(),
+            action: "criar a task no backend".to_string(),
+            created_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn proposta_to_body_renders_all_sections() {
+        let body = proposta_to_body(&sample_proposta());
+        assert!(body.contains("**Arquivo:** ui/triage-modal.js"));
+        assert!(body.contains("## Como reproduzir\nabrir o modal"));
+        assert!(body.contains("## O que falhou\ntask_id null hardcoded"));
+        assert!(body.contains("## Ação proposta\ncriar a task no backend"));
+        assert!(body.contains("Derivada da proposta P-abc123."));
+    }
+
+    #[test]
+    fn proposta_to_body_omits_empty_file_line() {
+        let mut p = sample_proposta();
+        p.file = "   ".to_string();
+        let body = proposta_to_body(&p);
+        assert!(!body.contains("**Arquivo:**"));
+        // The substantive sections still render.
+        assert!(body.contains("## Como reproduzir"));
+    }
 
     #[test]
     fn highest_task_number_returns_zero_for_empty() {

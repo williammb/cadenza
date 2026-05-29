@@ -5571,6 +5571,7 @@ dependencies = [
  "dirs",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

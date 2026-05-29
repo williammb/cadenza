@@ -32,6 +32,7 @@ const statusEl = document.getElementById("task-status");
 
 // Worktree / branch section — edit mode only.
 const worktreeSection = document.getElementById("task-worktree-section");
+const useWorktreeEl = document.getElementById("task-use-worktree");
 const branchEl = document.getElementById("task-branch");
 const worktreePathEl = document.getElementById("task-worktree-path");
 const createWorktreeBtn = document.getElementById("btn-create-worktree");
@@ -127,16 +128,36 @@ async function loadWorktreeDefaults(id) {
   setWorktreeStatus("");
   branchEl.value = "";
   worktreePathEl.value = "";
+  // Reset to "no worktree" up front so a failed defaults load (below)
+  // doesn't carry the previously-opened task's checkbox / control
+  // visibility into this task.
+  useWorktreeEl.checked = false;
+  syncWorktreeMode();
   try {
     const d = await invoke("task_worktree_defaults", { taskId: id });
     if (myGen !== worktreeLoadGen) return; // a newer task was opened meanwhile
     branchEl.value = d?.stored?.branch || d?.current_branch || "";
     worktreePathEl.value =
       d?.stored?.worktree_path || d?.suggested_worktree_path || "";
+    // "Using a worktree" is derived from whether one is actually stored —
+    // there's no separate persisted flag. Creating/removing a worktree is
+    // what flips this; the checkbox only gates which controls are shown.
+    useWorktreeEl.checked = !!d?.stored?.worktree_path;
+    syncWorktreeMode();
   } catch (e) {
     if (myGen !== worktreeLoadGen) return;
     setWorktreeStatus(t("task-worktree-defaults-error", { error: e }), "error");
   }
+}
+
+// Toggle the worktree-only controls (path field + create/remove) based on the
+// "use worktree" checkbox. The branch field and "switch branch" stay visible
+// either way: without a worktree, switching operates on the project repo.
+function syncWorktreeMode() {
+  const useWorktree = useWorktreeEl.checked;
+  worktreePathEl.closest("label").hidden = !useWorktree;
+  createWorktreeBtn.hidden = !useWorktree;
+  removeWorktreeBtn.hidden = !useWorktree;
 }
 
 function setWorktreeStatus(msg, kind) {
@@ -187,6 +208,8 @@ deleteBtn.addEventListener("click", async () => {
 // ─────────────────── worktree / branch actions (edit mode) ───────────────────
 // These run real git in the project repo and keep the modal open so the
 // user can see the result/error and keep working with the branch fields.
+
+useWorktreeEl.addEventListener("change", syncWorktreeMode);
 
 createWorktreeBtn.addEventListener("click", async () => {
   if (mode !== "edit" || !editingId) return;

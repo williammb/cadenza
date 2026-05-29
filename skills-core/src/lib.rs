@@ -2,10 +2,12 @@
 //! snippet for Claude Code and Codex, in project or global scope.
 //!
 //! Targets:
-//!   Claude global  → ~/.claude/skills/cadenza/SKILL.md
-//!   Claude project → <cwd>/.claude/skills/cadenza/SKILL.md
-//!   Codex global   → ~/.codex/AGENTS.md       (managed section)
-//!   Codex project  → <cwd>/AGENTS.md          (managed section)
+//!   Claude global       → ~/.claude/skills/cadenza/SKILL.md
+//!   Claude project      → <cwd>/.claude/skills/cadenza/SKILL.md
+//!   Codex global        → ~/.codex/AGENTS.md                              (managed section)
+//!   Codex project       → <cwd>/AGENTS.md                                 (managed section)
+//!   Antigravity global  → ~/.gemini/antigravity-cli/skills/cadenza/SKILL.md
+//!   Antigravity project → <cwd>/.agents/skills/cadenza/SKILL.md
 //!
 //! For Codex, the skill is wrapped in HTML comment markers so install /
 //! remove can edit a shared file without clobbering unrelated content:
@@ -50,6 +52,7 @@ const CLAUDE_SKILL_DESCRIPTION_EN: &str =
 pub enum Agent {
     Claude,
     Codex,
+    Antigravity,
 }
 
 impl Agent {
@@ -57,6 +60,7 @@ impl Agent {
         match self {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
+            Agent::Antigravity => "antigravity",
         }
     }
 }
@@ -125,6 +129,7 @@ pub fn install(
         let outcome = match agent {
             Agent::Claude => install_claude(scope, locale, body, force, project_root)?,
             Agent::Codex => install_codex(scope, locale, body, force, project_root)?,
+            Agent::Antigravity => install_antigravity(scope, locale, body, force, project_root)?,
         };
         report.push(outcome);
     }
@@ -139,9 +144,38 @@ fn install_claude(
     project_root: Option<&Path>,
 ) -> Result<Outcome> {
     let path = claude_path(scope, project_root)?;
+    install_skill_md(Agent::Claude, path, scope, locale, body, force)
+}
+
+/// Antigravity (`agy`) discovers skills as `SKILL.md`-in-a-folder, the
+/// same shape as Claude Code — so it reuses the Claude install/remove
+/// path logic, only the target directory differs (`.agents/skills/` for
+/// the workspace, `~/.gemini/antigravity-cli/skills/` globally).
+fn install_antigravity(
+    scope: Scope,
+    locale: &str,
+    body: &str,
+    force: bool,
+    project_root: Option<&Path>,
+) -> Result<Outcome> {
+    let path = antigravity_path(scope, project_root)?;
+    install_skill_md(Agent::Antigravity, path, scope, locale, body, force)
+}
+
+/// Shared writer for the SKILL.md-folder agents (Claude, Antigravity):
+/// write a self-contained Skill file with YAML frontmatter so the agent
+/// can discover it by name. Skips an existing file unless `force`.
+fn install_skill_md(
+    agent: Agent,
+    path: PathBuf,
+    scope: Scope,
+    locale: &str,
+    body: &str,
+    force: bool,
+) -> Result<Outcome> {
     if path.exists() && !force {
         return Ok(Outcome::skipped(
-            Agent::Claude,
+            agent,
             scope,
             &path,
             "already exists (use force)",
@@ -161,7 +195,7 @@ fn install_claude(
         body = body,
     );
     write_atomic(&path, content.as_bytes())?;
-    Ok(Outcome::installed(Agent::Claude, scope, &path, locale))
+    Ok(Outcome::installed(agent, scope, &path, locale))
 }
 
 fn install_codex(
@@ -219,6 +253,7 @@ pub fn remove(agents: &[Agent], scope: Scope, project_root: Option<&Path>) -> Re
         let outcome = match agent {
             Agent::Claude => remove_claude(scope, project_root)?,
             Agent::Codex => remove_codex(scope, project_root)?,
+            Agent::Antigravity => remove_antigravity(scope, project_root)?,
         };
         report.push(outcome);
     }
@@ -227,20 +262,26 @@ pub fn remove(agents: &[Agent], scope: Scope, project_root: Option<&Path>) -> Re
 
 fn remove_claude(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
     let path = claude_path(scope, project_root)?;
+    remove_skill_md(Agent::Claude, path, scope)
+}
+
+fn remove_antigravity(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
+    let path = antigravity_path(scope, project_root)?;
+    remove_skill_md(Agent::Antigravity, path, scope)
+}
+
+/// Shared remover for the SKILL.md-folder agents (Claude, Antigravity):
+/// delete the file and best-effort drop the now-empty `cadenza/` folder.
+fn remove_skill_md(agent: Agent, path: PathBuf, scope: Scope) -> Result<Outcome> {
     if !path.exists() {
-        return Ok(Outcome::skipped(
-            Agent::Claude,
-            scope,
-            &path,
-            "not installed",
-        ));
+        return Ok(Outcome::skipped(agent, scope, &path, "not installed"));
     }
     fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
     // Best-effort cleanup of the empty `cadenza/` skill folder.
     if let Some(parent) = path.parent() {
         let _ = fs::remove_dir(parent);
     }
-    Ok(Outcome::removed(Agent::Claude, scope, &path))
+    Ok(Outcome::removed(agent, scope, &path))
 }
 
 fn remove_codex(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
@@ -280,10 +321,11 @@ fn remove_codex(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
 // --- status ----------------------------------------------------------------
 
 pub fn status(project_root: Option<&Path>) -> Vec<StatusRow> {
-    let mut rows = Vec::with_capacity(4);
+    let mut rows = Vec::with_capacity(6);
     for scope in [Scope::Project, Scope::Global] {
         rows.push(probe_claude(scope, project_root));
         rows.push(probe_codex(scope, project_root));
+        rows.push(probe_antigravity(scope, project_root));
     }
     rows
 }
@@ -317,6 +359,25 @@ fn probe_codex(scope: Scope, project_root: Option<&Path>) -> StatusRow {
     };
     StatusRow {
         agent: Agent::Codex,
+        scope,
+        path,
+        installed,
+        locale,
+    }
+}
+
+fn probe_antigravity(scope: Scope, project_root: Option<&Path>) -> StatusRow {
+    // Same SKILL.md body as Claude → the same heading-based locale sniff
+    // applies.
+    let path = antigravity_path(scope, project_root).unwrap_or_else(|_| PathBuf::from("<no home>"));
+    let installed = path.exists();
+    let locale = if installed {
+        fs::read_to_string(&path).ok().and_then(parse_claude_locale)
+    } else {
+        None
+    };
+    StatusRow {
+        agent: Agent::Antigravity,
         scope,
         path,
         installed,
@@ -383,6 +444,24 @@ fn claude_path(scope: Scope, project_root: Option<&Path>) -> Result<PathBuf> {
         .join("skills")
         .join(CLAUDE_SKILL_NAME)
         .join("SKILL.md"))
+}
+
+fn antigravity_path(scope: Scope, project_root: Option<&Path>) -> Result<PathBuf> {
+    Ok(match scope {
+        // Workspace skills live under `.agents/skills/` per the agy skill
+        // convention; global skills under `~/.gemini/antigravity-cli/skills/`.
+        Scope::Project => project_root_or_cwd(project_root)?
+            .join(".agents")
+            .join("skills")
+            .join(CLAUDE_SKILL_NAME)
+            .join("SKILL.md"),
+        Scope::Global => home_dir()?
+            .join(".gemini")
+            .join("antigravity-cli")
+            .join("skills")
+            .join(CLAUDE_SKILL_NAME)
+            .join("SKILL.md"),
+    })
 }
 
 fn codex_agents_path(scope: Scope, project_root: Option<&Path>) -> Result<PathBuf> {
@@ -490,5 +569,39 @@ mod tests {
     fn parse_claude_locale_detects_pt() {
         let body = "---\nname: cadenza\n---\n\n# Cadenza — Como usar\nfoo";
         assert_eq!(parse_claude_locale(body.into()).as_deref(), Some("pt-BR"));
+    }
+
+    #[test]
+    fn antigravity_project_install_remove_roundtrip() {
+        let root = tempfile::TempDir::new().unwrap();
+        let project = Some(root.path());
+
+        // Install (project scope) → .agents/skills/cadenza/SKILL.md exists
+        // with the YAML frontmatter.
+        let report = install(&[Agent::Antigravity], Scope::Project, "en", false, project).unwrap();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].action, Action::Installed);
+        let path = root
+            .path()
+            .join(".agents")
+            .join("skills")
+            .join("cadenza")
+            .join("SKILL.md");
+        assert!(path.exists(), "expected SKILL.md at {}", path.display());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.starts_with("---\nname: cadenza\n"));
+
+        // Status reflects the install.
+        let rows = status(project);
+        let row = rows
+            .iter()
+            .find(|r| r.agent == Agent::Antigravity && r.scope == Scope::Project)
+            .expect("antigravity project status row");
+        assert!(row.installed);
+
+        // Remove → file gone, folder cleaned up.
+        let report = remove(&[Agent::Antigravity], Scope::Project, project).unwrap();
+        assert_eq!(report[0].action, Action::Removed);
+        assert!(!path.exists());
     }
 }

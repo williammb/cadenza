@@ -16,8 +16,9 @@ const { invoke } = window.__TAURI__.core;
 
 // Map "claude_code" (CLI / config enum) ↔ "claude" (UI skill enum).
 // Both backend Tauri commands accept their own form; we normalize here.
-const KIND_TO_SKILL = { claude_code: "claude", codex: "codex" };
-const SKILL_TO_KIND = { claude: "claude_code", codex: "codex" };
+// For codex and antigravity the kind and skill names coincide.
+const KIND_TO_SKILL = { claude_code: "claude", codex: "codex", antigravity: "antigravity" };
+const SKILL_TO_KIND = { claude: "claude_code", codex: "codex", antigravity: "antigravity" };
 
 let cache = null;
 
