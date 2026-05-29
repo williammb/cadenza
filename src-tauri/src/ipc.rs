@@ -1003,7 +1003,10 @@ mod tests {
             out.contains("## Planos de contingência"),
             "original section must be preserved"
         );
-        assert!(out.contains("## Plano\n\nNovo plano"), "plan section must be appended");
+        assert!(
+            out.contains("## Plano\n\nNovo plano"),
+            "plan section must be appended"
+        );
         // Exactly one `## Plano` section appended; original heading not falsely matched.
         assert_eq!(out.matches("## Plano\n").count(), 1);
     }
