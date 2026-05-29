@@ -165,7 +165,24 @@ function makeCard(task) {
   // Prevent button drag from also dragging the card.
   startBtn.addEventListener("dragstart", (e) => e.preventDefault());
 
-  card.append(title, id, startBtn);
+  // Plan button — opens the same agent modal in plan mode. The agent
+  // interviews the human and writes a `## Plano` section into the body;
+  // the task stays in its column (planning happens before execution).
+  const planBtn = document.createElement("button");
+  planBtn.type = "button";
+  planBtn.className = "btn btn-icon card-plan";
+  planBtn.textContent = "🗒";
+  planBtn.title = t("card-plan-aria");
+  planBtn.setAttribute("aria-label", t("card-plan-aria"));
+  planBtn.disabled = task.estado === "feito";
+  planBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (planBtn.disabled) return;
+    openStartAgent(task.id, { titulo: task.titulo, mode: "plan" });
+  });
+  planBtn.addEventListener("dragstart", (e) => e.preventDefault());
+
+  card.append(title, id, startBtn, planBtn);
 
   // Branch badge — shown when the task is associated with a git branch
   // (field enriched by the backend from task-worktrees.json).

@@ -188,6 +188,7 @@ task-modal-start = Start
 task-modal-start-aria = Start an agent for this task
 card-start-aria = Start agent
 card-start-resume-aria = Resume saved conversation
+card-plan-aria = Plan task before running
 
 start-agent-title = Start agent
 start-agent-branch-label = Branch
@@ -204,6 +205,8 @@ start-agent-fresh = Start new
 start-agent-fresh-confirm = Discard the saved conversation and start a new one?
 start-agent-action-start = Start
 start-agent-action-resume = Resume
+start-agent-action-plan = Plan
+start-agent-title-plan = Plan task
 start-agent-launching = Starting agent…
 
 # Non-blocking banner at the top of the window when the updater finds

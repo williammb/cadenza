@@ -21,3 +21,8 @@ notification-action-open = Abrir janela
 # por Claude Code via descrição) e o id da task.
 agent-initial-prompt = Use a skill `cadenza` para coordenar com o Cadenza pelo cadenza-cli. Sua task é { $task_id } ({ $titulo }). Comece executando `cadenza-cli current --json`.
 agent-initial-prompt-ideia = Use a skill `cadenza` para coordenar com o Cadenza pelo cadenza-cli. Destrincha a ideia { $ideia_id } em tasks acionáveis. Use `cadenza-cli read-ideia { $ideia_id }` para ler o conteúdo completo.
+# Prompt injetado quando o agente é iniciado em modo PLANEJAMENTO: ele NÃO
+# deve implementar nada, apenas entrevistar o humano e gravar o plano
+# refinado via `cadenza-cli plan`. A task ainda está em `a_fazer`, então
+# `current` não a retorna — o agente a lê com `list --json`.
+agent-planning-prompt = Use a skill `cadenza` para coordenar com o Cadenza. Você está em modo PLANEJAMENTO da task { $task_id } ({ $titulo }) — NÃO escreva nem rode código ainda. Leia a task com `cadenza-cli list --json` e localize { $task_id }. Faça perguntas de esclarecimento, em lotes, até que a abordagem, o escopo e os critérios de aceite estejam claros. Quando combinarmos, salve o plano refinado enviando o markdown pela entrada padrão: `cadenza-cli plan { $task_id }` (omita `--body` para que o plano seja lido do stdin, evitando problemas de escape no shell). Não marque nada como concluído e não comece a implementação — eu inicio uma execução separada depois.

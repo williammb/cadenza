@@ -14,7 +14,7 @@
 //     menu. Result is cached backend-side per process. While the call
 //     is in flight, the dropdown is disabled and shows a placeholder.
 
-import { t } from "./i18n.js";
+import { t, onLocaleChange } from "./i18n.js";
 import { attachTerminal } from "./terminal.js";
 import {
   loadAgentPresence,
@@ -30,6 +30,7 @@ const kindSel = document.getElementById("start-agent-kind");
 const modelSel = document.getElementById("start-agent-model");
 const modelText = document.getElementById("start-agent-model-text");
 const modelHint = document.getElementById("start-agent-model-hint");
+const titleEl = document.getElementById("start-agent-title");
 const taskBadge = document.getElementById("start-agent-task-badge");
 const resumeBanner = document.getElementById("start-agent-resume-banner");
 const resumeIdEl = document.getElementById("start-agent-resume-id");
@@ -44,10 +45,25 @@ let currentTaskId = null;
 let currentTitulo = null;
 let currentRun = null; // task-run record from backend (or null)
 // "task" (default): chama start_task_agent + suporta resume.
+// "plan": chama start_task_agent com mode=plan — sem resume; o agente
+// planeja a task e grava o plano no body, sem mover o card.
 // "ideia": chama destrinchar_ideia, sem resume (cada decomposição é
 // one-shot — não há conversa antiga para continuar).
 let currentMode = "task";
 let onSpawnedRefresh = null;
+
+// Re-apply mode-specific strings when the locale changes while the modal is open.
+onLocaleChange(() => {
+  updateModalTitle();
+  updateResumeBanner();
+});
+
+function updateModalTitle() {
+  titleEl.textContent =
+    currentMode === "plan"
+      ? t("start-agent-title-plan") || "Planejar task"
+      : t("start-agent-title") || "Iniciar agente";
+}
 
 export function setStartAgentRefreshCallback(fn) {
   onSpawnedRefresh = fn;
@@ -56,8 +72,10 @@ export function setStartAgentRefreshCallback(fn) {
 export async function openStartAgent(targetId, opts = {}) {
   currentTaskId = targetId;
   currentTitulo = opts.titulo ?? null;
-  currentMode = opts.mode === "ideia" ? "ideia" : "task";
+  currentMode =
+    opts.mode === "ideia" ? "ideia" : opts.mode === "plan" ? "plan" : "task";
   taskBadge.textContent = targetId;
+  updateModalTitle();
   setStatus("");
 
   // Default kind comes from Config.agente.kind. read_task_run is só
@@ -108,7 +126,9 @@ let worktreeInfoGen = 0;
 
 async function loadWorktreeInfo(targetId) {
   const myGen = ++worktreeInfoGen;
-  if (currentMode !== "task") {
+  // Plan mode runs in the same cwd as execution, so the branch/worktree
+  // info is still relevant; only ideia decomposition has no association.
+  if (currentMode === "ideia") {
     worktreeInfoEl.hidden = true;
     return;
   }
@@ -221,6 +241,9 @@ function updateResumeBanner() {
     resumeBanner.hidden = false;
     resumeIdEl.textContent = shortenId(currentRun.conversation_id);
     submitBtn.textContent = t("start-agent-action-resume") || "Continuar";
+  } else if (currentMode === "plan") {
+    resumeBanner.hidden = true;
+    submitBtn.textContent = t("start-agent-action-plan") || "Planejar";
   } else {
     resumeBanner.hidden = true;
     submitBtn.textContent = t("start-agent-action-start") || "Iniciar";
@@ -296,6 +319,7 @@ form.addEventListener("submit", async (e) => {
             taskId: currentTaskId,
             agentKind,
             model,
+            mode: currentMode === "plan" ? "plan" : "execute",
           });
     await attachTerminal(result.session_id, {
       taskId: currentTaskId,

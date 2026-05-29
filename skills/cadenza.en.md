@@ -14,10 +14,37 @@ Cadenza desktop app over a local socket; the app **must be running**.
 4. **When done:** `cadenza-cli done <id> "<summary>"` — you **never** move a
    task to "done" yourself; this requests it from the human.
 
+## Planning a task (plan mode)
+
+When you are started in **plan mode**, you must NOT implement anything. The
+task is still in `a_fazer`, so `cadenza-cli current` will not return it —
+find it with `cadenza-cli list --json`.
+
+1. Read the task's brief description.
+2. Interview the human in the terminal: ask clarifying questions about
+   scope, edge cases, and acceptance criteria — one focused batch at a time.
+3. When you and the human agree, save the refined plan:
+
+   ```bash
+   cadenza-cli plan T-42 --body "## Goal
+   ...
+   ## Steps
+   1. ...
+   ## Acceptance
+   - ..."
+   ```
+
+   By default the plan is appended as a `## Plano` section, preserving the
+   original description. Pass `--replace` to overwrite the whole body, or
+   omit `--body` to pipe the plan from stdin.
+4. Do **not** call `done` and do **not** start coding. The human starts a
+   separate execution run that will read your saved plan.
+
 ## Rules
 
 - You only work on tasks with `estado: fazendo`. If `cadenza-cli current`
-  returns `null`, stop and ask the human to start a task.
+  returns `null`, stop and ask the human to start a task (unless you are in
+  plan mode — see above).
 - Always use `--json` when parsing output. `estado` values stay in PT
   canonical (`a_fazer`, `fazendo`, `aguardando_revisao`, `feito`) — they
   do **not** change with `--lang`.
