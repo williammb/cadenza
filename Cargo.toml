@@ -60,8 +60,13 @@ skills-core = { path = "skills-core" }
 opt-level = 0
 debug = 1
 
+# Tuned for CI build time over peak runtime perf: this is an early-stage
+# desktop app where a ~30 min release build is the real cost, not a few
+# percent of binary speed. lto=false + codegen-units=16 parallelize codegen
+# and drop the serial link-time pass. Revisit (lto="thin", codegen-units=1)
+# if/when runtime perf of the shipped binary actually matters.
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = false
 strip = true
-codegen-units = 1
+codegen-units = 16

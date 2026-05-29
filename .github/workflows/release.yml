@@ -9,11 +9,13 @@ on:
 permissions:
   contents: write
 
-# Jobs run sequentially (build-windows → build-linux → build-macos) so each
-# tauri-action invocation downloads the in-progress `latest.json` from the
-# draft release, merges its own platform entry, and re-uploads — running them
-# in parallel would race on the asset upload and only the last writer's
-# platform would be updatable.
+# A pushed `v*` tag builds and publishes Windows only — the one platform
+# Cadenza ships today (see docs/RELEASING.md). Linux/macOS are gated behind
+# manual `workflow_dispatch` until those bundles are actually distributed,
+# so a routine release isn't paying ~30 min × 3 sequential jobs for artifacts
+# nobody downloads. When they ship, drop their `workflow_dispatch`-only guard
+# and they rejoin the sequential chain (ordered so each tauri-action merges
+# its platform entry into the shared `latest.json` instead of racing on it).
 jobs:
   build-windows:
     name: Build (Windows · NSIS)
@@ -68,6 +70,8 @@ jobs:
     name: Build (Linux · AppImage)
     runs-on: ubuntu-22.04
     needs: build-windows
+    # Manual-only until Linux bundles ship; skipped on `v*` tag releases.
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
       - uses: actions/checkout@v6
@@ -113,6 +117,8 @@ jobs:
     name: Build (macOS · DMG · universal)
     runs-on: macos-latest
     needs: build-linux
+    # Manual-only until macOS bundles ship; skipped on `v*` tag releases.
+    if: github.event_name == 'workflow_dispatch'
 
     steps:
       - uses: actions/checkout@v6

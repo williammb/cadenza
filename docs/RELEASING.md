@@ -57,11 +57,17 @@ it means users can no longer receive signed updates for existing installs.
 
 ## Workflow jobs
 
-| Job            | Runner           | Bundle    | Signing |
-|----------------|------------------|-----------|---------|
-| `build-windows`| `windows-latest` | NSIS      | ed25519 |
-| `build-linux`  | `ubuntu-22.04`   | AppImage  | ed25519 |
-| `build-macos`  | `macos-latest`   | DMG       | ed25519 |
+| Job            | Runner           | Bundle    | Signing | Trigger |
+|----------------|------------------|-----------|---------|---------|
+| `build-windows`| `windows-latest` | NSIS      | ed25519 | `v*` tag push (and `workflow_dispatch` smoke-test) |
+| `build-linux`  | `ubuntu-22.04`   | AppImage  | ed25519 | `workflow_dispatch` only |
+| `build-macos`  | `macos-latest`   | DMG       | ed25519 | `workflow_dispatch` only |
+
+A pushed `v*` tag builds and publishes **Windows only** — the one platform
+Cadenza ships today. Linux/macOS are gated behind manual `workflow_dispatch`
+so routine releases don't pay ~30 min × 3 sequential jobs for bundles that
+aren't distributed yet. When those bundles ship, remove the
+`if: github.event_name == 'workflow_dispatch'` guard on their jobs.
 
 Each job:
 1. Builds `cadenza-cli` via `beforeBuildCommand` (lands in `target/release/`)
