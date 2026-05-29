@@ -9,13 +9,13 @@ on:
 permissions:
   contents: write
 
-# A pushed `v*` tag builds and publishes Windows only — the one platform
-# Cadenza ships today (see docs/RELEASING.md). Linux/macOS are gated behind
-# manual `workflow_dispatch` until those bundles are actually distributed,
-# so a routine release isn't paying ~30 min × 3 sequential jobs for artifacts
-# nobody downloads. When they ship, drop their `workflow_dispatch`-only guard
-# and they rejoin the sequential chain (ordered so each tauri-action merges
-# its platform entry into the shared `latest.json` instead of racing on it).
+# A pushed `v*` tag builds and publishes Windows and macOS — the platforms
+# Cadenza ships today (see docs/RELEASING.md). Linux is still gated behind
+# manual `workflow_dispatch` until its AppImage is actually distributed.
+# The publishing jobs run sequentially (Windows → macOS) so each tauri-action
+# merges its platform entry into the shared `latest.json` instead of racing
+# on it. Linux, when it ships, drops its `workflow_dispatch`-only guard and
+# rejoins the chain.
 jobs:
   build-windows:
     name: Build (Windows · NSIS)
@@ -116,9 +116,11 @@ jobs:
   build-macos:
     name: Build (macOS · DMG · universal)
     runs-on: macos-latest
-    needs: build-linux
-    # Manual-only until macOS bundles ship; skipped on `v*` tag releases.
-    if: github.event_name == 'workflow_dispatch'
+    # Chain after Windows (not Linux, which is skipped on tags) so the two
+    # shipping platforms publish sequentially into the shared latest.json.
+    needs: build-windows
+    # Runs on `v*` tag releases and on manual dispatch.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - uses: actions/checkout@v6
