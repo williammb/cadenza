@@ -78,7 +78,7 @@ pub struct TerminalSession {
     id: String,
     ring: Arc<Mutex<RingBuffer>>,
     tx: broadcast::Sender<Vec<u8>>,
-    writer: Mutex<Box<dyn Write + Send>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pty: Mutex<PtyHandle>,
 }
 
@@ -94,7 +94,7 @@ impl TerminalSession {
     ) -> Result<Arc<Self>> {
         let id = id.into();
         let reader = pty.try_clone_reader()?;
-        let writer = pty.take_writer()?;
+        let writer = Arc::new(Mutex::new(pty.take_writer()?));
         let ring = Arc::new(Mutex::new(RingBuffer::new(ring_cap)));
         let (tx, _) = broadcast::channel::<Vec<u8>>(BROADCAST_CAPACITY);
 
@@ -102,16 +102,19 @@ impl TerminalSession {
             id: id.clone(),
             ring: ring.clone(),
             tx: tx.clone(),
-            writer: Mutex::new(writer),
+            writer: writer.clone(),
             pty: Mutex::new(pty),
         });
 
         // Move reader + ring + tx into a dedicated thread. PTY reads
-        // are blocking; we don't want them on the tokio runtime.
+        // are blocking; we don't want them on the tokio runtime. The
+        // writer goes along too so the loop can answer the ConPTY DSR
+        // query (see run_reader_loop).
+        let writer_for_reader = writer.clone();
         std::thread::Builder::new()
             .name(format!("pty-reader-{id}"))
             .spawn(move || {
-                run_reader_loop(reader, ring, tx);
+                run_reader_loop(reader, ring, tx, writer_for_reader);
             })?;
 
         Ok(session)
@@ -152,7 +155,12 @@ fn run_reader_loop(
     mut reader: Box<dyn Read + Send>,
     ring: Arc<Mutex<RingBuffer>>,
     tx: broadcast::Sender<Vec<u8>>,
+    writer: Arc<Mutex<Box<dyn Write + Send>>>,
 ) {
+    // Windows ConPTY withholds the child's output until the terminal
+    // answers a Device Status Report query at startup; the writer goes
+    // along so we can reply (see spawn::answer_dsr_cpr). A no-op on Unix.
+    let mut dsr_state: u8 = 0;
     let mut buf = [0u8; READ_CHUNK];
     loop {
         match reader.read(&mut buf) {
@@ -165,6 +173,7 @@ fn run_reader_loop(
                     let mut r = ring.lock().unwrap();
                     r.push(&buf[..n]);
                 }
+                crate::spawn::answer_dsr_cpr(&mut dsr_state, &buf[..n], &writer);
                 // send fails only when there are no receivers, which
                 // is expected before the frontend subscribes.
                 let _ = tx.send(buf[..n].to_vec());

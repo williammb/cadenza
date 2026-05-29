@@ -6,7 +6,7 @@
 use cadenza_i18n::{locale, FluentArgs, I18n, LocaleSources};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -106,6 +106,19 @@ impl AppState {
         let task_runs = Arc::new(TaskRuns::load(&home)?);
         let task_worktrees = Arc::new(TaskWorktrees::load(&home)?);
 
+        // Seed the in-memory model cache from any lists persisted in
+        // config.json so the task-start modal shows models instantly
+        // (and offline) without re-running the ~15 s `/model` probe.
+        let seeded_models = config
+            .agent_models
+            .as_ref()
+            .map(|list| {
+                list.iter()
+                    .map(|c| ((c.kind, c.command.clone()), c.models.clone()))
+                    .collect::<HashMap<(AgenteKind, String), Vec<crate::models::ModelEntry>>>()
+            })
+            .unwrap_or_default();
+
         // Amarra tasks órfãs ao primeiro projeto. Idempotente.
         ensure_default_project_and_bind_orphans(&config, &task_projects, repo.as_ref())?;
 
@@ -118,7 +131,7 @@ impl AppState {
             task_runs,
             task_worktrees,
             app_handle: Mutex::new(None),
-            agent_models: Mutex::new(HashMap::new()),
+            agent_models: Mutex::new(seeded_models),
             token_epoch: AtomicU64::new(0),
         })
     }
@@ -446,6 +459,197 @@ pub fn set_task_worktree(
             },
         )
         .map_err(to_str_err)
+}
+
+/// What the task modal needs to pre-fill its worktree/branch section in
+/// one round-trip: the project repo path, its *current* branch (the
+/// default shown to the user), a suggested sibling worktree path, and any
+/// association already stored for this task.
+#[derive(Serialize)]
+pub struct TaskWorktreeDefaults {
+    pub project_path: String,
+    pub current_branch: String,
+    pub suggested_worktree_path: String,
+    pub stored: WorktreeInfo,
+}
+
+/// Resolve the on-disk repo path for a task via its project mapping.
+/// Mirrors the project-resolution step in `start_task_agent`.
+fn project_path_for_task(state: &AppState, task_id: &str) -> Result<PathBuf, String> {
+    let project_id = state
+        .task_projects
+        .snapshot()
+        .get(task_id)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "task '{task_id}' has no project assigned — assign one so the worktree has a repo"
+            )
+        })?;
+    let cfg = state.config.lock().map_err(to_str_err)?;
+    let project = cfg
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("project '{project_id}' not found in config"))?;
+    Ok(project.path.clone())
+}
+
+/// Default sibling worktree path: `<repo-parent>/<repo-name>-<branch>`,
+/// with path separators in the branch flattened to `-` so it stays a
+/// single directory name.
+fn suggested_worktree_path(repo: &Path, branch: &str) -> PathBuf {
+    let sanitized: String = branch
+        .chars()
+        .map(|c| if c == '/' || c == '\\' { '-' } else { c })
+        .collect();
+    let name = repo.file_name().and_then(|n| n.to_str()).unwrap_or("repo");
+    let parent = repo.parent().unwrap_or_else(|| Path::new("."));
+    parent.join(format!("{name}-{sanitized}"))
+}
+
+/// Notify open views (board / cards) that a task's worktree/branch
+/// changed. Best-effort: the modal also refreshes itself on close.
+fn emit_tasks_changed(state: &AppState, task_id: &str) {
+    if let Some(app) = state.app_handle.lock().ok().and_then(|h| h.clone()) {
+        let _ = app.emit(cadenza_proto::ops::EV_TASKS_CHANGED, task_id);
+    }
+}
+
+/// Pre-fill data for the task modal's worktree section. Reads the
+/// project's current git branch; surfaces git errors to the UI (e.g. the
+/// project path is not a git repo) so the modal can show a hint.
+#[tauri::command]
+pub async fn task_worktree_defaults(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+) -> Result<TaskWorktreeDefaults, String> {
+    let repo = project_path_for_task(&state, &task_id)?;
+    let current_branch = crate::git::current_branch(&repo)
+        .await
+        .map_err(to_str_err)?;
+    let suggested = suggested_worktree_path(&repo, &current_branch);
+    let stored = state.task_worktrees.get(&task_id).unwrap_or_default();
+    Ok(TaskWorktreeDefaults {
+        project_path: repo.to_string_lossy().into_owned(),
+        current_branch,
+        suggested_worktree_path: suggested.to_string_lossy().into_owned(),
+        stored,
+    })
+}
+
+/// Create a git worktree for a task and record the association. The
+/// branch is created off the project's current HEAD when it doesn't
+/// exist yet (the user's confirmed default).
+#[tauri::command]
+pub async fn create_task_worktree(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+    branch: String,
+    worktree_path: String,
+) -> Result<WorktreeInfo, String> {
+    let branch = branch.trim().to_string();
+    let worktree_path = worktree_path.trim().to_string();
+    if branch.is_empty() {
+        return Err("branch is required".into());
+    }
+    if worktree_path.is_empty() {
+        return Err("worktree path is required".into());
+    }
+    // Refuse to create a second worktree for a task that already has one on
+    // disk: overwriting the association below would orphan the old worktree
+    // (it stays registered in `git worktree list` and on disk, with its
+    // branch pinned). The user must remove the existing one first.
+    if let Some(existing) = state
+        .task_worktrees
+        .get(&task_id)
+        .and_then(|w| w.worktree_path)
+        .filter(|p| !p.trim().is_empty() && Path::new(p).exists())
+    {
+        return Err(format!(
+            "task '{task_id}' already has a worktree at {existing} — remove it before creating another"
+        ));
+    }
+    let repo = project_path_for_task(&state, &task_id)?;
+    let exists = crate::git::branch_exists(&repo, &branch)
+        .await
+        .map_err(to_str_err)?;
+    crate::git::add_worktree(&repo, Path::new(&worktree_path), &branch, !exists)
+        .await
+        .map_err(to_str_err)?;
+    let info = WorktreeInfo {
+        worktree_path: Some(worktree_path),
+        branch: Some(branch),
+    };
+    state
+        .task_worktrees
+        .set(&task_id, info.clone())
+        .map_err(to_str_err)?;
+    emit_tasks_changed(&state, &task_id);
+    Ok(info)
+}
+
+/// Remove the task's git worktree and clear its association. Git refuses
+/// (with a clear, propagated error) when the worktree has uncommitted
+/// changes — we don't force.
+#[tauri::command]
+pub async fn remove_task_worktree(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+) -> Result<(), String> {
+    let info = state.task_worktrees.get(&task_id).unwrap_or_default();
+    let worktree_path = info
+        .worktree_path
+        .filter(|p| !p.trim().is_empty())
+        .ok_or_else(|| format!("task '{task_id}' has no worktree to remove"))?;
+    let repo = project_path_for_task(&state, &task_id)?;
+    crate::git::remove_worktree(&repo, Path::new(&worktree_path))
+        .await
+        .map_err(to_str_err)?;
+    state
+        .task_worktrees
+        .set(&task_id, WorktreeInfo::default())
+        .map_err(to_str_err)?;
+    emit_tasks_changed(&state, &task_id);
+    Ok(())
+}
+
+/// Switch the branch for a task. Operates inside the task's worktree when
+/// it has one, otherwise on the project repo itself. Creates the branch
+/// off current HEAD when it doesn't exist yet.
+#[tauri::command]
+pub async fn switch_task_branch(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+    branch: String,
+) -> Result<WorktreeInfo, String> {
+    let branch = branch.trim().to_string();
+    if branch.is_empty() {
+        return Err("branch is required".into());
+    }
+    let repo = project_path_for_task(&state, &task_id)?;
+    let stored = state.task_worktrees.get(&task_id).unwrap_or_default();
+    // Switch inside the worktree if it exists on disk; otherwise the repo.
+    let target = match stored.worktree_path.as_deref() {
+        Some(p) if !p.trim().is_empty() && Path::new(p).exists() => PathBuf::from(p),
+        _ => repo.clone(),
+    };
+    let exists = crate::git::branch_exists(&repo, &branch)
+        .await
+        .map_err(to_str_err)?;
+    crate::git::switch_branch(&target, &branch, !exists)
+        .await
+        .map_err(to_str_err)?;
+    let info = WorktreeInfo {
+        worktree_path: stored.worktree_path,
+        branch: Some(branch),
+    };
+    state
+        .task_worktrees
+        .set(&task_id, info.clone())
+        .map_err(to_str_err)?;
+    emit_tasks_changed(&state, &task_id);
+    Ok(info)
 }
 
 /// Persist `active_project_id` to config.json. The board re-renders
@@ -960,7 +1164,7 @@ pub async fn start_task_agent(
             )
         })?;
 
-    let (cwd, command_override) = {
+    let (project_path, command_override) = {
         let cfg = state.config.lock().map_err(to_str_err)?;
         let project = cfg
             .projects
@@ -975,6 +1179,27 @@ pub async fn start_task_agent(
             .and_then(|a| a.command.clone())
             .or_else(|| cfg.agente.as_ref().and_then(|a| a.command.clone()));
         (project_path, cmd)
+    };
+
+    // Run inside the task's worktree when one is set and present on disk;
+    // otherwise the project repo. A registered-but-missing worktree falls
+    // back to the project path (logged) so a stale entry doesn't block the
+    // start.
+    let cwd = match state
+        .task_worktrees
+        .get(&task_id)
+        .and_then(|w| w.worktree_path)
+    {
+        Some(wt) if Path::new(&wt).exists() => PathBuf::from(wt),
+        Some(wt) => {
+            tracing::warn!(
+                task = %task_id,
+                worktree = %wt,
+                "task worktree path missing; falling back to project path"
+            );
+            project_path
+        }
+        None => project_path,
     };
 
     if !cwd.exists() {
@@ -1434,6 +1659,7 @@ pub async fn list_agent_models(
     state: State<'_, Arc<AppState>>,
     agent_kind: AgenteKind,
     refresh: Option<bool>,
+    cached_only: Option<bool>,
 ) -> Result<Vec<crate::models::ModelEntry>, String> {
     let command = {
         let cfg = state.config.lock().map_err(to_str_err)?;
@@ -1453,6 +1679,12 @@ pub async fn list_agent_models(
         {
             return Ok(cached.clone());
         }
+    }
+    // Task-start path: never spawn the slow probe. A cache miss above means
+    // nothing is loaded yet, so return empty and let the UI fall back to a
+    // free-text model entry. Discovery lives in Settings → Modelos.
+    if cached_only.unwrap_or(false) {
+        return Ok(Vec::new());
     }
     // `discover_models` blocks ~10-15 s on PTY warmup + tail. Move it
     // off the tauri runtime so command dispatch (and the UI) stay
@@ -1478,6 +1710,30 @@ pub async fn list_agent_models(
         .lock()
         .map_err(to_str_err)?
         .insert(cache_key, entries.clone());
+    // Persist to config.json so the list survives restarts (seeded back
+    // into the in-memory cache by AppState::init). Upsert by
+    // `(kind, command)` to match the cache keying. Logged-only on failure:
+    // the in-memory cache already holds the fresh list this session.
+    if let Some(path) = dirs::home_dir().map(|h| h.join(".cadenza").join("config.json")) {
+        let mut cfg = state.config.lock().map_err(to_str_err)?;
+        let record = crate::models::CachedModels {
+            kind: agent_kind,
+            command: command.clone(),
+            models: entries.clone(),
+        };
+        let list = cfg.agent_models.get_or_insert_with(Vec::new);
+        if let Some(slot) = list
+            .iter_mut()
+            .find(|c| c.kind == agent_kind && c.command == command)
+        {
+            *slot = record;
+        } else {
+            list.push(record);
+        }
+        if let Err(e) = cfg.save_to(&path) {
+            tracing::warn!(error = %e, "failed to persist discovered models to config");
+        }
+    }
     Ok(entries)
 }
 

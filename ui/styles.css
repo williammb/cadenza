@@ -716,6 +716,29 @@ dialog.modal[open] {
 .modal-status.error { color: var(--danger); font-style: normal; font-weight: 500; }
 .modal-status.ok    { color: var(--ok);     font-style: normal; font-weight: 500; }
 
+/* Worktree / branch section in the task modal (edit mode only). */
+.worktree-section {
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  padding: 0.6rem 0.75rem 0.75rem;
+  margin: 0.3rem 0 0.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.worktree-section legend {
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 0 0.35rem;
+}
+.worktree-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.worktree-section .modal-status { flex: none; }
+
 /* ============================= FORM ============================= */
 
 .field {
@@ -1453,6 +1476,26 @@ textarea::placeholder {
   background: var(--accent);
   color: var(--accent-fg);
   border-color: var(--accent);
+}
+
+/* Branch badge on a task card — present when the task has a worktree. */
+.card-branch {
+  align-self: flex-start;
+  max-width: 100%;
+  font-family: var(--font-feature);
+  font-size: 0.68rem;
+  line-height: 1;
+  padding: 0.2rem 0.4rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  border: 1px solid var(--card-border-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-branch::before {
+  content: "⎇ ";
 }
 
 /* ─────────────── Task-modal "Iniciar" header button ─────────────── */

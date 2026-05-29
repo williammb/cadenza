@@ -423,6 +423,42 @@
         </section>
 
         <section class="modal-section">
+          <h3 data-i18n="settings-section-models">Modelos</h3>
+          <p class="modal-hint" data-i18n="settings-models-hint">
+            Descobre os modelos que cada agente oferece. A sondagem leva
+            alguns segundos; o resultado fica salvo e é reusado ao iniciar
+            um agente.
+          </p>
+
+          <div class="skill-actions">
+            <button
+              type="button"
+              class="btn btn-small"
+              id="btn-models-refresh"
+              data-i18n="settings-models-refresh"
+            >Atualizar status</button>
+          </div>
+
+          <table class="skill-status-table">
+            <thead>
+              <tr>
+                <th data-i18n="settings-models-col-agent">Agente</th>
+                <th data-i18n="settings-models-col-count">Modelos</th>
+                <th data-i18n="settings-models-col-current">Atual</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="settings-models-body"></tbody>
+          </table>
+
+          <div
+            id="settings-models-status"
+            class="modal-status"
+            aria-live="polite"
+          ></div>
+        </section>
+
+        <section class="modal-section">
           <h3 data-i18n="settings-section-skills">Skills do CLI</h3>
           <p class="modal-hint" data-i18n="settings-skills-hint">
             Instala um snippet que ensina o agente (Claude Code, Codex) a
@@ -586,6 +622,24 @@
           <textarea id="task-body" rows="6"></textarea>
         </label>
 
+        <fieldset class="worktree-section" id="task-worktree-section" hidden>
+          <legend data-i18n="task-worktree-legend">Worktree / Ramo</legend>
+          <label class="field">
+            <span data-i18n="task-field-branch">Ramo</span>
+            <input type="text" id="task-branch" autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span data-i18n="task-field-worktree-path">Caminho do worktree</span>
+            <input type="text" id="task-worktree-path" autocomplete="off" spellcheck="false" />
+          </label>
+          <div class="worktree-actions">
+            <button type="button" class="btn" id="btn-create-worktree" data-i18n="task-worktree-create">Criar worktree</button>
+            <button type="button" class="btn" id="btn-switch-branch" data-i18n="task-worktree-switch">Trocar ramo</button>
+            <button type="button" class="btn btn-danger" id="btn-remove-worktree" data-i18n="task-worktree-remove">Remover worktree</button>
+          </div>
+          <span class="modal-status" id="worktree-status" aria-live="polite"></span>
+        </fieldset>
+
         <footer class="modal-footer">
           <span class="modal-status" id="task-status" aria-live="polite"></span>
           <button
@@ -693,6 +747,13 @@
         <label class="field">
           <span data-i18n="start-agent-model-label">Modelo</span>
           <select id="start-agent-model"></select>
+          <input type="text" id="start-agent-model-text" hidden />
+          <span
+            class="modal-hint"
+            id="start-agent-model-hint"
+            data-i18n="start-agent-model-text-hint"
+            hidden
+          ></span>
         </label>
 
         <footer class="modal-footer">

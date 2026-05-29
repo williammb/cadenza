@@ -20,12 +20,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::AgenteKind;
 
 /// One row of the `/model` menu, normalized for UI consumption.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelEntry {
     /// Value to pass to the agent's `--model` arg.
     pub id: String,
@@ -33,6 +33,17 @@ pub struct ModelEntry {
     pub label: String,
     /// Whether the TUI marked this entry as currently selected.
     pub current: bool,
+}
+
+/// A discovered model list persisted to `config.json` so it survives
+/// restarts. Keyed by `(kind, command)` — the same shape as the in-memory
+/// `AppState.agent_models` cache — so a stored list is only reused when the
+/// agent kind and resolved command still match.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CachedModels {
+    pub kind: AgenteKind,
+    pub command: String,
+    pub models: Vec<ModelEntry>,
 }
 
 /// Re-render `bytes` (raw PTY output) into a text frame, then extract
@@ -79,7 +90,15 @@ fn capture_model_menu(
         pixel_width: 0,
         pixel_height: 0,
     })?;
-    let cmd = CommandBuilder::new(binary);
+    // Resolve `binary` the same way the agent-spawn path does, so npm's
+    // Windows shims (`<name>.cmd`) are found and wrapped with `cmd.exe /C`
+    // instead of handing the extensionless POSIX script to CreateProcessW
+    // (which fails with os error 2 / ERROR_BAD_EXE_FORMAT). No-op on Unix.
+    let (resolved, prefix_args) = crate::spawn::resolve_command(binary);
+    let mut cmd = CommandBuilder::new(&resolved);
+    for a in &prefix_args {
+        cmd.arg(a);
+    }
     let mut child = pair
         .slave
         .spawn_command(cmd)
@@ -94,7 +113,7 @@ fn capture_model_menu(
     let collected_c = collected.clone();
     let writer_c = writer.clone();
     let _reader_handle = thread::spawn(move || {
-        let mut state: u8 = 0;
+        let mut dsr_state: u8 = 0;
         let mut buf = [0u8; 4096];
         loop {
             match reader.read(&mut buf) {
@@ -104,26 +123,9 @@ fn capture_model_menu(
                         let mut g = collected_c.lock().unwrap();
                         g.extend_from_slice(&buf[..n]);
                     }
-                    // Watch for ESC[6n (DSR-CPR query) across reads and
-                    // reply ESC[1;1R so the agent unblocks its boot.
-                    for &b in &buf[..n] {
-                        match (state, b) {
-                            // Any ESC (re)starts the match — a stray or
-                            // aborted escape right before the real query
-                            // (`ESC ESC [ 6 n`) must not swallow it.
-                            (_, 0x1B) => state = 1,
-                            (1, b'[') => state = 2,
-                            (2, b'6') => state = 3,
-                            (3, b'n') => {
-                                if let Ok(mut w) = writer_c.lock() {
-                                    let _ = w.write_all(b"\x1b[1;1R");
-                                    let _ = w.flush();
-                                }
-                                state = 0;
-                            }
-                            _ => state = 0,
-                        }
-                    }
+                    // Reply to the ConPTY DSR-CPR query so the agent
+                    // unblocks its boot (see spawn::answer_dsr_cpr).
+                    crate::spawn::answer_dsr_cpr(&mut dsr_state, &buf[..n], &writer_c);
                 }
                 Err(_) => break,
             }

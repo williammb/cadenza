@@ -167,6 +167,16 @@ function makeCard(task) {
 
   card.append(title, id, startBtn);
 
+  // Branch badge — shown when the task is associated with a git branch
+  // (field enriched by the backend from task-worktrees.json).
+  if (task.branch) {
+    const branchBadge = document.createElement("span");
+    branchBadge.className = "card-branch";
+    branchBadge.textContent = task.branch;
+    branchBadge.title = task.worktree_path ?? task.branch;
+    card.append(branchBadge);
+  }
+
   card.addEventListener("dragstart", (e) => {
     e.dataTransfer.setData("text/plain", task.id);
     e.dataTransfer.effectAllowed = "move";
