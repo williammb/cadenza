@@ -5,9 +5,9 @@
 
 > A system-tray desktop app for managing AI-agent tasks — built for Claude Code, Codex, and similar tools.
 
-**Status:** active development / private pre-release (Phases 1–4 complete, Phase 5 in progress). No public binaries yet.
+**Status:** active development / public pre-release (Phases 1–4 complete, Phase 5 in progress). No stable public binaries yet.
 **Stack:** Tauri 2 · Rust · vanilla HTML/CSS/JS (no build step)
-**Target platforms:** Windows · Linux · macOS
+**Release artifacts:** Windows NSIS first; Linux AppImage and macOS DMG are planned but not published yet.
 **License:** MIT OR Apache-2.0
 
 ---
@@ -253,9 +253,9 @@ The rationale for each one is in `CLAUDE.md`.
   `cadenza-cli` with clap, `notify` with actions, per-locale skill,
   end-to-end test with a real agent.
 - [ ] **Phase 5 — Packaging and updates:** icons,
-  NSIS/AppImage/DMG, cross-platform CI with ed25519 signing,
+  Windows NSIS release automation, ed25519 signing,
   `tauri-plugin-updater` pointed at a public endpoint, smoke tests on
-  all three OSes. *(NSIS complete; AppImage and DMG pending)*
+  all three OSes. *(NSIS complete; AppImage and DMG pending validation)*
 
 ---
 

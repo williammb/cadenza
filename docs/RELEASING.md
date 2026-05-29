@@ -3,11 +3,13 @@
 ## Overview
 
 Pushing a tag of the form `vX.Y.Z` triggers the release workflow
-(`.github/workflows/release.yml`), which builds signed installers for all
-three platforms and publishes them as a GitHub Release draft.
+(`.github/workflows/release.yml`), which builds the signed Windows
+installer and publishes it as a GitHub Release draft. Linux AppImage and
+macOS DMG jobs are manual-only until those bundles are validated for
+public distribution.
 
 ```
-git tag v0.1.4 && git push origin v0.1.4
+git tag v0.1.5 && git push origin v0.1.5
 ```
 
 The draft must be reviewed and published manually on GitHub after the
@@ -99,20 +101,26 @@ If you fork the repository, update the `endpoints` array in
 
 ## Bumping the version
 
-Version is set in `Cargo.toml` (workspace) and auto-read by Tauri:
+Version is set in the workspace manifest and mirrored in Tauri's app
+config:
 
 ```toml
 # Cargo.toml
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
+```
+
+```json
+// src-tauri/tauri.conf.json
+"version": "0.1.5"
 ```
 
 After bumping, commit and tag:
 
 ```bash
-git add Cargo.toml Cargo.lock
-git commit -m "chore: bump version to 0.1.4"
-git tag v0.1.4
+git add Cargo.toml Cargo.lock src-tauri/tauri.conf.json
+git commit -m "chore: bump version to 0.1.5"
+git tag v0.1.5
 git push origin main --tags
 ```
 
@@ -125,7 +133,7 @@ To verify a bundle manually after download:
 ```bash
 cargo tauri signer verify \
   --pub-key "$(cargo tauri signer generate --print-public-key ~/.cadenza-updater.key)" \
-  Cadenza_0.1.4_x64-setup.exe
+  Cadenza_0.1.5_x64-setup.exe
 ```
 
 ---
