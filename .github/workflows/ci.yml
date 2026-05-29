@@ -118,6 +118,12 @@ jobs:
             : > target/release/cadenza-cli
           fi
 
+      - name: Build executable cadenza-cli for integration tests
+        if: runner.os != 'Windows'
+        run: |
+          cargo build -p cadenza-cli --bin cadenza-cli
+          chmod +x target/debug/cadenza-cli
+
       - name: cargo check (Tauri app)
         if: runner.os == 'Windows'
         run: cargo check -p cadenza --lib --bins
