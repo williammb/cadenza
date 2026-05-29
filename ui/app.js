@@ -40,6 +40,10 @@ let _guidedToFirstProject = false;
 // task_id → task-run record from list_task_runs. Used to mark cards
 // that have a saved conversation so the user knows "click ▶ = resume".
 let cachedTaskRuns = {};
+// Estado the currently dragged card started in. Set on dragstart, read
+// on drop to tell a within-column reorder from a cross-column move (so
+// we only call set_estado when the column actually changed).
+let draggedFromEstado = null;
 
 async function renderBoard() {
   let tasks = [];
@@ -198,8 +202,14 @@ function makeCard(task) {
     e.dataTransfer.setData("text/plain", task.id);
     e.dataTransfer.effectAllowed = "move";
     card.classList.add("dragging");
+    draggedFromEstado = card.closest(".column")?.dataset.estado ?? null;
   });
-  card.addEventListener("dragend", () => card.classList.remove("dragging"));
+  card.addEventListener("dragend", () => {
+    card.classList.remove("dragging");
+    // Clear on every drag end (cancel or successful drop) so a cancelled
+    // drag never leaks its source column into the next drop handler.
+    draggedFromEstado = null;
+  });
   card.addEventListener("dblclick", () => openEditTask(task.id));
   return card;
 }
@@ -236,12 +246,42 @@ function makeIdeiaCard(ideia) {
   return card;
 }
 
+// Find the card a dropped element should be inserted *before*, given the
+// cursor's vertical position — the standard "element after cursor" trick.
+// Returns null when the cursor is below every card (append at the end).
+// The card being dragged is skipped so it doesn't measure against itself.
+function cardAfterCursor(zone, y) {
+  const cards = [...zone.querySelectorAll(".card:not(.dragging)")];
+  let closest = { offset: Number.NEGATIVE_INFINITY, el: null };
+  for (const card of cards) {
+    const box = card.getBoundingClientRect();
+    const offset = y - (box.top + box.height / 2);
+    if (offset < 0 && offset > closest.offset) {
+      closest = { offset, el: card };
+    }
+  }
+  return closest.el;
+}
+
 function wireDropZones() {
   document.querySelectorAll("[data-drop]").forEach((zone) => {
     zone.addEventListener("dragover", (e) => {
       e.preventDefault();
       e.dataTransfer.dropEffect = "move";
       zone.classList.add("drop-target");
+      // The Inbox column holds ideias, not tasks — no reordering there.
+      if (zone.closest(".column")?.dataset.estado == null) return;
+      // Live preview: move the dragged card to where it would land, so
+      // the resulting gap is the drop indicator. Works within a column
+      // and across columns (gives the precise-position cross-column UX).
+      const dragging = document.querySelector(".card.dragging");
+      if (!dragging) return;
+      const ref = cardAfterCursor(zone, e.clientY);
+      if (ref == null) {
+        zone.appendChild(dragging);
+      } else {
+        zone.insertBefore(dragging, ref);
+      }
     });
     zone.addEventListener("dragleave", (e) => {
       // dragleave fires every time the cursor crosses into a child
@@ -256,12 +296,41 @@ function wireDropZones() {
       zone.classList.remove("drop-target");
       const id = e.dataTransfer.getData("text/plain");
       const estado = zone.closest(".column")?.dataset.estado;
-      if (!id || !estado) return;
+      // No estado → the Inbox/ideia column; leave it to its own handler.
+      // renderBoard() reverts any dragover preview that may have moved the
+      // card into this zone visually.
+      if (!id || !estado) { renderBoard(); return; }
+      const movedColumns = draggedFromEstado && draggedFromEstado !== estado;
+      // Snapshot the DOM order *before* any await — a Tauri event (e.g.
+      // task_run_changed) can fire renderBoard() between awaits, detaching
+      // `zone` and making domOrder() return [] which would erase the stored
+      // order for this column.
+      const domOrder = (z) =>
+        [...z.querySelectorAll(".card")].map((c) => c.dataset.id);
+      const destIds = domOrder(zone);
+      const srcEl = movedColumns
+        ? document.querySelector(
+            `.column[data-estado="${draggedFromEstado}"] .cards`,
+          )
+        : null;
+      const srcIds = srcEl ? domOrder(srcEl) : null;
       try {
-        await invoke("set_estado", { id, estado });
+        if (movedColumns) await invoke("set_estado", { id, estado });
+        // The dragover preview already placed the card; persist the order
+        // captured above (safe across any re-render that follows the await).
+        await invoke("set_task_order", { estado, ids: destIds });
+        if (movedColumns && srcIds) {
+          // The card left its source column — persist that column's new
+          // order too so its stored list no longer references the card.
+          await invoke("set_task_order", {
+            estado: draggedFromEstado,
+            ids: srcIds,
+          });
+        }
       } catch (err) {
         setStatus(`error: ${err}`);
       }
+      draggedFromEstado = null;
       renderBoard();
     });
   });

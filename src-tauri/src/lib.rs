@@ -18,6 +18,7 @@ mod ipc;
 mod models;
 mod notify;
 mod observ;
+mod ordering;
 mod projects;
 mod runs;
 mod secrets;
@@ -91,6 +92,7 @@ pub fn run() {
             commands::next_task_id,
             commands::create_task,
             commands::set_estado,
+            commands::set_task_order,
             commands::set_titulo,
             commands::append_log,
             commands::update_task_body,
