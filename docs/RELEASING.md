@@ -183,7 +183,7 @@ previous version themselves. User data in `~/.cadenza/` survives.
   `.dmg`, reinstall.
 - **Linux** — Replace the AppImage with the previous version's binary.
 
-> AppImage and DMG bundles are not produced yet (Phase 5 partial);
+> AppImage and DMG bundles are not produced yet;
 > Windows is the only platform with a published artifact today.
 
 ### Rehearsing the procedure

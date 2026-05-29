@@ -7,9 +7,9 @@ Cadenza is still pre-release. Small, focused pull requests are easiest to review
 ## Before you start
 
 - Read `README.md` for the project overview.
-- Read `CLAUDE.md` for non-negotiable architecture constraints.
-- Do not change the frozen on-disk format, canonical Portuguese state values, CLI exit codes, IPC shape, i18n toolchain, or license policy without prior discussion.
-- Keep UI changes framework-free: no Node.js, npm, bundlers, React, Vue, Svelte, or build step.
+- Read `AGENTS.md` or `CLAUDE.md` for repository-specific implementation guidance.
+- Do not change canonical Portuguese state values, CLI exit codes, IPC shape, i18n toolchain, or license policy without prior discussion.
+- Keep UI changes framework-free: no package-manager workflow, bundlers, React, Vue, Svelte, or build step.
 
 ## Development setup
 

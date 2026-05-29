@@ -3,279 +3,248 @@
 [![CI](https://github.com/williammb/cadenza/actions/workflows/ci.yml/badge.svg)](https://github.com/williammb/cadenza/actions/workflows/ci.yml)
 [![License: MIT OR Apache-2.0](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE-MIT)
 
-> A system-tray desktop app for managing AI-agent tasks — built for Claude Code, Codex, and similar tools.
+> A local-first desktop task board for AI coding agents.
 
-**Status:** active development / public pre-release (Phases 1–4 complete, Phase 5 in progress). No stable public binaries yet.
-**Stack:** Tauri 2 · Rust · vanilla HTML/CSS/JS (no build step)
-**Release artifacts:** Windows NSIS first; Linux AppImage and macOS DMG are planned but not published yet.
+**Status:** public pre-release. The repository is open for development, but stable public binaries are not published yet.
+**Version:** 0.1.5
+**Stack:** Tauri 2, Rust, vanilla HTML/CSS/JS
+**Release artifacts:** Windows NSIS first. Linux AppImage and macOS DMG are planned but not published yet.
 **License:** MIT OR Apache-2.0
 
 ---
 
-## What it is
+## What Cadenza Does
 
-Cadenza is a rewrite of the internal `task-ai` / `taskloop` system (Node.js)
-as a **standalone desktop app**. Instead of two loose processes accessed
-through a browser via `start.bat`, Cadenza ships a single binary with:
+Cadenza is a desktop app that helps a human collaborate with AI coding
+agents through a local task board. It ships two binaries from the same
+installer:
 
-- A system-tray icon — no leftover terminal window.
-- The OS's native webview (no Electron).
-- A separate CLI (`cadenza-cli`) that AI agents use to read the active
-  task, report progress, propose new scope, and mark work as done.
-- Native OS notifications when the agent needs a human decision.
-- Signed-update plumbing for the future public release channel.
+- `cadenza`: the Tauri desktop app with tray, webview UI, notifications,
+  task storage, terminal sessions, and update checks.
+- `cadenza-cli`: the command-line client that agents use to read tasks,
+  report progress, propose work, and mark work as done.
 
-The human ↔ agent loop is mediated by **proposals**: the agent never
-creates or completes tasks on its own — it proposes, and the human decides
-through the modal or the notification's action buttons.
+The app and CLI communicate on the same machine over an authenticated
+named pipe on Windows or Unix socket on Linux/macOS. The protocol uses
+NDJSON request/response messages. Cadenza does not open a TCP server for
+agent communication.
 
-## Why it exists
+Agents do not directly create or complete task scope. They submit
+proposals, and the human accepts or rejects them in the app.
 
-The previous Node.js flow depended on keeping two background servers
-running, depended on the browser, and ended up orphaned whenever a
-terminal got closed. Cadenza solves that with a single native process
-that boots with the OS, listens for the agent on an authenticated local
-socket, and keeps on-disk state in the same format as the old system —
-so they can coexist during the migration.
+## Current Features
+
+- Local task board with the states `a_fazer`, `fazendo`,
+  `aguardando_revisao`, and `feito`.
+- CLI for AI agents, with stable exit codes for automation.
+- Idempotent proposal flow with persisted recovery data.
+- PTY-backed agent runs and terminal streaming through Tauri channels.
+- Projects and active-project tracking.
+- Ideias inbox.
+- File, SQLite, and PostgreSQL storage backends.
+- PostgreSQL password storage through the OS keyring.
+- Shared i18n through Fluent files in `locales/`.
+- Vanilla HTML/CSS/JS UI with vendored browser libraries.
+- Windows NSIS packaging path and signed updater plumbing.
 
 ---
 
-## Architecture at a glance
+## Architecture
 
-```
-┌─────────────────────────────────────────────────────┐
-│              cadenza (Tauri 2.x)                    │
-│                                                     │
-│  ┌────────────┐    ┌──────────────────────────────┐ │
-│  │ Tray Icon  │    │   WebView (vanilla HTML/JS)  │ │
-│  │ (Rust)     │    │   Board · Modal · Terminal   │ │
-│  └────────────┘    └──────┬───────────────────────┘ │
-│        │                  │ invoke / emit / channel │
-│  ┌─────▼──────────────────▼─────────────────────┐   │
-│  │           Rust backend                       │   │
-│  │  config · store · triage · spawn · terminal  │   │
-│  │  commands · ipc · notify · updater · i18n    │   │
-│  └────────────────────┬─────────────────────────┘   │
-│                       │ NDJSON over                  │
-│                       │ named pipe / unix socket     │
-└───────────────────────┼─────────────────────────────┘
-                        │
-              ┌─────────▼─────────┐
-              │   cadenza-cli     │
-              │   used by the     │
-              │   AI agent        │
-              └───────────────────┘
+```text
+cadenza desktop app
+  ui/                 static HTML/CSS/JS loaded by Tauri
+  src-tauri/          Rust backend, tray, commands, store, IPC, PTY
+        |
+        | Tauri invoke / emit / Channel
+        |
+  webview UI
+
+cadenza-cli
+        |
+        | NDJSON over named pipe / Unix socket
+        |
+cadenza IPC server
 ```
 
 | Channel | Direction | Purpose |
 |---|---|---|
-| Tauri `invoke` | Frontend → Backend | Task CRUD, projects, decisions |
-| Tauri `emit` | Backend → Frontend | Real-time updates |
-| Tauri `Channel` | Backend ⇄ Frontend | Binary PTY streaming (no WebSocket) |
-| Named pipe / Unix socket | CLI ↔ App | Authenticated NDJSON request/response |
+| Tauri `invoke` | Frontend to backend | Task CRUD, projects, settings, decisions |
+| Tauri `emit` | Backend to frontend | Real-time UI updates |
+| Tauri `Channel` | Backend to frontend | PTY terminal streaming |
+| Named pipe / Unix socket | CLI to app | Authenticated NDJSON protocol |
 
 ---
 
-## Repository layout
+## Repository Layout
 
-```
+```text
 cadenza/
-├── src-tauri/        # Tauri app: tray, IPC server, store, triage, PTY, notify
-├── cadenza-cli/      # clap CLI that talks to the app over the local socket
-├── proto/            # Shared NDJSON wire types (path dep)
-├── i18n/             # Shared Fluent bundle loader + locale resolution
-├── locales/          # .ftl files for app, CLI and UI (pt-BR, en)
-├── ui/               # Hand-written HTML/CSS/JS; vendored libs in ui/vendor/
-├── skills/           # Per-locale skill snippet handed to the agent
-├── skills-core/      # Shared skill metadata + loader
-├── Cargo.toml        # Workspace manifest
-├── deny.toml         # cargo-deny policy (MIT/Apache/BSD/MPL only)
-├── AGENTS.md         # Codex-oriented repository guidance
-└── CLAUDE.md         # Claude Code-oriented repository guidance
+  src-tauri/        Tauri app: tray, IPC server, store, triage, PTY, notify
+  cadenza-cli/      clap CLI that talks to the app over the local socket
+  proto/            shared NDJSON wire types
+  i18n/             shared Fluent bundle loader and locale resolution
+  locales/          .ftl files for app, CLI, and UI
+  ui/               static HTML/CSS/JS
+  ui/vendor/        vendored browser libraries
+  skills/           per-locale agent skill snippets
+  skills-core/      shared skill metadata and loader
+  docs/             release and maintenance docs
+  installers/       packaging support files
+  Cargo.toml        workspace manifest
+  deny.toml         cargo-deny policy
+  AGENTS.md         Codex guidance for this repository
+  CLAUDE.md         Claude Code guidance for this repository
 ```
-
-The non-negotiable constraints (frozen on-disk format, no MCP/JSON-RPC,
-exit codes, license policy, XSS hygiene) live in `AGENTS.md` and
-`CLAUDE.md`. Contributors should also read `CONTRIBUTING.md`. When the
-README and agent guidance disagree, the agent guidance wins. Portuguese is
-the project's primary working language for architecture discussions.
 
 ---
 
-## Getting started (development)
+## Requirements
 
-> No public release yet. These instructions are for building from source.
-
-### Prerequisites
-
-- Rust stable ≥ 1.77 (`rustup toolchain install stable`)
-- Tauri CLI 2 (`cargo install tauri-cli --version "^2" --locked`)
-- The OS toolchain Tauri 2 needs — see
-  [tauri.app/start/prerequisites](https://tauri.app/start/prerequisites/)
-  (WebView2 on Windows, `webkit2gtk` on Linux, Xcode CLI on macOS).
-
-No Node.js, no `pnpm`, no `node_modules` — the UI is plain HTML/CSS/JS
-served by Tauri as static files, and third-party JS libs are vendored
-under `ui/vendor/` with pinned versions.
-
-### Run in dev
+- Rust stable >= 1.77
+- Tauri CLI 2:
 
 ```bash
-cargo tauri dev   # launches the app; reload UI changes with Ctrl+R
+cargo install tauri-cli --version "^2" --locked
 ```
 
-### Production build
+- Platform dependencies required by Tauri 2:
+  - Windows: WebView2
+  - Linux: WebKitGTK and AppIndicator/Ayatana development packages
+  - macOS: Xcode command line tools
+
+See the official Tauri prerequisites:
+[tauri.app/start/prerequisites](https://tauri.app/start/prerequisites/)
+
+The UI has no package-manager workflow and no frontend build step. Browser
+libraries are vendored under `ui/vendor/` and documented in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Major Rust dependencies include Tauri 2, Tokio, SQLx, Fluent, Interprocess,
+portable-pty, keyring, clap, tracing, serde, and cargo-deny policy checks.
+The authoritative dependency list is in [Cargo.toml](Cargo.toml) and
+[Cargo.lock](Cargo.lock).
+
+---
+
+## Development
+
+Run the desktop app:
 
 ```bash
-cargo tauri build # builds the installer for the current platform
+cargo tauri dev
 ```
 
-### CLI only
+Build the current platform bundle:
+
+```bash
+cargo tauri build
+```
+
+Run the CLI from source:
 
 ```bash
 cargo run -p cadenza-cli -- current --json
 ```
 
----
-
-## CLI usage (example)
-
-`cadenza-cli` ships inside the app installer and is added to the user's
-PATH. It requires the Cadenza app to be running.
+Run tests:
 
 ```bash
-cadenza-cli current --json                          # active task (or null)
-cadenza-cli list --estado doing                     # filter by state
-cadenza-cli log T-42 "implemented the handshake"    # record progress
-cadenza-cli propose --parent T-42 \
-        --title "extract auth module" \
-        --repro "..." --file "src/auth/mod.rs" \
-        --what-failed "..." --action "..."          # blocks until decided
-cadenza-cli done T-42 "merged, tests green"         # mark as done
+cargo test
 ```
 
-`--estado` accepts English aliases (`todo | doing | review | done`); the
-`--json` output always returns the canonical Portuguese values
-(`a_fazer`, `fazendo`, `aguardando_revisao`, `feito`) for stable parsing.
+Run lint and policy checks used by CI:
 
-### Exit codes (stable contract for agents)
-
-`0` ok · `1` generic error · `2` bad usage · `10` app not running ·
-`11` bad/missing token · `12` protocol mismatch · `20` proposal rejected ·
-`21` decision timeout · `30` task not found.
+```bash
+cargo fmt --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo deny check
+```
 
 ---
 
-## IPC protocol
+## CLI Example
 
-- **Transport:** named pipe `\\.\pipe\cadenza-{sid}` on Windows; Unix
-  socket at `$XDG_RUNTIME_DIR/cadenza.sock` on Linux/macOS (mode `0600`).
-- **Framing:** NDJSON — one JSON message per line.
-- **Authentication:** a 32-byte token at `~/.cadenza/auth` (`0600`),
-  shared between the app and the CLI on the same host. Rotatable from
-  the tray menu.
-- **Versioning:** `protocol_version` is separate from `app_version` and
-  negotiated in the `hello` handshake. The app keeps a one-release
-  deprecation window.
-- **`propose` is idempotent and resumable:** every proposal carries an
-  `idempotency_key` (UUID v4) and is persisted at
-  `~/.cadenza/triage/<id>.proposta.json` before any response — either
-  side can crash and reconnect without duplicating tasks.
+`cadenza-cli` requires the Cadenza app to be running.
 
-The full NDJSON protocol — handshake, ops, error envelopes — is defined
-in the `proto/` crate; the canonical wire values are PT-canonical.
+```bash
+cadenza-cli current --json
+cadenza-cli list --estado doing
+cadenza-cli log T-42 "implemented the handshake"
+cadenza-cli propose --parent T-42 \
+  --title "extract auth module" \
+  --repro "..." \
+  --file "src/auth/mod.rs" \
+  --what-failed "..." \
+  --action "..."
+cadenza-cli done T-42 "merged, tests green"
+```
+
+`--estado` accepts English aliases (`todo`, `doing`, `review`, `done`).
+JSON output uses the canonical Portuguese state values:
+`a_fazer`, `fazendo`, `aguardando_revisao`, and `feito`.
+
+### Exit Codes
+
+| Code | Meaning |
+|---:|---|
+| 0 | ok |
+| 1 | generic error |
+| 2 | bad usage |
+| 10 | app not running |
+| 11 | bad or missing token |
+| 12 | protocol mismatch |
+| 20 | proposal rejected |
+| 21 | decision timeout |
+| 30 | task not found |
 
 ---
 
-## Privacy and local data
+## Project Rules
 
-- Cadenza is local-first. Task data, inbox items, triage proposals, logs,
-  and the local auth token live under the user's Cadenza data directory
-  (`~/.cadenza` for the legacy-compatible file backend).
-- The local CLI token is used only for same-host communication between
-  `cadenza-cli` and the running app.
+- The UI is plain HTML/CSS/JS served by Tauri. Keep it framework-free and
+  build-step-free.
+- Backend, CLI, and UI share Fluent locale files. Do not add a second i18n
+  system.
+- The IPC protocol is NDJSON over local OS IPC, with `protocol_version`
+  negotiated separately from `app_version`.
+- `propose` must stay idempotent and resumable through client-generated
+  idempotency keys.
+- UI code must avoid `innerHTML` except in `ui/markdown.js`, where markdown
+  output is sanitized before assignment.
+- Dependencies must remain compatible with the repository license policy:
+  MIT, Apache-2.0, BSD, or MPL-2.0. `cargo-deny` enforces this in CI.
+
+Agent-specific implementation guidance lives in [AGENTS.md](AGENTS.md) and
+[CLAUDE.md](CLAUDE.md).
+
+---
+
+## Privacy and Local Data
+
+- Cadenza stores local app data under the user's Cadenza data directory,
+  including task data, inbox items, proposals, logs, and the local auth token.
+- The CLI token is used only for same-host communication between the app and
+  CLI.
 - PostgreSQL passwords are stored in the OS keyring when the PostgreSQL
   backend is used.
-- The app does not open a TCP server for agent communication.
 - Public release builds may contact the configured GitHub release endpoint
   to check signed updater metadata.
 
 ---
 
-## Internationalization
-
-- **Display layer only.** On-disk data and wire values stay in canonical
-  Portuguese.
-- **One toolchain everywhere.** Backend, CLI and UI all consume the same
-  `.ftl` files via `fluent-rs` (embedded with `include_dir!`). The UI
-  loads its strings at boot through a Tauri command (`load_translations`)
-  and renders them with a small `t(key, args)` helper — no
-  `react-i18next`, no second i18n system.
-- **Locales at launch:** `pt-BR` (primary), `en` (fallback). `pt_PT`
-  falls through to `pt-BR`.
-- **Resolution chain:** `--lang` > `CADENZA_LANG` > `config.json` >
-  OS locale (`sys-locale`) > `en`.
-- **Logs are always in English**, regardless of the active locale.
-
----
-
-## Design decisions already settled
-
-A few decisions are locked in, and silently re-deriving them is treated
-as a mistake. Summary of what's in `CLAUDE.md`:
-
-- **On-disk format is frozen** so Cadenza can coexist with the Node.js
-  version (state names and frontmatter fields stay in canonical
-  Portuguese).
-- **No MCP.** Agent integration is CLI-based — debuggable and
-  agent-agnostic.
-- **No JSON-RPC.** Wire format is plain NDJSON with `{v, id, op, args}`.
-- **The CLI ships inside the app installer** — never distributed
-  separately. That guarantees the CLI and app on a given host speak the
-  same `protocol_version`.
-- **No open TCP port.** PTY streaming uses Tauri channels instead of a
-  local WebSocket.
-
-The rationale for each one is in `CLAUDE.md`.
-
----
-
-## Roadmap
-
-- [x] **Phase 1 — Foundation:** Cargo workspace, Tauri boilerplate,
-  `config`/`store`/`observ`/`i18n` wired from the first boot.
-- [x] **Phase 2 — Core backend:** `triage` (idempotency + recovery),
-  `spawn` (PTY via `portable-pty`), `terminal` (channel + ring buffer).
-- [x] **Phase 3 — Frontend integration:** `commands.rs` and UI modules
-  built on `window.__TAURI__`, terminal on a Tauri channel, language
-  switcher.
-- [x] **Phase 4 — CLI + IPC + Notifications:** `proto`/`auth`/`ipc`,
-  `cadenza-cli` with clap, `notify` with actions, per-locale skill,
-  end-to-end test with a real agent.
-- [ ] **Phase 5 — Packaging and updates:** icons,
-  Windows NSIS release automation, ed25519 signing,
-  `tauri-plugin-updater` pointed at a public endpoint, smoke tests on
-  all three OSes. *(NSIS complete; AppImage and DMG pending validation)*
-
----
-
 ## Contributing
 
-Read `CONTRIBUTING.md` and `CLAUDE.md` before opening a PR. They spell out
-the non-negotiable constraints (frozen on-disk format, no MCP/JSON-RPC,
-stable exit codes, license policy, XSS hygiene) and the review expectations
-for this repository.
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR.
 
-Portuguese is the project's working language for architecture
-discussions; English is fine for code, comments, commits and PRs.
+Portuguese is welcome for architecture discussions. English is fine for code,
+comments, commits, issues, and PRs.
 
-Security issues should be reported privately; see `SECURITY.md`.
+Security issues should be reported privately; see [SECURITY.md](SECURITY.md).
 
 ---
 
 ## License
 
-Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE),
-at your option.
-
-Vendored browser assets are documented in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
+your option.
