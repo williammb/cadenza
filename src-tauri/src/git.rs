@@ -111,9 +111,7 @@ pub async fn pull_branch(dir: &Path, branch: &str) -> Result<()> {
     // tracking `origin/trunk`), so split the ref instead of assuming they
     // match. Default to `origin`/the local name if the split is unexpected
     // (e.g. a remote name containing no slash).
-    let (remote, remote_branch) = upstream
-        .split_once('/')
-        .unwrap_or(("origin", branch));
+    let (remote, remote_branch) = upstream.split_once('/').unwrap_or(("origin", branch));
     let checked_out = current_branch(dir).await? == branch;
     if checked_out {
         run_git(dir, &["pull", "--ff-only"]).await?;
