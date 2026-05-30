@@ -424,6 +424,20 @@ body > * {
   height: 2rem;
   justify-content: center;
 }
+/* Compact icon button for dense table-row actions. */
+.btn-icon-sm {
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0.26rem;
+}
+
+/* Off-screen <symbol> sprite — referenced via <use href="#ic-*">. */
+.icon-sprite {
+  position: absolute;
+  width: 0;
+  height: 0;
+  overflow: hidden;
+}
 
 /* ============================= BOARD ============================= */
 
@@ -828,69 +842,157 @@ textarea::placeholder {
   cursor: pointer;
 }
 
-/* ============================= PROJECTS LIST ============================= */
+/* ============================= SETTINGS TABS ============================= */
 
-.project-list {
-  list-style: none;
+.settings-tabs {
+  display: flex;
+  gap: 0.2rem;
+  border-bottom: 1px solid var(--hairline);
+  margin: 0.1rem 0 0.2rem;
+}
+.settings-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-feature);
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 600;
+  padding: 0.5rem 0.85rem;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition: color 110ms ease, border-color 110ms ease;
+}
+.settings-tab:hover {
+  color: var(--fg);
+}
+.settings-tab.is-active {
+  color: var(--fg);
+  border-bottom-color: var(--accent);
+}
+.settings-tab:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--accent-ring);
+  border-radius: 3px;
+}
+
+.settings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.95rem;
+}
+.settings-panel[hidden] {
+  display: none;
+}
+
+/* Pin the header, tab strip, and footer (Cancel/Save) so the action bar
+   is always reachable; only the active panel scrolls. Scoped to the
+   settings form so the other modals (task, start-agent) that share
+   .modal-form keep their whole-form scroll. */
+#settings-form {
+  overflow: hidden;
+}
+#settings-form > .modal-header,
+#settings-form > .settings-tabs,
+#settings-form > .modal-footer {
+  flex-shrink: 0;
+}
+#settings-form > .settings-panel {
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  /* Nudge content off the scrollbar without clipping focus rings. */
+  padding-right: 0.2rem;
+}
+
+/* Group each section in a tab panel as a distinct titled card, so a tab's
+   contents read as separate concerns instead of blurring into one long
+   scrolling list. Overrides the flat hairline-separated .modal-section
+   used elsewhere; scoped to the settings panels. */
+.settings-panel .modal-section,
+.settings-panel .modal-section:first-of-type {
+  border: 1px solid var(--card-border);
+  border-radius: 7px;
+  background: var(--card-bg);
+  padding: 0.85rem 1rem 0.95rem;
+  gap: 0.6rem;
+}
+.settings-panel .modal-section h3 {
+  margin: 0 0 0.2rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--hairline);
+  color: var(--fg-soft, var(--fg));
+}
+/* Card header row: title left, an action (e.g. refresh) pinned right; the
+   card-header underline spans both. */
+.settings-panel .modal-section > .section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0 0 0.2rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--hairline);
+}
+.settings-panel .modal-section > .section-head > h3 {
   margin: 0;
   padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 0.3rem;
+  border-bottom: none;
 }
-.project-list li {
-  display: grid;
-  grid-template-columns: 1fr 1.4fr auto;
-  gap: 0.5rem;
+.settings-panel .modal-section > .modal-hint:first-of-type {
+  margin-top: -0.1rem;
+}
+
+/* ============================== PROJECT TAB ============================== */
+
+.project-toolbar {
+  display: flex;
+  gap: 0.45rem;
   align-items: center;
-  padding: 0.45rem 0.6rem;
-  border: 1px solid var(--card-border);
-  border-radius: 3px;
-  font-size: 0.85rem;
-  background: var(--card-bg);
-  transition: border-color 110ms ease, background 110ms ease;
 }
-.project-list li:hover {
-  border-color: var(--card-border-strong);
-  background: var(--card-bg-hover);
-}
-.project-list .pname {
-  color: var(--fg);
-  font-family: var(--font-display);
-  font-weight: 600;
-  font-size: 0.92rem;
-}
-.project-list .pid {
-  color: var(--muted);
-  font-size: 0.7rem;
-  font-family: var(--font-mono);
-  letter-spacing: 0.02em;
-}
-.project-list .ppath {
-  color: var(--muted);
-  font-size: 0.76rem;
-  font-family: var(--font-mono);
-  word-break: break-all;
-}
-.project-list .pmeta {
-  display: flex;
-  flex-direction: column;
-  gap: 0.12rem;
+.project-tab-select {
+  flex: 1 1 auto;
   min-width: 0;
 }
-.project-list .empty-row {
-  grid-template-columns: 1fr;
+.project-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.project-detail[hidden] {
+  display: none;
+}
+.project-id-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+}
+.project-id-label {
+  font-family: var(--font-feature);
+  font-size: 0.68rem;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+  color: var(--muted);
+}
+.project-id-row code {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+.empty-hint {
   color: var(--muted);
   font-style: italic;
   font-family: var(--font-display);
-  text-align: center;
-  padding: 0.8rem;
+  margin: 0.2rem 0;
 }
-
-.project-add {
-  display: grid;
-  grid-template-columns: 1fr 1.4fr auto;
-  gap: 0.5rem;
+.empty-hint[hidden] {
+  display: none;
 }
 
 .path-picker {
@@ -1352,12 +1454,6 @@ textarea::placeholder {
 
 /* ─────────────── Settings — CLI skills section ─────────────── */
 
-.skill-controls {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.85rem;
-  margin-top: 0.45rem;
-}
 .skill-group {
   flex: 1 1 auto;
   border: 1px solid var(--border);
@@ -1382,37 +1478,19 @@ textarea::placeholder {
   font-size: 0.85rem;
 }
 .skill-check input { accent-color: var(--accent); }
-.skill-project-picker {
-  display: flex;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0.25rem 0 0.25rem 1.5rem;
-  font-size: 0.8rem;
-}
-.skill-project-picker[hidden] { display: none; }
-.skill-project-label { color: var(--muted); }
-.skill-project-select {
-  flex: 1 1 auto;
-  min-width: 0;
-  max-width: 100%;
-  padding: 0.25rem 0.35rem;
-  font-size: 0.8rem;
-  background: var(--input-bg);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-}
-.skill-project-empty {
-  color: var(--muted);
-  font-style: italic;
-  font-family: var(--font-display);
-}
 .skill-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.45rem;
   align-items: center;
   margin-top: 0.55rem;
+}
+/* Per-row action columns in the skills table stay as narrow as their
+   button so the Caminho column keeps the slack. */
+.skill-status-table--actions .skill-action-cell {
+  width: 1%;
+  white-space: nowrap;
+  text-align: right;
 }
 .skill-status-table {
   width: 100%;

@@ -1,46 +1,90 @@
-// Settings modal — Idioma / Projects / Agente padrão.
+// Settings modal — abas Geral / Agentes / Projeto.
 //
 // State flow:
 //   open() → get_config → populate form → user edits → submit →
 //   save_config (which also hot-swaps the in-memory copy and persists
 //   the JSON file). Locale changes apply *immediately* on select
 //   change (don't wait for Save) so the UI reflects the choice live.
+//
+// Layout: three horizontal tabs under the header.
+//   Geral   → Idioma + Armazenamento (files/sqlite/postgres).
+//   Agentes → Agente padrão + Modelos + Skills do CLI (escopo global).
+//   Projeto → projeto selecionado: editar Nome/Caminho, override de
+//             agente, e Skills do CLI (escopo projeto).
+// A single Save in the footer persists everything; actions that are
+// already immediate (locale, storage backend, skill install/remove,
+// model discovery) stay immediate.
 
 import { loadLocale, t } from "./i18n.js";
 import {
   loadAgentPresence,
   decorateKindSelect,
-  decorateSkillCheckbox,
   onAgentPresenceRefresh,
 } from "./agent-presence.js";
 
 const { invoke } = window.__TAURI__.core;
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+// Build an icon-only button (a Lucide-style line icon via the #ic-* sprite)
+// whose text label shows only as a hover tooltip. Keeps dense, repetitive
+// row actions compact while staying accessible (title + aria-label).
+function iconButton(symbolId, label, { primary = false } = {}) {
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "btn btn-icon btn-icon-sm" + (primary ? " btn-primary" : "");
+  btn.title = label;
+  btn.setAttribute("aria-label", label);
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("class", "ic");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("width", "15");
+  svg.setAttribute("height", "15");
+  svg.setAttribute("fill", "none");
+  svg.setAttribute("stroke", "currentColor");
+  svg.setAttribute("stroke-width", "2");
+  svg.setAttribute("stroke-linecap", "round");
+  svg.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("aria-hidden", "true");
+  const use = document.createElementNS(SVG_NS, "use");
+  use.setAttribute("href", `#${symbolId}`);
+  svg.append(use);
+  btn.append(svg);
+  return btn;
+}
+
 const dialog = document.getElementById("settings-modal");
 const form = document.getElementById("settings-form");
 const statusEl = document.getElementById("settings-status");
-const projectListEl = document.getElementById("project-list");
 const agentCommandEl = document.getElementById("agent-command");
 const localeSelectEl = document.getElementById("settings-locale");
 const agentKindSelectEl = document.getElementById("settings-agent-kind");
-const projectPathEl = document.getElementById("new-project-path");
 const storageRestartBanner = document.getElementById("storage-restart-banner");
 const pgBlock = document.getElementById("pg-config-block");
 const pgStatusEl = document.getElementById("pg-status");
 const pgSaveBtn = document.getElementById("btn-pg-save");
-const skillAgentClaudeEl = document.getElementById("skill-agent-claude");
-const skillAgentCodexEl = document.getElementById("skill-agent-codex");
-const skillAgentAntigravityEl = document.getElementById("skill-agent-antigravity");
-const skillForceEl = document.getElementById("skill-force");
-const skillStatusEl = document.getElementById("skill-status");
-const skillStatusTableBodyEl = document.getElementById("skill-status-table-body");
-const skillProjectPickerEl = document.getElementById("skill-project-picker");
-const skillProjectSelectEl = document.getElementById("skill-project-select");
-const skillProjectEmptyEl = document.getElementById("skill-project-empty");
 const modelsBodyEl = document.getElementById("settings-models-body");
 const modelsStatusEl = document.getElementById("settings-models-status");
 
+// Project tab elements.
+const projectTabSelectEl = document.getElementById("project-tab-select");
+const projectEmptyEl = document.getElementById("project-empty");
+const projectDetailEl = document.getElementById("project-detail");
+const projectEditNameEl = document.getElementById("project-edit-name");
+const projectEditPathEl = document.getElementById("project-edit-path");
+const projectEditIdEl = document.getElementById("project-edit-id");
+const projectAgentKindEl = document.getElementById("project-agent-kind");
+const projectAgentCommandEl = document.getElementById("project-agent-command");
+const projectAgentCommandFieldEl = document.getElementById("project-agent-command-field");
+const btnProjectNew = document.getElementById("btn-project-new");
+const btnProjectRemove = document.getElementById("btn-project-remove");
+const btnProjectEditBrowse = document.getElementById("btn-project-edit-browse");
+
 let currentConfig = blankConfig();
+// Which project the Projeto tab is showing. Tracked separately from
+// config.active_project_id (which is the board filter) — the tab just
+// needs *a* project to edit, defaulting to the active one.
+let selectedProjectId = null;
 let _refreshCallback = null;
 
 export function setSettingsRefreshCallback(fn) {
@@ -74,10 +118,8 @@ export async function openSettings() {
     currentConfig = blankConfig();
     setStatus(t("settings-save-error", { error: e }), "error");
   }
+  activateTab("geral");
   populateForm(currentConfig);
-  applySkillScopeVisibility();
-  // populateForm → renderProjects already repopulates the skill project
-  // select and refreshes status; no need to call them again here.
   await applyAgentPresence();
   if (!dialog.open) dialog.showModal();
 }
@@ -89,23 +131,7 @@ async function applyAgentPresence() {
   // keep refusing it — until a full restart.
   const map = await loadAgentPresence({ force: true });
   decorateKindSelect(agentKindSelectEl, map);
-  decorateSkillCheckbox(
-    skillAgentClaudeEl,
-    document.querySelector('label[for="skill-agent-claude"] span, #skill-agent-claude + span'),
-    map.get("claude_code"),
-  );
-  decorateSkillCheckbox(
-    skillAgentCodexEl,
-    document.querySelector('label[for="skill-agent-codex"] span, #skill-agent-codex + span'),
-    map.get("codex"),
-  );
-  decorateSkillCheckbox(
-    skillAgentAntigravityEl,
-    document.querySelector(
-      'label[for="skill-agent-antigravity"] span, #skill-agent-antigravity + span',
-    ),
-    map.get("antigravity"),
-  );
+  decorateKindSelect(projectAgentKindEl, map);
 }
 
 // Re-decorate when the locale flips while the modal is open. The
@@ -118,6 +144,29 @@ onAgentPresenceRefresh(() => {
 export function closeSettings() {
   if (dialog.open) dialog.close();
 }
+
+// ──────────────────────────────── tabs ──────────────────────────────
+
+const tabButtons = [...document.querySelectorAll(".settings-tab")];
+const tabPanels = [...document.querySelectorAll(".settings-panel")];
+
+function activateTab(name) {
+  for (const b of tabButtons) {
+    const active = b.dataset.tab === name;
+    b.classList.toggle("is-active", active);
+    b.setAttribute("aria-selected", active ? "true" : "false");
+    b.tabIndex = active ? 0 : -1;
+  }
+  for (const p of tabPanels) {
+    p.hidden = p.dataset.panel !== name;
+  }
+}
+
+for (const b of tabButtons) {
+  b.addEventListener("click", () => activateTab(b.dataset.tab));
+}
+
+// ───────────────────────────── populate ─────────────────────────────
 
 function populateForm(cfg) {
   localeSelectEl.value = cfg.locale ?? "pt-BR";
@@ -135,7 +184,11 @@ function populateForm(cfg) {
   populatePgForm(cfg.postgres);
   pgBlock.hidden = backend !== "postgres";
 
-  renderProjects(cfg.projects ?? []);
+  // Reset the project tab selection so a deleted/renamed project from a
+  // previous session doesn't linger; renderProjectTab picks a default.
+  selectedProjectId = null;
+  renderProjectTab();
+  globalSkills.refresh();
   refreshModelsStatus();
 }
 
@@ -177,58 +230,190 @@ function setPgStatus(msg, kind) {
   pgStatusEl.className = "modal-status" + (kind ? ` ${kind}` : "");
 }
 
-function renderProjects(projects) {
-  projectListEl.replaceChildren();
-  // The skill-scope project picker reads from currentConfig.projects;
-  // keep it in lockstep with this list so adding/removing a project is
-  // immediately reflected in the skills section.
-  populateSkillProjectSelect();
-  // After repopulating, the selected project may have changed (e.g. the
-  // previously picked one was just deleted) — refresh status to match.
-  if (readSkillScope() === "project") refreshSkillStatus();
-  if (!projects.length) {
-    const li = document.createElement("li");
-    li.className = "empty-row";
-    li.textContent = t("settings-projects-empty");
-    projectListEl.append(li);
+// ────────────────────────────── projeto tab ─────────────────────────
+//
+// The Projeto tab edits the *selected* project in place: name, path,
+// and the per-project agent override (`Project.agente`, surfaced here
+// for the first time — the backend already honors it at spawn time).
+// Edits write straight into `currentConfig.projects[i]`; the footer
+// Save persists them.
+
+function projectById(id) {
+  return (currentConfig.projects ?? []).find((p) => p.id === id) ?? null;
+}
+
+function currentProject() {
+  return projectById(selectedProjectId);
+}
+
+function renderProjectTab() {
+  const projects = currentConfig.projects ?? [];
+  const ids = projects.map((p) => p.id);
+
+  // Keep the prior selection if still valid; else prefer the active
+  // project, then fall back to the first entry.
+  if (!ids.includes(selectedProjectId)) {
+    selectedProjectId =
+      currentConfig.active_project_id && ids.includes(currentConfig.active_project_id)
+        ? currentConfig.active_project_id
+        : ids[0] ?? null;
+  }
+
+  projectTabSelectEl.replaceChildren();
+  for (const p of projects) {
+    const opt = document.createElement("option");
+    opt.value = p.id;
+    opt.textContent = p.name || p.id;
+    projectTabSelectEl.append(opt);
+  }
+
+  const empty = projects.length === 0;
+  projectTabSelectEl.hidden = empty;
+  projectTabSelectEl.disabled = empty;
+  projectEmptyEl.hidden = !empty;
+  projectDetailEl.hidden = empty;
+  // Guard: never let the user remove the last project.
+  btnProjectRemove.disabled = projects.length <= 1;
+
+  if (selectedProjectId) {
+    projectTabSelectEl.value = selectedProjectId;
+    renderProjectDetail();
+  } else {
+    // No project to show: still refresh the (empty) skills table.
+    projectSkills.refresh();
+  }
+}
+
+function renderProjectDetail() {
+  const p = currentProject();
+  if (!p) return;
+  projectEditNameEl.value = p.name ?? "";
+  projectEditPathEl.value = p.path ?? "";
+  projectEditIdEl.textContent = p.id;
+  projectAgentKindEl.value = p.agente?.kind ?? "";
+  projectAgentCommandEl.value = p.agente?.command ?? "";
+  updateProjectAgentCommandVisibility();
+  projectSkills.refresh();
+}
+
+// The command field only makes sense once an explicit agent kind is
+// chosen — "(herda global)" means "no override", so hide it.
+function updateProjectAgentCommandVisibility() {
+  projectAgentCommandFieldEl.hidden = !projectAgentKindEl.value;
+}
+
+// Fold the override select + command input back into `Project.agente`.
+// Empty kind → null (inherit global). Empty command → null (PATH lookup).
+function applyProjectAgent(p) {
+  const kind = projectAgentKindEl.value;
+  if (!kind) {
+    p.agente = null;
     return;
   }
-  for (const p of projects) {
-    const li = document.createElement("li");
+  const cmd = projectAgentCommandEl.value.trim();
+  p.agente = { kind, command: cmd === "" ? null : cmd };
+}
 
-    // Two-row meta cell: name on top, auto-generated id beneath
-    // (muted, monospace) so users can still see what was minted.
-    const meta = document.createElement("span");
-    meta.className = "pmeta";
-    const name = document.createElement("span");
-    name.className = "pname";
-    name.textContent = p.name;
-    const id = document.createElement("span");
-    id.className = "pid";
-    id.textContent = p.id;
-    meta.append(name, id);
+projectTabSelectEl.addEventListener("change", () => {
+  selectedProjectId = projectTabSelectEl.value;
+  renderProjectDetail();
+});
 
-    const path = document.createElement("span");
-    path.className = "ppath";
-    path.textContent = p.path;
+projectEditNameEl.addEventListener("input", () => {
+  const p = currentProject();
+  if (!p) return;
+  p.name = projectEditNameEl.value;
+  // Keep the selector label in sync as the user types.
+  const opt = [...projectTabSelectEl.options].find((o) => o.value === p.id);
+  if (opt) opt.textContent = p.name || p.id;
+});
 
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "btn btn-icon";
-    del.textContent = "×";
-    del.setAttribute("aria-label", t("action-delete"));
-    del.addEventListener("click", () => {
-      if (currentConfig.projects.length <= 1) {
-        setStatus(t("settings-projects-delete-last-error"), "error");
-        return;
-      }
-      currentConfig.projects = currentConfig.projects.filter((q) => q.id !== p.id);
-      renderProjects(currentConfig.projects);
-    });
+// Writing the path on every keystroke is cheap; refreshing the skill
+// status (a backend round-trip) is not — defer that to `change`/blur.
+projectEditPathEl.addEventListener("input", () => {
+  const p = currentProject();
+  if (!p) return;
+  p.path = projectEditPathEl.value;
+});
+projectEditPathEl.addEventListener("change", () => {
+  if (currentProject()) projectSkills.refresh();
+});
 
-    li.append(meta, path, del);
-    projectListEl.append(li);
+projectAgentKindEl.addEventListener("change", () => {
+  const p = currentProject();
+  if (!p) return;
+  applyProjectAgent(p);
+  updateProjectAgentCommandVisibility();
+});
+projectAgentCommandEl.addEventListener("input", () => {
+  const p = currentProject();
+  if (p) applyProjectAgent(p);
+});
+
+btnProjectNew.addEventListener("click", () => {
+  const name = t("settings-project-new-name");
+  const id = generateProjectId(name, currentConfig.projects ?? []);
+  currentConfig.projects = [
+    ...(currentConfig.projects ?? []),
+    { id, name, path: "", agente: null },
+  ];
+  selectedProjectId = id;
+  renderProjectTab();
+  // Drop the user straight into renaming the fresh project.
+  projectEditNameEl.focus();
+  projectEditNameEl.select();
+  setStatus("");
+});
+
+btnProjectRemove.addEventListener("click", () => {
+  if ((currentConfig.projects ?? []).length <= 1) {
+    setStatus(t("settings-projects-delete-last-error"), "error");
+    return;
   }
+  currentConfig.projects = currentConfig.projects.filter((p) => p.id !== selectedProjectId);
+  selectedProjectId = null; // renderProjectTab picks a fallback
+  renderProjectTab();
+  setStatus("");
+});
+
+// Folder picker for the selected project's path. The input stays
+// editable so users can still type or paste a path.
+btnProjectEditBrowse.addEventListener("click", async () => {
+  try {
+    const selected = await invoke("plugin:dialog|open", {
+      options: { directory: true, multiple: false },
+    });
+    if (typeof selected === "string" && selected.length > 0) {
+      projectEditPathEl.value = selected;
+      const p = currentProject();
+      if (p) {
+        p.path = selected;
+        projectSkills.refresh();
+      }
+    }
+  } catch (e) {
+    setStatus(t("task-error", { error: e }), "error");
+  }
+});
+
+function generateProjectId(name, existing) {
+  const slug = name
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 24) || "project";
+  // Random suffix avoids collisions; loop is theoretical (4 chars ≈ 1.6M)
+  // but cheap insurance.
+  for (let i = 0; i < 8; i++) {
+    const suffix = Math.floor(Math.random() * 36 * 36 * 36 * 36)
+      .toString(36)
+      .padStart(4, "0");
+    const candidate = `${slug}-${suffix}`;
+    if (!existing.some((p) => p.id === candidate)) return candidate;
+  }
+  return `${slug}-${Date.now().toString(36)}`;
 }
 
 function readForm() {
@@ -240,7 +425,11 @@ function readForm() {
   );
   const storageBackend = backendRadio?.value ?? currentConfig.storage_backend ?? "files";
 
+  // Spread currentConfig first so fields the form doesn't surface —
+  // postgres, active_project_id, agent_models — survive the Save instead
+  // of being dropped (save_config overwrites the whole config).
   return {
+    ...currentConfig,
     data_version: currentConfig.data_version ?? 1,
     locale,
     skill_locale: currentConfig.skill_locale ?? null,
@@ -308,10 +497,8 @@ async function refreshModelsStatus() {
     tdCurrent.textContent = current ? current.label || current.id : "—";
 
     const tdAction = document.createElement("td");
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "btn btn-small";
-    btn.textContent = t("settings-models-load") || "Carregar";
+    tdAction.className = "skill-action-cell";
+    const btn = iconButton("ic-download", t("settings-models-load") || "Carregar");
     btn.addEventListener("click", () => loadModelsForKind(kind));
     tdAction.append(btn);
 
@@ -336,49 +523,7 @@ async function loadModelsForKind(kind) {
   await refreshModelsStatus();
 }
 
-// ─────────────────────────── event wiring ───────────────────────────
-
-// Add-project button — id is auto-generated from the name so the user
-// only fills name + path. We slugify (lowercase, strip diacritics,
-// keep [a-z0-9-]) and tack on a 4-char random suffix to keep ids
-// unique even if two projects share a slug.
-document.getElementById("btn-add-project").addEventListener("click", () => {
-  const name = document.getElementById("new-project-name").value.trim();
-  const path = document.getElementById("new-project-path").value.trim();
-  if (!name || !path) {
-    setStatus(t("task-error", { error: "name/path required" }), "error");
-    return;
-  }
-  const id = generateProjectId(name, currentConfig.projects ?? []);
-  currentConfig.projects = [
-    ...(currentConfig.projects ?? []),
-    { id, name, path, agente: null },
-  ];
-  renderProjects(currentConfig.projects);
-  document.getElementById("new-project-name").value = "";
-  document.getElementById("new-project-path").value = "";
-  setStatus("");
-});
-
-function generateProjectId(name, existing) {
-  const slug = name
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/[̀-ͯ]/g, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 24) || "project";
-  // Random suffix avoids collisions; loop is theoretical (4 chars ≈ 1.6M)
-  // but cheap insurance.
-  for (let i = 0; i < 8; i++) {
-    const suffix = Math.floor(Math.random() * 36 * 36 * 36 * 36)
-      .toString(36)
-      .padStart(4, "0");
-    const candidate = `${slug}-${suffix}`;
-    if (!existing.some((p) => p.id === candidate)) return candidate;
-  }
-  return `${slug}-${Date.now().toString(36)}`;
-}
+// ─────────────────────── locale / storage wiring ────────────────────
 
 // Live locale switching — applies before Save so the modal itself
 // re-renders in the chosen language as the user picks an option.
@@ -388,31 +533,15 @@ localeSelectEl.addEventListener("change", async () => {
     await loadLocale(applied);
     currentConfig.locale = applied;
     localeSelectEl.value = applied;
-    renderProjects(currentConfig.projects ?? []);
+    // The translation pass re-stamps data-i18n labels, but the JS-built
+    // tables (projects, skills, models) need an explicit re-render.
+    renderProjectTab();
+    globalSkills.refresh();
+    refreshModelsStatus();
   } catch (e) {
     setStatus(t("settings-save-error", { error: e }), "error");
   }
 });
-
-// Folder picker — the browse button opens the native directory
-// dialog. The input itself stays editable so users can still type or
-// paste a path; the dialog is a convenience, not the only entry.
-async function pickProjectPath() {
-  try {
-    const selected = await invoke("plugin:dialog|open", {
-      options: { directory: true, multiple: false },
-    });
-    if (typeof selected === "string" && selected.length > 0) {
-      projectPathEl.value = selected;
-    }
-  } catch (e) {
-    setStatus(t("task-error", { error: e }), "error");
-  }
-}
-
-document
-  .getElementById("btn-browse-path")
-  .addEventListener("click", pickProjectPath);
 
 // Close buttons (header × and footer Cancel)
 document
@@ -548,97 +677,19 @@ document.getElementById("btn-pg-clear").addEventListener("click", async () => {
 // ─────────────────────── skills (CLI snippet) ────────────────────────
 //
 // The Settings modal lets the user push the cadenza-cli usage snippet
-// into Claude Code (~/.claude/skills/cadenza/SKILL.md) and Codex
-// (AGENTS.md managed block). All filesystem work runs in the Tauri
-// backend via skills-core; the UI is a thin form + status table.
+// into Claude Code (~/.claude/skills/cadenza/SKILL.md), Codex
+// (AGENTS.md managed block), and Antigravity. All filesystem work runs
+// in the Tauri backend via skills-core; the UI is a thin form + status
+// table.
+//
+// There are two panels with identical shape but fixed scope: the
+// Agentes tab installs *global* (user home); the Projeto tab installs
+// into the *selected project*. `createSkillsPanel` builds one from a
+// prefix + scope, so the two share all behavior.
 //
 // Locale is the app's active locale (resolved server-side in
 // skill_install) — switching the app language is the way to install in
 // a different language.
-
-function readSkillAgents() {
-  const agents = [];
-  if (skillAgentClaudeEl.checked) agents.push("claude");
-  if (skillAgentCodexEl.checked) agents.push("codex");
-  if (skillAgentAntigravityEl.checked) agents.push("antigravity");
-  return agents;
-}
-
-function readSkillScope() {
-  const checked = document.querySelector('input[name="skill-scope"]:checked');
-  return checked?.value ?? "project";
-}
-
-// Returns the absolute path of the project currently picked in the
-// skill-scope project select, or null when scope is global / no project
-// is configured.
-function readSkillProjectPath() {
-  if (readSkillScope() !== "project") return null;
-  const id = skillProjectSelectEl.value;
-  if (!id) return null;
-  const proj = (currentConfig.projects ?? []).find((p) => p.id === id);
-  return proj?.path ?? null;
-}
-
-// Like readSkillProjectPath, but ignores the scope radio — used by the
-// status table, whose "Project" row should always reflect the picked
-// project regardless of which scope is currently selected for
-// install/remove. Without this the backend falls back to current_dir(),
-// which is the directory Cadenza itself was launched from.
-function selectedProjectPath() {
-  const id = skillProjectSelectEl.value;
-  if (!id) return null;
-  const proj = (currentConfig.projects ?? []).find((p) => p.id === id);
-  return proj?.path ?? null;
-}
-
-// Build invoke args; only include project_path for project scope so
-// the backend can keep its current_dir fallback for the global case.
-function skillInvokeArgs(extra) {
-  const args = {
-    agents: readSkillAgents(),
-    scope: readSkillScope(),
-    ...(extra ?? {}),
-  };
-  const projectPath = readSkillProjectPath();
-  if (projectPath) args.project_path = projectPath;
-  return args;
-}
-
-function populateSkillProjectSelect() {
-  const projects = currentConfig.projects ?? [];
-  const previous = skillProjectSelectEl.value;
-  skillProjectSelectEl.replaceChildren();
-  for (const p of projects) {
-    const opt = document.createElement("option");
-    opt.value = p.id;
-    opt.textContent = `${p.name} — ${p.path}`;
-    skillProjectSelectEl.append(opt);
-  }
-  // Restore prior pick if still valid; otherwise prefer the active
-  // project from config, then fall back to the first entry.
-  const ids = projects.map((p) => p.id);
-  let selected = ids.includes(previous) ? previous : null;
-  if (!selected && currentConfig.active_project_id && ids.includes(currentConfig.active_project_id)) {
-    selected = currentConfig.active_project_id;
-  }
-  if (!selected && ids.length) selected = ids[0];
-  if (selected) skillProjectSelectEl.value = selected;
-
-  const empty = projects.length === 0;
-  skillProjectSelectEl.hidden = empty;
-  skillProjectSelectEl.disabled = empty;
-  skillProjectEmptyEl.hidden = !empty;
-}
-
-function applySkillScopeVisibility() {
-  skillProjectPickerEl.hidden = readSkillScope() !== "project";
-}
-
-function setSkillStatus(msg, kind) {
-  skillStatusEl.textContent = msg ?? "";
-  skillStatusEl.className = "modal-status" + (kind ? ` ${kind}` : "");
-}
 
 function summarizeOutcomes(outcomes) {
   // One-liner suitable for the status area. We don't try to translate
@@ -654,102 +705,131 @@ function summarizeOutcomes(outcomes) {
   return parts.join(" · ");
 }
 
-async function refreshSkillStatus() {
-  skillStatusTableBodyEl.replaceChildren();
-  let rows;
-  try {
-    const args = {};
-    const projectPath = selectedProjectPath();
-    if (projectPath) args.project_path = projectPath;
-    rows = await invoke("skill_status", args);
-  } catch (e) {
-    setSkillStatus(t("settings-skills-error", { error: e }), "error");
-    return;
+// Builds a skills panel bound to its own DOM (by `prefix`) and a fixed
+// `scope`. `getProjectPath` supplies the absolute path for the project
+// scope (null/unused for global).
+function createSkillsPanel({ prefix, scope, getProjectPath }) {
+  const statusMsgEl = document.getElementById(`skill-${prefix}-status`);
+  const tableBodyEl = document.getElementById(`skill-${prefix}-status-body`);
+
+  function setSkillStatus(msg, kind) {
+    statusMsgEl.textContent = msg ?? "";
+    statusMsgEl.className = "modal-status" + (kind ? ` ${kind}` : "");
   }
-  for (const r of rows) {
-    const tr = document.createElement("tr");
 
-    const tdAgent = document.createElement("td");
-    tdAgent.textContent = t(`settings-skills-agent-${r.agent}`);
+  function projectPath() {
+    return scope === "project" ? getProjectPath?.() ?? null : null;
+  }
 
-    const tdScope = document.createElement("td");
-    tdScope.textContent = t(`settings-skills-scope-${r.scope}`);
-
-    const tdStatus = document.createElement("td");
-    if (r.installed) {
-      const label = r.locale
-        ? t("settings-skills-status-installed-locale", { locale: r.locale })
-        : t("settings-skills-status-installed");
-      tdStatus.textContent = label;
-      tdStatus.className = "skill-status-yes";
-    } else {
-      tdStatus.textContent = t("settings-skills-status-not-installed");
-      tdStatus.className = "skill-status-no";
+  // Install/remove a single agent's snippet (one table row). `force`
+  // overwrites an existing install ("Atualizar"); without it a present
+  // snippet is skipped.
+  async function runAction(op, agent, force) {
+    if (scope === "project" && !projectPath()) {
+      setSkillStatus(t("settings-skills-project-required"), "error");
+      return;
     }
-
-    const tdPath = document.createElement("td");
-    tdPath.className = "skill-path";
-    tdPath.textContent = r.path;
-    tdPath.title = r.path;
-
-    tr.append(tdAgent, tdScope, tdStatus, tdPath);
-    skillStatusTableBodyEl.append(tr);
+    setSkillStatus(t("settings-skills-running"));
+    try {
+      const args = { agents: [agent], scope };
+      if (force) args.force = true;
+      const path = projectPath();
+      if (path) args.project_path = path;
+      const outcomes = await invoke(op, args);
+      setSkillStatus(summarizeOutcomes(outcomes) || t("settings-saved"), "ok");
+      await refresh();
+    } catch (e) {
+      setSkillStatus(t("settings-skills-error", { error: e }), "error");
+    }
   }
+
+  async function refresh() {
+    tableBodyEl.replaceChildren();
+    let rows;
+    try {
+      const args = {};
+      const path = projectPath();
+      if (path) args.project_path = path;
+      rows = await invoke("skill_status", args);
+    } catch (e) {
+      setSkillStatus(t("settings-skills-error", { error: e }), "error");
+      return;
+    }
+    // Each panel owns one scope — show only its rows so the global and
+    // project tables don't echo each other.
+    for (const r of rows.filter((r) => r.scope === scope)) {
+      const tr = document.createElement("tr");
+
+      const tdAgent = document.createElement("td");
+      tdAgent.textContent = t(`settings-skills-agent-${r.agent}`);
+
+      const tdScope = document.createElement("td");
+      tdScope.textContent = t(`settings-skills-scope-${r.scope}`);
+
+      const tdStatus = document.createElement("td");
+      if (r.installed) {
+        tdStatus.textContent = r.locale
+          ? t("settings-skills-status-installed-locale", { locale: r.locale })
+          : t("settings-skills-status-installed");
+        tdStatus.className = "skill-status-yes";
+      } else {
+        tdStatus.textContent = t("settings-skills-status-not-installed");
+        tdStatus.className = "skill-status-no";
+      }
+
+      const tdPath = document.createElement("td");
+      tdPath.className = "skill-path";
+      tdPath.textContent = r.path;
+      tdPath.title = r.path;
+
+      // Per-row primary action: install (download icon) when absent,
+      // update (refresh icon, force-overwrite) when already installed.
+      const tdAction = document.createElement("td");
+      tdAction.className = "skill-action-cell";
+      const actBtn = iconButton(
+        r.installed ? "ic-refresh" : "ic-download",
+        r.installed ? t("settings-skills-update") : t("settings-skills-install"),
+        { primary: !r.installed },
+      );
+      actBtn.addEventListener("click", () =>
+        runAction("skill_install", r.agent, r.installed),
+      );
+      tdAction.append(actBtn);
+
+      // Per-row remove (trash icon) — only meaningful once installed.
+      const tdRemove = document.createElement("td");
+      tdRemove.className = "skill-action-cell";
+      const rmBtn = iconButton("ic-trash", t("settings-skills-remove"));
+      rmBtn.disabled = !r.installed;
+      rmBtn.addEventListener("click", () => runAction("skill_remove", r.agent, false));
+      tdRemove.append(rmBtn);
+
+      tr.append(tdAgent, tdScope, tdStatus, tdPath, tdAction, tdRemove);
+      tableBodyEl.append(tr);
+    }
+  }
+
+  document
+    .getElementById(`btn-skill-${prefix}-refresh`)
+    .addEventListener("click", async () => {
+      setSkillStatus("");
+      await refresh();
+    });
+
+  return { refresh };
 }
 
-async function runSkillAction(op, extra) {
-  const agents = readSkillAgents();
-  if (!agents.length) {
-    setSkillStatus(t("settings-skills-no-agent"), "error");
-    return;
-  }
-  const args = skillInvokeArgs(extra);
-  if (args.scope === "project" && !args.project_path) {
-    setSkillStatus(t("settings-skills-project-required"), "error");
-    return;
-  }
-  setSkillStatus(t("settings-skills-running"));
-  try {
-    const outcomes = await invoke(op, args);
-    const summary = summarizeOutcomes(outcomes);
-    setSkillStatus(summary || t("settings-saved"), "ok");
-    await refreshSkillStatus();
-  } catch (e) {
-    setSkillStatus(t("settings-skills-error", { error: e }), "error");
-  }
-}
-
-document.getElementById("btn-skill-install").addEventListener("click", () => {
-  runSkillAction("skill_install", { force: skillForceEl.checked });
-});
-
-document.getElementById("btn-skill-remove").addEventListener("click", () => {
-  runSkillAction("skill_remove", {});
-});
-
-document.getElementById("btn-skill-refresh").addEventListener("click", async () => {
-  setSkillStatus("");
-  await refreshSkillStatus();
+const globalSkills = createSkillsPanel({ prefix: "g", scope: "global" });
+const projectSkills = createSkillsPanel({
+  prefix: "p",
+  scope: "project",
+  getProjectPath: () => currentProject()?.path || null,
 });
 
 document.getElementById("btn-models-refresh").addEventListener("click", async () => {
   setModelsStatus("");
   await refreshModelsStatus();
 });
-
-skillProjectSelectEl.addEventListener("change", () => {
-  setSkillStatus("");
-  refreshSkillStatus();
-});
-
-for (const radio of document.querySelectorAll('input[name="skill-scope"]')) {
-  radio.addEventListener("change", () => {
-    if (!radio.checked) return;
-    setSkillStatus("");
-    applySkillScopeVisibility();
-    refreshSkillStatus();
-  });
-}
 
 // Save
 form.addEventListener("submit", async (e) => {

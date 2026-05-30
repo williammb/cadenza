@@ -137,6 +137,31 @@
       </div>
     </div>
 
+    <!-- Icon sprite (Lucide-style line icons). Symbols are referenced by id
+         through SVG use; the host element supplies stroke and size. -->
+    <svg width="0" height="0" class="icon-sprite" aria-hidden="true" focusable="false">
+      <symbol id="ic-download" viewBox="0 0 24 24">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+        <polyline points="7 10 12 15 17 10"></polyline>
+        <line x1="12" y1="15" x2="12" y2="3"></line>
+      </symbol>
+      <symbol id="ic-refresh" viewBox="0 0 24 24">
+        <polyline points="23 4 23 10 17 10"></polyline>
+        <polyline points="1 20 1 14 7 14"></polyline>
+        <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path>
+      </symbol>
+      <symbol id="ic-trash" viewBox="0 0 24 24">
+        <polyline points="3 6 5 6 21 6"></polyline>
+        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+        <line x1="10" y1="11" x2="10" y2="17"></line>
+        <line x1="14" y1="11" x2="14" y2="17"></line>
+      </symbol>
+      <symbol id="ic-plus" viewBox="0 0 24 24">
+        <line x1="12" y1="5" x2="12" y2="19"></line>
+        <line x1="5" y1="12" x2="19" y2="12"></line>
+      </symbol>
+    </svg>
+
     <main class="board" id="board">
       <section class="column column-inbox" data-tipo="ideia">
         <header>
@@ -220,61 +245,55 @@
           >×</button>
         </header>
 
+        <nav class="settings-tabs" role="tablist" aria-label="Configurações">
+          <button
+            type="button"
+            class="settings-tab is-active"
+            role="tab"
+            id="settings-tab-geral"
+            data-tab="geral"
+            aria-selected="true"
+            aria-controls="settings-panel-geral"
+            data-i18n="settings-tab-geral"
+          >Geral</button>
+          <button
+            type="button"
+            class="settings-tab"
+            role="tab"
+            id="settings-tab-agentes"
+            data-tab="agentes"
+            aria-selected="false"
+            aria-controls="settings-panel-agentes"
+            tabindex="-1"
+            data-i18n="settings-tab-agentes"
+          >Agentes</button>
+          <button
+            type="button"
+            class="settings-tab"
+            role="tab"
+            id="settings-tab-projeto"
+            data-tab="projeto"
+            aria-selected="false"
+            aria-controls="settings-panel-projeto"
+            tabindex="-1"
+            data-i18n="settings-tab-projeto"
+          >Projeto</button>
+        </nav>
+
+        <!-- ───────────────────────────── GERAL ───────────────────────────── -->
+        <div
+          class="settings-panel"
+          role="tabpanel"
+          id="settings-panel-geral"
+          data-panel="geral"
+          aria-labelledby="settings-tab-geral"
+        >
         <section class="modal-section">
           <h3 data-i18n="settings-section-language">Idioma</h3>
           <select id="settings-locale" name="locale">
             <option value="pt-BR" data-i18n="settings-language-pt">Português (pt-BR)</option>
             <option value="en" data-i18n="settings-language-en">English (en)</option>
           </select>
-        </section>
-
-        <section class="modal-section">
-          <h3 data-i18n="settings-section-projects">Projetos</h3>
-          <ul class="project-list" id="project-list"></ul>
-          <div class="project-add">
-            <input
-              type="text"
-              id="new-project-name"
-              data-i18n-placeholder="settings-project-name"
-              placeholder="Nome"
-            />
-            <div class="path-picker">
-              <input
-                type="text"
-                id="new-project-path"
-                data-i18n-placeholder="settings-project-path"
-                placeholder="Caminho"
-              />
-              <button
-                type="button"
-                class="btn btn-icon path-browse"
-                id="btn-browse-path"
-                data-i18n-aria-label="settings-project-path-browse"
-                data-i18n-title="settings-project-path-browse"
-                aria-label="Selecionar pasta"
-                title="Selecionar pasta"
-              >…</button>
-            </div>
-            <button
-              type="button"
-              class="btn"
-              id="btn-add-project"
-              data-i18n="action-add"
-            >Adicionar</button>
-          </div>
-        </section>
-
-        <section class="modal-section">
-          <h3 data-i18n="settings-section-agent">Agente padrão</h3>
-          <select id="settings-agent-kind" name="agent-kind">
-            <option value="claude_code" data-i18n="settings-agent-claude">Claude Code</option>
-            <option value="codex" data-i18n="settings-agent-codex">Codex</option>
-            <option value="antigravity" data-i18n="settings-agent-antigravity">Antigravity</option>
-          </select>
-          <label class="field">
-            <span data-i18n="settings-agent-command">Comando (opcional)</span>
-            <input type="text" id="agent-command" placeholder="claude" />
-          </label>
         </section>
 
         <section class="modal-section">
@@ -422,25 +441,52 @@
             >Reiniciar agora</button>
           </div>
         </section>
+        </div>
+
+        <!-- ──────────────────────────── AGENTES ──────────────────────────── -->
+        <div
+          class="settings-panel"
+          role="tabpanel"
+          id="settings-panel-agentes"
+          data-panel="agentes"
+          aria-labelledby="settings-tab-agentes"
+          hidden
+        >
+        <section class="modal-section">
+          <h3 data-i18n="settings-section-agent">Agente padrão</h3>
+          <select id="settings-agent-kind" name="agent-kind">
+            <option value="claude_code" data-i18n="settings-agent-claude">Claude Code</option>
+            <option value="codex" data-i18n="settings-agent-codex">Codex</option>
+            <option value="antigravity" data-i18n="settings-agent-antigravity">Antigravity</option>
+          </select>
+          <label class="field">
+            <span data-i18n="settings-agent-command">Comando (opcional)</span>
+            <input type="text" id="agent-command" placeholder="claude" />
+          </label>
+        </section>
 
         <section class="modal-section">
-          <h3 data-i18n="settings-section-models">Modelos</h3>
+          <div class="section-head">
+            <h3 data-i18n="settings-section-models">Modelos</h3>
+            <button
+              type="button"
+              class="btn btn-icon btn-icon-sm"
+              id="btn-models-refresh"
+              data-i18n-aria-label="settings-models-refresh"
+              data-i18n-title="settings-models-refresh"
+              aria-label="Atualizar status"
+              title="Atualizar status"
+            >
+              <svg class="ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#ic-refresh"></use></svg>
+            </button>
+          </div>
           <p class="modal-hint" data-i18n="settings-models-hint">
             Descobre os modelos que cada agente oferece. A sondagem leva
             alguns segundos; o resultado fica salvo e é reusado ao iniciar
             um agente.
           </p>
 
-          <div class="skill-actions">
-            <button
-              type="button"
-              class="btn btn-small"
-              id="btn-models-refresh"
-              data-i18n="settings-models-refresh"
-            >Atualizar status</button>
-          </div>
-
-          <table class="skill-status-table">
+          <table class="skill-status-table skill-status-table--actions">
             <thead>
               <tr>
                 <th data-i18n="settings-models-col-agent">Agente</th>
@@ -460,112 +506,176 @@
         </section>
 
         <section class="modal-section">
-          <h3 data-i18n="settings-section-skills">Skills do CLI</h3>
-          <p class="modal-hint" data-i18n="settings-skills-hint">
-            Instala um snippet que ensina o agente (Claude Code, Codex) a
-            usar o cadenza-cli.
+          <div class="section-head">
+            <h3 data-i18n="settings-section-skills">Skills do CLI</h3>
+            <button
+              type="button"
+              class="btn btn-icon btn-icon-sm"
+              id="btn-skill-g-refresh"
+              data-i18n-aria-label="settings-skills-refresh"
+              data-i18n-title="settings-skills-refresh"
+              aria-label="Atualizar status"
+              title="Atualizar status"
+            >
+              <svg class="ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#ic-refresh"></use></svg>
+            </button>
+          </div>
+          <p class="modal-hint" data-i18n="settings-skills-hint-global">
+            Instala o snippet globalmente (na sua home), valendo para todos
+            os projetos.
           </p>
 
-          <div class="skill-controls">
-            <fieldset class="skill-group">
-              <legend data-i18n="settings-skills-agents">Agentes</legend>
-              <label class="skill-check">
-                <input type="checkbox" id="skill-agent-claude" checked />
-                <span data-i18n="settings-skills-agent-claude">Claude Code</span>
-              </label>
-              <label class="skill-check">
-                <input type="checkbox" id="skill-agent-codex" checked />
-                <span data-i18n="settings-skills-agent-codex">Codex</span>
-              </label>
-              <label class="skill-check">
-                <input type="checkbox" id="skill-agent-antigravity" checked />
-                <span data-i18n="settings-skills-agent-antigravity">Antigravity</span>
-              </label>
-            </fieldset>
-
-            <fieldset class="skill-group">
-              <legend data-i18n="settings-skills-scope">Escopo</legend>
-              <label class="skill-check">
-                <input
-                  type="radio"
-                  name="skill-scope"
-                  value="project"
-                  id="skill-scope-project"
-                  checked
-                />
-                <span data-i18n="settings-skills-scope-project">Projeto atual</span>
-              </label>
-              <div class="skill-project-picker" id="skill-project-picker">
-                <label
-                  for="skill-project-select"
-                  class="skill-project-label"
-                  data-i18n="settings-skills-project-label"
-                >Projeto</label>
-                <select id="skill-project-select" class="skill-project-select"></select>
-                <span
-                  id="skill-project-empty"
-                  class="skill-project-empty"
-                  data-i18n="settings-skills-project-empty"
-                  hidden
-                >Nenhum projeto cadastrado.</span>
-              </div>
-              <label class="skill-check">
-                <input
-                  type="radio"
-                  name="skill-scope"
-                  value="global"
-                  id="skill-scope-global"
-                />
-                <span data-i18n="settings-skills-scope-global">Global (usuário)</span>
-              </label>
-            </fieldset>
-          </div>
-
-          <label class="skill-check">
-            <input type="checkbox" id="skill-force" />
-            <span data-i18n="settings-skills-force">Sobrescrever se já existir</span>
-          </label>
-
-          <div class="skill-actions">
-            <button
-              type="button"
-              class="btn btn-primary"
-              id="btn-skill-install"
-              data-i18n="settings-skills-install"
-            >Instalar</button>
-            <button
-              type="button"
-              class="btn"
-              id="btn-skill-remove"
-              data-i18n="settings-skills-remove"
-            >Remover</button>
-            <button
-              type="button"
-              class="btn btn-small"
-              id="btn-skill-refresh"
-              data-i18n="settings-skills-refresh"
-            >Atualizar status</button>
-          </div>
-
-          <table class="skill-status-table">
+          <table class="skill-status-table skill-status-table--actions">
             <thead>
               <tr>
                 <th data-i18n="settings-skills-col-agent">Agente</th>
                 <th data-i18n="settings-skills-col-scope">Escopo</th>
                 <th data-i18n="settings-skills-col-status">Status</th>
                 <th data-i18n="settings-skills-col-path">Caminho</th>
+                <th></th>
+                <th></th>
               </tr>
             </thead>
-            <tbody id="skill-status-table-body"></tbody>
+            <tbody id="skill-g-status-body"></tbody>
           </table>
 
           <div
-            id="skill-status"
+            id="skill-g-status"
             class="modal-status"
             aria-live="polite"
           ></div>
         </section>
+        </div>
 
+        <!-- ──────────────────────────── PROJETO ──────────────────────────── -->
+        <div
+          class="settings-panel"
+          role="tabpanel"
+          id="settings-panel-projeto"
+          data-panel="projeto"
+          aria-labelledby="settings-tab-projeto"
+          hidden
+        >
+        <section class="modal-section">
+          <h3 data-i18n="settings-section-projects">Projetos</h3>
+          <div class="project-toolbar">
+            <select id="project-tab-select" class="project-tab-select"></select>
+            <button
+              type="button"
+              class="btn btn-icon"
+              id="btn-project-new"
+              data-i18n-aria-label="settings-project-new"
+              data-i18n-title="settings-project-new"
+              aria-label="Novo projeto"
+              title="Novo projeto"
+            >
+              <svg class="ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#ic-plus"></use></svg>
+            </button>
+            <button
+              type="button"
+              class="btn btn-icon"
+              id="btn-project-remove"
+              data-i18n-aria-label="settings-project-remove"
+              data-i18n-title="settings-project-remove"
+              aria-label="Remover projeto"
+              title="Remover projeto"
+            >
+              <svg class="ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#ic-trash"></use></svg>
+            </button>
+          </div>
+
+          <p
+            id="project-empty"
+            class="empty-hint"
+            data-i18n="settings-projects-empty"
+            hidden
+          >Nenhum projeto cadastrado.</p>
+
+          <div id="project-detail" class="project-detail">
+            <label class="field">
+              <span data-i18n="settings-project-name">Nome</span>
+              <input type="text" id="project-edit-name" autocomplete="off" />
+            </label>
+            <div class="field">
+              <span data-i18n="settings-project-path">Caminho</span>
+              <div class="path-picker">
+                <input
+                  type="text"
+                  id="project-edit-path"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <button
+                  type="button"
+                  class="btn btn-icon path-browse"
+                  id="btn-project-edit-browse"
+                  data-i18n-aria-label="settings-project-path-browse"
+                  data-i18n-title="settings-project-path-browse"
+                  aria-label="Selecionar pasta"
+                  title="Selecionar pasta"
+                >…</button>
+              </div>
+            </div>
+            <p class="project-id-row">
+              <span class="project-id-label" data-i18n="settings-project-id">ID</span>
+              <code id="project-edit-id"></code>
+            </p>
+            <label class="field">
+              <span data-i18n="settings-project-agent">Agente (override)</span>
+              <select id="project-agent-kind">
+                <option value="" data-i18n="settings-project-agent-inherit">(herda global)</option>
+                <option value="claude_code" data-i18n="settings-agent-claude">Claude Code</option>
+                <option value="codex" data-i18n="settings-agent-codex">Codex</option>
+                <option value="antigravity" data-i18n="settings-agent-antigravity">Antigravity</option>
+              </select>
+            </label>
+            <label class="field" id="project-agent-command-field">
+              <span data-i18n="settings-agent-command">Comando (opcional)</span>
+              <input type="text" id="project-agent-command" placeholder="claude" />
+            </label>
+          </div>
+        </section>
+
+        <section class="modal-section">
+          <div class="section-head">
+            <h3 data-i18n="settings-section-skills">Skills do CLI</h3>
+            <button
+              type="button"
+              class="btn btn-icon btn-icon-sm"
+              id="btn-skill-p-refresh"
+              data-i18n-aria-label="settings-skills-refresh"
+              data-i18n-title="settings-skills-refresh"
+              aria-label="Atualizar status"
+              title="Atualizar status"
+            >
+              <svg class="ic" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><use href="#ic-refresh"></use></svg>
+            </button>
+          </div>
+          <p class="modal-hint" data-i18n="settings-skills-hint-project">
+            Instala o snippet no projeto selecionado acima.
+          </p>
+
+          <table class="skill-status-table skill-status-table--actions">
+            <thead>
+              <tr>
+                <th data-i18n="settings-skills-col-agent">Agente</th>
+                <th data-i18n="settings-skills-col-scope">Escopo</th>
+                <th data-i18n="settings-skills-col-status">Status</th>
+                <th data-i18n="settings-skills-col-path">Caminho</th>
+                <th></th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="skill-p-status-body"></tbody>
+          </table>
+
+          <div
+            id="skill-p-status"
+            class="modal-status"
+            aria-live="polite"
+          ></div>
+        </section>
+        </div>
         <footer class="modal-footer">
           <span class="modal-status" id="settings-status" aria-live="polite"></span>
           <button type="button" class="btn" data-action="close-settings" data-i18n="action-cancel">Cancelar</button>
