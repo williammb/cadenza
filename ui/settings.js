@@ -788,8 +788,7 @@ function createSkillsPanel({ prefix, scope, getProjectPath }) {
     }
     setSkillStatus(t("settings-skills-running"));
     try {
-      const args = { agents: [agent], scope };
-      if (force) args.force = true;
+      const args = { agents: [agent], scope, force: Boolean(force) };
       const path = projectPath();
       if (path) args.project_path = path;
       const outcomes = await invoke(op, args);
