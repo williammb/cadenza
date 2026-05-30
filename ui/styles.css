@@ -593,6 +593,18 @@ body > * {
   transform: rotate(-0.6deg);
   box-shadow: var(--shadow-card-hover);
 }
+.card--colored {
+  padding-left: calc(0.7rem + 7px);
+}
+.card-project-bar {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 3px 0 0 3px;
+  pointer-events: none;
+}
 .card strong {
   font-family: var(--font-display);
   font-size: 0.96rem;
@@ -993,6 +1005,27 @@ textarea::placeholder {
 }
 .empty-hint[hidden] {
   display: none;
+}
+.project-color-swatches {
+  display: flex;
+  gap: 3px;
+  align-items: center;
+}
+.project-color-swatch {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition: transform 100ms ease, border-color 100ms ease;
+}
+.project-color-swatch:hover {
+  transform: scale(1.25);
+}
+.project-color-swatch.selected {
+  border-color: var(--fg);
 }
 
 .path-picker {
