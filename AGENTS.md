@@ -19,7 +19,7 @@ management. The committed project contains:
 - `locales/`: Fluent locale files.
 - `skills/`: per-locale agent skill snippets.
 
-The workspace version is `0.1.5`. Windows NSIS packaging is implemented.
+The workspace version is `0.2.0`. Windows NSIS packaging is implemented.
 Linux AppImage and macOS DMG packaging are planned but not published yet.
 
 ## Main Commands

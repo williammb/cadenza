@@ -6,7 +6,7 @@
 > A local-first desktop task board for AI coding agents.
 
 **Status:** public pre-release. The repository is open for development, but stable public binaries are not published yet.
-**Version:** 0.1.5
+**Version:** 0.2.0
 **Stack:** Tauri 2, Rust, vanilla HTML/CSS/JS
 **Release artifacts:** Windows NSIS first. Linux AppImage and macOS DMG are planned but not published yet.
 **License:** MIT OR Apache-2.0
