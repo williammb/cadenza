@@ -6,7 +6,8 @@
 //! required by `tauri::State<'_, AppState>`.
 
 use fluent_bundle::bundle::FluentBundle;
-use fluent_bundle::{FluentArgs, FluentResource};
+use fluent_bundle::resolver::errors::{ReferenceKind, ResolverError};
+use fluent_bundle::{FluentArgs, FluentError, FluentResource};
 use include_dir::{include_dir, Dir};
 use intl_memoizer::concurrent::IntlLangMemoizer;
 use std::collections::{BTreeSet, HashMap};
@@ -195,13 +196,50 @@ fn build_bundle(locale: &str) -> Bundle {
     bundle
 }
 
+/// Whether a Fluent error is an unresolved `$variable` reference.
+///
+/// These are produced when a parameterized key is rendered without args.
+/// That's expected for the mass `dump_namespace_strings` path: Fluent
+/// writes the literal placeholder `{$var}` into the output and the
+/// frontend (`ui/i18n.js`) substitutes it client-side.
+fn is_unresolved_variable(error: &FluentError) -> bool {
+    matches!(
+        error,
+        FluentError::ResolverError(ResolverError::Reference(ReferenceKind::Variable { .. }))
+    )
+}
+
+/// Decide whether `lookup` should emit a warning for `errors`.
+///
+/// When the caller passed no args, unresolved-variable errors are
+/// expected noise (the dump renders templates for the frontend) and are
+/// ignored; any *other* error still warns. When the caller passed args,
+/// every error warns — that catches a caller who forgot or misnamed a
+/// referenced variable.
+fn should_warn(args: Option<&FluentArgs<'_>>, errors: &[FluentError]) -> bool {
+    if args.is_some() {
+        return !errors.is_empty();
+    }
+    errors.iter().any(|e| !is_unresolved_variable(e))
+}
+
 fn lookup(bundle: &Bundle, key: &str, args: Option<&FluentArgs<'_>>) -> Option<String> {
     let msg = bundle.get_message(key)?;
     let pattern = msg.value()?;
     let mut errors = vec![];
     let s = bundle.format_pattern(pattern, args, &mut errors);
-    if !errors.is_empty() {
-        tracing::warn!(key = %key, errors = ?errors, "fluent format errors");
+    if should_warn(args, &errors) {
+        // With args, log everything. Without args, drop the expected
+        // unresolved-variable noise and log only the genuine errors.
+        let relevant: Vec<&FluentError> = if args.is_some() {
+            errors.iter().collect()
+        } else {
+            errors
+                .iter()
+                .filter(|e| !is_unresolved_variable(e))
+                .collect()
+        };
+        tracing::warn!(key = %key, errors = ?relevant, "fluent format errors");
     }
     Some(s.into_owned())
 }
@@ -278,6 +316,110 @@ mod tests {
             i18n_pt.dump_namespace_strings("ui").into_keys().collect();
         assert!(en_keys.is_subset(&pt_keys) || pt_keys.is_subset(&en_keys) || en_keys == pt_keys);
         assert!(!en_keys.is_empty());
+    }
+
+    fn variable_error(id: &str) -> FluentError {
+        FluentError::ResolverError(ResolverError::Reference(ReferenceKind::Variable {
+            id: id.to_string(),
+        }))
+    }
+
+    #[test]
+    fn should_warn_suppresses_unresolved_vars_without_args() {
+        assert!(!should_warn(None, &[variable_error("count")]));
+    }
+
+    #[test]
+    fn should_warn_keeps_non_variable_errors_without_args() {
+        assert!(should_warn(
+            None,
+            &[FluentError::ResolverError(ResolverError::Cyclic)]
+        ));
+        // A genuine error mixed with variable noise still warns.
+        assert!(should_warn(
+            None,
+            &[
+                variable_error("count"),
+                FluentError::ResolverError(ResolverError::Reference(ReferenceKind::Message {
+                    id: "other".to_string(),
+                    attribute: None,
+                })),
+            ]
+        ));
+    }
+
+    #[test]
+    fn should_warn_warns_on_any_error_with_args() {
+        let args = FluentArgs::new();
+        // Even an unresolved variable warns once args were supplied: the
+        // caller likely forgot or misnamed it.
+        assert!(should_warn(Some(&args), &[variable_error("count")]));
+    }
+
+    #[test]
+    fn should_warn_no_errors_never_warns() {
+        let args = FluentArgs::new();
+        assert!(!should_warn(None, &[]));
+        assert!(!should_warn(Some(&args), &[]));
+    }
+
+    #[test]
+    fn boot_dump_emits_no_format_warnings() {
+        // End-to-end guard for the boot path: `load_translations` calls
+        // `dump_namespace_strings("ui")`, which renders every parameterized
+        // key with no args. Capture WARN-level tracing for that exact call
+        // and assert it produces no "fluent format errors" line for either
+        // packaged locale.
+        use std::io::Write;
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone)]
+        struct BufWriter(Arc<Mutex<Vec<u8>>>);
+        impl Write for BufWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl tracing_subscriber::fmt::MakeWriter<'_> for BufWriter {
+            type Writer = BufWriter;
+            fn make_writer(&self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(BufWriter(buf.clone()))
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            for locale in [DEFAULT_LOCALE, "pt-BR"] {
+                let i18n = I18n::new(locale);
+                let _ = i18n.dump_namespace_strings("ui");
+            }
+        });
+
+        let logs = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            !logs.contains("fluent format errors"),
+            "boot dump emitted format warnings:\n{logs}"
+        );
+    }
+
+    #[test]
+    fn parameterized_key_without_args_renders_placeholder() {
+        // The mass dump renders parameterized keys with no args; the output
+        // must keep the `{$var}` template for the frontend to substitute,
+        // not collapse to the raw key.
+        let i18n = I18n::new("en");
+        let s = i18n.t("task-error");
+        assert_ne!(s, "task-error", "should render the template, not the key");
+        assert!(s.contains("{$"), "expected a placeholder, got: {s}");
     }
 
     #[test]
