@@ -433,6 +433,14 @@ async fn dispatch(
             let args: ops::set_task_worktree::Args =
                 serde_json::from_value(req.args).map_err(bad_args)?;
             check_id(&args.task_id)?;
+            // A worktree assigned over IPC must still be honored at agent
+            // start: `prepare_task_workspace` only runs inside the worktree
+            // when `use_worktree` is set, so derive it from the path being
+            // present rather than leaving it at the `false` default.
+            let use_worktree = args
+                .worktree_path
+                .as_deref()
+                .is_some_and(|p| !p.trim().is_empty());
             deps.state
                 .task_worktrees
                 .set(
@@ -440,6 +448,8 @@ async fn dispatch(
                     crate::worktrees::WorktreeInfo {
                         worktree_path: args.worktree_path,
                         branch: args.branch,
+                        use_worktree,
+                        ..Default::default()
                     },
                 )
                 .map_err(|e| internal(&e.to_string()))?;

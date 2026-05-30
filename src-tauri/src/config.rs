@@ -112,6 +112,11 @@ pub struct Project {
     /// Per-project override of the global `agente`.
     #[serde(default)]
     pub agente: Option<Agente>,
+    /// Default git branch this project's tasks branch off from. Pre-fills
+    /// the "origin branch" in the task modal; falls back to the repo's
+    /// current branch when unset. `None`/empty means "use current".
+    #[serde(default)]
+    pub default_branch: Option<String>,
     /// Color key for the board (e.g. "slate", "rust"). Resolved to a
     /// hex value by `ui/project-colors.js`. Shown only in the
     /// all-projects view as a left accent bar on cards.

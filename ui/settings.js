@@ -77,6 +77,7 @@ const projectEditIdEl = document.getElementById("project-edit-id");
 const projectAgentKindEl = document.getElementById("project-agent-kind");
 const projectAgentCommandEl = document.getElementById("project-agent-command");
 const projectAgentCommandFieldEl = document.getElementById("project-agent-command-field");
+const projectEditDefaultBranchEl = document.getElementById("project-edit-default-branch");
 const btnProjectNew = document.getElementById("btn-project-new");
 const btnProjectRemove = document.getElementById("btn-project-remove");
 const btnProjectEditBrowse = document.getElementById("btn-project-edit-browse");
@@ -294,6 +295,7 @@ function renderProjectDetail() {
   projectEditIdEl.textContent = p.id;
   projectAgentKindEl.value = p.agente?.kind ?? "";
   projectAgentCommandEl.value = p.agente?.command ?? "";
+  projectEditDefaultBranchEl.value = p.default_branch ?? "";
   updateProjectAgentCommandVisibility();
 
   // Rebuild color swatches for the selected project.
@@ -355,6 +357,13 @@ projectEditPathEl.addEventListener("input", () => {
 });
 projectEditPathEl.addEventListener("change", () => {
   if (currentProject()) projectSkills.refresh();
+});
+
+projectEditDefaultBranchEl.addEventListener("input", () => {
+  const p = currentProject();
+  if (!p) return;
+  // Empty → null so an unset default falls back to the repo's current branch.
+  p.default_branch = projectEditDefaultBranchEl.value.trim() || null;
 });
 
 projectAgentKindEl.addEventListener("change", () => {

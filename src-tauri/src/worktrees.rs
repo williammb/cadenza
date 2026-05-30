@@ -18,13 +18,25 @@ use std::sync::Mutex;
 pub struct WorktreeInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    /// Destination branch the task works on (created/switched at start).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+    /// Origin branch the destination branches off and is pulled from
+    /// before start. `None` falls back to the project default / current.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_branch: Option<String>,
+    /// Whether the task should run inside a dedicated worktree (declared
+    /// in the modal; the worktree is created lazily at start).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub use_worktree: bool,
 }
 
 impl WorktreeInfo {
     pub fn is_empty(&self) -> bool {
-        self.worktree_path.is_none() && self.branch.is_none()
+        self.worktree_path.is_none()
+            && self.branch.is_none()
+            && self.origin_branch.is_none()
+            && !self.use_worktree
     }
 }
 
@@ -143,6 +155,7 @@ mod tests {
             WorktreeInfo {
                 worktree_path: Some("/repo/worktrees/T-1".into()),
                 branch: Some("feat/T-1".into()),
+                ..Default::default()
             },
         )
         .unwrap();
@@ -161,6 +174,7 @@ mod tests {
             WorktreeInfo {
                 worktree_path: Some("/repo/worktrees/T-1".into()),
                 branch: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -177,6 +191,7 @@ mod tests {
             WorktreeInfo {
                 worktree_path: Some("/x".into()),
                 branch: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -195,6 +210,7 @@ mod tests {
                 WorktreeInfo {
                     worktree_path: Some("/repo".into()),
                     branch: Some("main".into()),
+                    ..Default::default()
                 },
             )
             .unwrap();

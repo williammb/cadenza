@@ -758,11 +758,6 @@ dialog.modal[open] {
   color: var(--muted);
   padding: 0 0.35rem;
 }
-.worktree-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-}
 .worktree-section .modal-status { flex: none; }
 
 /* Inline checkbox row (e.g. "Use worktree") — overrides the column .field. */
