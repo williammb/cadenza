@@ -80,6 +80,15 @@ pub struct TerminalSession {
     tx: broadcast::Sender<Vec<u8>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     pty: Mutex<PtyHandle>,
+    /// Last `(cols, rows)` this session was resized to. Each session
+    /// tracks its own size so switching tabs in the UI never clobbers
+    /// another session's PTY dimensions, and a future reattach can use
+    /// the real size instead of the spawn-time default.
+    last_size: Mutex<Option<(u16, u16)>>,
+    /// Abort handle for the most recent `pty_attach` stream loop. Each
+    /// attach replaces (and aborts) the previous one so there is at most
+    /// one live stream loop per session, even across webview reloads.
+    attach_task: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 impl TerminalSession {
@@ -104,6 +113,8 @@ impl TerminalSession {
             tx: tx.clone(),
             writer: writer.clone(),
             pty: Mutex::new(pty),
+            last_size: Mutex::new(None),
+            attach_task: Mutex::new(None),
         });
 
         // Move reader + ring + tx into a dedicated thread. PTY reads
@@ -143,7 +154,24 @@ impl TerminalSession {
     }
 
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
-        self.pty.lock().unwrap().resize(cols, rows)
+        self.pty.lock().unwrap().resize(cols, rows)?;
+        *self.last_size.lock().unwrap() = Some((cols, rows));
+        Ok(())
+    }
+
+    /// Last `(cols, rows)` passed to `resize()`, or `None` if the session
+    /// was never resized away from its spawn-time default.
+    pub fn last_size(&self) -> Option<(u16, u16)> {
+        *self.last_size.lock().unwrap()
+    }
+
+    /// Record the abort handle for a freshly-spawned `pty_attach` stream
+    /// loop, aborting the previous loop (if any) so a session never has
+    /// two live stream loops at once.
+    pub fn set_attach_task(&self, handle: tokio::task::AbortHandle) {
+        if let Some(prev) = self.attach_task.lock().unwrap().replace(handle) {
+            prev.abort();
+        }
     }
 
     pub fn kill(&self) -> Result<()> {
@@ -232,6 +260,40 @@ mod tests {
         }
     }
 
+    fn echo(text: &str) -> SpawnConfig {
+        if cfg!(windows) {
+            SpawnConfig::new("cmd")
+                .arg("/C")
+                .arg(format!("echo {text}"))
+        } else {
+            SpawnConfig::new("/bin/sh")
+                .arg("-c")
+                .arg(format!("echo {text}"))
+        }
+    }
+
+    /// Poll a session's ring for `needle`, answering the ConPTY DSR query
+    /// so the child's output flushes on Windows. Returns whether it
+    /// appeared before the deadline.
+    fn wait_for(session: &TerminalSession, needle: &str, within: Duration) -> bool {
+        let deadline = Instant::now() + within;
+        let mut answered_dsr = false;
+        loop {
+            let snap = session.snapshot();
+            if String::from_utf8_lossy(&snap).contains(needle) {
+                return true;
+            }
+            if !answered_dsr && snap.windows(4).any(|w| w == b"\x1b[6n") {
+                let _ = session.write(b"\x1b[1;1R");
+                answered_dsr = true;
+            }
+            if Instant::now() > deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
     #[test]
     fn session_captures_output_in_ring() {
         let pty = PtyHandle::spawn(echo_hi()).expect("spawn");
@@ -267,5 +329,48 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn independent_sessions_do_not_share_output() {
+        // Two concurrent sessions must each capture ONLY their own PTY's
+        // bytes — the multi-terminal bug was one shared sink receiving
+        // output from every session. Each session owns a private ring +
+        // broadcast, so AAA must never leak into B's ring nor BBB into A.
+        let a = TerminalSession::start("A", PtyHandle::spawn(echo("AAA")).expect("spawn A"))
+            .expect("start A");
+        let b = TerminalSession::start("B", PtyHandle::spawn(echo("BBB")).expect("spawn B"))
+            .expect("start B");
+
+        assert!(
+            wait_for(&a, "AAA", Duration::from_secs(5)),
+            "session A never captured its own output"
+        );
+        assert!(
+            wait_for(&b, "BBB", Duration::from_secs(5)),
+            "session B never captured its own output"
+        );
+
+        let a_snap = String::from_utf8_lossy(&a.snapshot()).into_owned();
+        let b_snap = String::from_utf8_lossy(&b.snapshot()).into_owned();
+        assert!(
+            !a_snap.contains("BBB"),
+            "B's output leaked into A: {a_snap:?}"
+        );
+        assert!(
+            !b_snap.contains("AAA"),
+            "A's output leaked into B: {b_snap:?}"
+        );
+    }
+
+    #[test]
+    fn resize_persists_last_size() {
+        let session = TerminalSession::start("size", PtyHandle::spawn(echo_hi()).expect("spawn"))
+            .expect("start");
+        assert_eq!(session.last_size(), None);
+        session.resize(100, 40).expect("resize");
+        assert_eq!(session.last_size(), Some((100, 40)));
+        session.resize(80, 24).expect("resize");
+        assert_eq!(session.last_size(), Some((80, 24)));
     }
 }

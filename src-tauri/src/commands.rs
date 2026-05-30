@@ -1097,7 +1097,7 @@ pub async fn pty_attach(
     }
 
     let mut rx = session.subscribe();
-    tokio::spawn(async move {
+    let handle = tokio::spawn(async move {
         loop {
             match rx.recv().await {
                 Ok(bytes) => {
@@ -1112,6 +1112,10 @@ pub async fn pty_attach(
             }
         }
     });
+    // Keep at most one stream loop alive per session: a re-attach (e.g.
+    // after a webview reload) aborts the previous loop so the old
+    // subscriber can't keep draining the broadcast into a dead channel.
+    session.set_attach_task(handle.abort_handle());
 
     Ok(())
 }

@@ -1,14 +1,21 @@
 // Terminal drawer — wraps xterm.js (UMD from vendor/) and multiplexes
-// across multiple PTY sessions via a tab strip.
+// across multiple PTY sessions, ONE dedicated xterm per session.
+//
+// Each session owns its own xterm + FitAddon + host element + PTY
+// stream. All hosts stay mounted in #terminal-host at once; only the
+// active session's host is visible (the rest are `hidden`). Switching
+// tabs flips visibility — it never disposes or re-streams, so a hidden
+// session keeps receiving its own output without bleeding into another.
 //
 // Public surface:
-//   attachTerminal(sessionId, { taskId, title }) — register the session,
-//     render its tab, and make it the active xterm view.
-//   detachTerminal()  — dispose the current xterm view without killing
-//                       any PTY (used internally when switching tabs).
-//   closeSession(id)  — kill the PTY for `id`, remove its tab; if it
-//                       was the active one, fall back to another tab or
-//                       collapse the drawer.
+//   attachTerminal(sessionId, { taskId, title }) — register the session
+//     (creating its xterm + PTY stream on first call, idempotent after),
+//     render its tab, and make it the active view.
+//   detachTerminal()  — hide the active host without disposing anything
+//                       (drops back to the empty state).
+//   closeSession(id)  — kill the PTY for `id`, dispose its xterm, and
+//                       remove its tab; if it was active, fall back to
+//                       another tab or collapse the drawer.
 //   toggleDrawer(open) — expand / collapse the drawer.
 //
 // The drawer is a flex sibling of <main> (see styles.css), so expanding
@@ -26,19 +33,15 @@ const host = document.getElementById("terminal-host");
 const emptyEl = document.getElementById("terminal-empty");
 const resizeHandle = document.getElementById("terminal-resize-handle");
 
-let term = null;
-let fitAddon = null;
 let activeSession = null;
-let resizeObserver = null;
 
-// All PTY sessions the UI currently knows about. Each entry:
-//   { taskId: string|null, title: string|null }
-// Keyed by the backend's `S-…` session id. The xterm view shows
-// whichever id matches `activeSession`.
+// Every PTY session the UI knows about, keyed by the backend's `S-…`
+// session id. Each entry:
+//   { taskId, title, term, fitAddon, channel, hostEl, resizeObserver,
+//     lastCols, lastRows }
+// `term`/`hostEl` live for the whole session lifetime; only the active
+// session's `hostEl` is visible.
 const sessions = new Map();
-
-// Track per-session disposables (resize observers, data listeners) so
-// switching tabs doesn't leak them.
 
 export function isOpen() {
   return drawer.getAttribute("data-collapsed") !== "true";
@@ -47,24 +50,24 @@ export function isOpen() {
 export function toggleDrawer(open) {
   const next = open == null ? !isOpen() : open;
   drawer.setAttribute("data-collapsed", next ? "false" : "true");
-  if (next && term) {
-    queueMicrotask(() => safeFit());
+  if (next && activeSession) {
+    queueMicrotask(() => fitSession(activeSession));
   }
 }
 
 export async function attachTerminal(sessionId, opts = {}) {
-  const meta = {
-    taskId: opts.taskId ?? sessions.get(sessionId)?.taskId ?? null,
-    title: opts.title ?? sessions.get(sessionId)?.title ?? null,
-  };
-  sessions.set(sessionId, meta);
-  renderTabs();
-
-  if (activeSession === sessionId && term) {
+  const existing = sessions.get(sessionId);
+  if (existing) {
+    // Already streaming — just refresh metadata and bring it forward.
+    // Never recreate the xterm or re-call pty_attach (idempotent).
+    if (opts.taskId != null) existing.taskId = opts.taskId;
+    if (opts.title != null) existing.title = opts.title;
+    showSession(sessionId);
     toggleDrawer(true);
+    renderTabs();
+    fitSession(sessionId);
     return;
   }
-  detachTerminal();
 
   const Terminal = window.Terminal;
   const FitAddonExport = window.FitAddon;
@@ -75,7 +78,14 @@ export async function attachTerminal(sessionId, opts = {}) {
     return;
   }
 
-  term = new Terminal({
+  // Dedicated host element + xterm for this session, mounted alongside
+  // the other sessions' hosts inside #terminal-host.
+  const hostEl = document.createElement("div");
+  hostEl.className = "terminal-pane";
+  hostEl.dataset.sessionId = sessionId;
+  host.append(hostEl);
+
+  const term = new Terminal({
     fontFamily:
       'Cascadia Code, "JetBrains Mono", Menlo, Consolas, ui-monospace, monospace',
     fontSize: 13,
@@ -84,14 +94,27 @@ export async function attachTerminal(sessionId, opts = {}) {
     convertEol: false,
     theme: currentTheme(),
   });
-  fitAddon = new FitAddon();
+  const fitAddon = new FitAddon();
   term.loadAddon(fitAddon);
+
+  const entry = {
+    taskId: opts.taskId ?? null,
+    title: opts.title ?? null,
+    term,
+    fitAddon,
+    channel: null,
+    hostEl,
+    resizeObserver: null,
+    lastCols: 0,
+    lastRows: 0,
+  };
+  sessions.set(sessionId, entry);
 
   emptyEl.hidden = true;
   host.hidden = false;
 
-  term.open(host);
-  safeFit();
+  term.open(hostEl);
+  showSession(sessionId);
 
   // Sync the PTY size to the xterm BEFORE attaching, so the child
   // process (claude/codex) sees the real cols/rows from the first byte
@@ -99,19 +122,16 @@ export async function attachTerminal(sessionId, opts = {}) {
   // (agent.rs DEFAULT_COLS/ROWS = 120×30) while xterm renders at the
   // drawer's actual width — and any cursor-rewrite sequences (spinner,
   // progress bars) overlap because \x1b[K clears only up to col 120.
-  if (term.cols && term.rows) {
-    try {
-      await invoke("pty_resize", { sessionId, cols: term.cols, rows: term.rows });
-    } catch (e) {
-      console.warn("initial pty_resize failed", e);
-    }
-  }
+  fitSession(sessionId);
 
+  // The handler captures THIS session's `term` by closure, so its bytes
+  // can never be written into another session's xterm — that was the
+  // root of the multi-terminal corruption bug.
   const channel = new Channel();
   channel.onmessage = (bytes) => {
-    if (!term) return;
     term.write(new Uint8Array(bytes));
   };
+  entry.channel = channel;
 
   try {
     await invoke("pty_attach", { sessionId, channel });
@@ -128,37 +148,40 @@ export async function attachTerminal(sessionId, opts = {}) {
     }).catch((err) => console.warn("pty_write failed", err));
   });
 
-  resizeObserver = new ResizeObserver(() => safeFit(sessionId));
-  resizeObserver.observe(host);
+  const resizeObserver = new ResizeObserver(() => fitSession(sessionId));
+  resizeObserver.observe(hostEl);
+  entry.resizeObserver = resizeObserver;
 
-  activeSession = sessionId;
   renderTabs();
   toggleDrawer(true);
 }
 
+/// Hide whichever session is active, falling back to the empty state.
+/// Disposes nothing — the PTY stream and xterm stay alive in the
+/// background. Real teardown only happens in `closeSession`.
 export function detachTerminal() {
-  if (resizeObserver) {
-    resizeObserver.disconnect();
-    resizeObserver = null;
+  for (const entry of sessions.values()) {
+    entry.hostEl.hidden = true;
   }
-  if (term) {
-    term.dispose();
-    term = null;
-  }
-  fitAddon = null;
   activeSession = null;
-  host.replaceChildren();
   host.hidden = true;
   emptyEl.hidden = false;
   renderTabs();
 }
 
-/// Kill the PTY for `sessionId` and remove its tab. If it was the
-/// active view, attach the next remaining session (or collapse the
-/// drawer entirely if there's nothing left).
+/// Kill the PTY for `sessionId`, dispose its xterm, and remove its tab.
+/// If it was the active view, show the next remaining session (or
+/// collapse the drawer entirely if there's nothing left).
 export async function closeSession(sessionId) {
   const wasActive = activeSession === sessionId;
+  const entry = sessions.get(sessionId);
   sessions.delete(sessionId);
+
+  if (entry) {
+    if (entry.resizeObserver) entry.resizeObserver.disconnect();
+    if (entry.term) entry.term.dispose();
+    entry.hostEl.remove();
+  }
 
   try {
     await invoke("pty_kill", { sessionId });
@@ -167,15 +190,31 @@ export async function closeSession(sessionId) {
   }
 
   if (wasActive) {
-    detachTerminal();
+    activeSession = null;
     const next = sessions.keys().next();
     if (!next.done) {
-      attachTerminal(next.value);
+      showSession(next.value);
+      host.hidden = false;
+      emptyEl.hidden = true;
+      renderTabs();
+      fitSession(next.value);
     } else {
+      host.hidden = true;
+      emptyEl.hidden = false;
+      renderTabs();
       toggleDrawer(false);
     }
   } else {
     renderTabs();
+  }
+}
+
+/// Make `sessionId`'s host the only visible one. Visibility-only — no
+/// dispose, no re-stream.
+function showSession(sessionId) {
+  activeSession = sessionId;
+  for (const [id, entry] of sessions) {
+    entry.hostEl.hidden = id !== sessionId;
   }
 }
 
@@ -229,19 +268,23 @@ function shortSessionId(id) {
   return id.length > 10 ? id.slice(0, 10) + "…" : id;
 }
 
-function safeFit(sessionIdForResize) {
-  if (!fitAddon || !term) return;
+/// Fit `sessionId`'s xterm to its host and push the new size to its PTY
+/// (only when it actually changed). Skips hidden panes — xterm's fit()
+/// can't measure a `display:none` element.
+function fitSession(sessionId) {
+  const entry = sessions.get(sessionId);
+  if (!entry || !entry.fitAddon || !entry.term) return;
+  if (entry.hostEl.hidden) return;
   try {
-    fitAddon.fit();
-    if (sessionIdForResize) {
-      invoke("pty_resize", {
-        sessionId: sessionIdForResize,
-        cols: term.cols,
-        rows: term.rows,
-      }).catch(() => {});
+    entry.fitAddon.fit();
+    const { cols, rows } = entry.term;
+    if (cols && rows && (cols !== entry.lastCols || rows !== entry.lastRows)) {
+      entry.lastCols = cols;
+      entry.lastRows = rows;
+      invoke("pty_resize", { sessionId, cols, rows }).catch(() => {});
     }
   } catch (e) {
-    // fit() throws on hidden containers; ignore until visible.
+    // fit() throws on hidden/zero-size containers; ignore until visible.
   }
 }
 
@@ -277,7 +320,7 @@ resizeHandle?.addEventListener("pointerdown", (e) => {
     const max = window.innerHeight - TOP_MARGIN;
     const clamped = Math.max(MIN_HEIGHT, Math.min(desired, max));
     drawer.style.height = `${clamped}px`;
-    safeFit(activeSession);
+    if (activeSession) fitSession(activeSession);
   };
 
   const stop = () => {

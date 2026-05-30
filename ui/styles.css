@@ -1325,6 +1325,12 @@ textarea::placeholder {
   background: #16161b;
   padding: 0.4rem 0.4rem 0;
 }
+/* One pane per PTY session; all stay mounted, only the active one is
+   visible (the rest get the `hidden` attribute → display:none). */
+.terminal-pane {
+  position: absolute;
+  inset: 0;
+}
 .terminal-host .xterm-viewport { background: transparent !important; }
 .terminal-host .xterm,
 .terminal-host .xterm-screen { background: transparent !important; }
