@@ -475,7 +475,61 @@ pub async fn delete_task(state: State<'_, Arc<AppState>>, id: String) -> Result<
     if let Err(e) = state.task_order.forget(&id) {
         tracing::warn!(error = ?e, task = %id, "task_order.forget failed");
     }
+    // Drop any images the task body referenced. Best-effort: the task is
+    // already gone, orphaned files only cost disk bytes.
+    crate::attachments::delete_owner("tasks", &id);
     Ok(())
+}
+
+// ───────────────────────── attachments ─────────────────────────
+
+/// Image bytes + MIME for the preview, base64-encoded so the JS side can
+/// build a `data:` URL without a second round-trip.
+#[derive(Serialize)]
+pub struct AttachmentData {
+    pub mime: String,
+    pub base64: String,
+}
+
+/// Map a typed attachment error to the stable i18n key the UI translates.
+/// Keeping the mapping here (not in `attachments.rs`) keeps that module
+/// free of any i18n / UI coupling.
+fn attachment_error_key(e: &crate::attachments::AttachmentError) -> String {
+    use crate::attachments::AttachmentError as E;
+    match e {
+        E::UnsupportedFormat => "attachment-error-unsupported-format",
+        E::TooLarge => "attachment-error-too-large",
+        _ => "attachment-error-save-failed",
+    }
+    .to_string()
+}
+
+/// Persist an image for a task/ideia body and return its relative path
+/// (`attachments/<kind>/<owner_id>/<hash>.<ext>`) for the JS to embed as
+/// `![](rel)`. Validation (format + size) lives in `attachments`; on
+/// failure we log the English detail and return a translatable key.
+#[tauri::command]
+pub fn save_attachment(kind: String, owner_id: String, bytes: Vec<u8>) -> Result<String, String> {
+    crate::attachments::save(&kind, &owner_id, &bytes).map_err(|e| {
+        tracing::warn!(error = ?e, kind = %kind, owner = %owner_id, "save_attachment failed");
+        attachment_error_key(&e)
+    })
+}
+
+/// Read an attachment back as base64 for the markdown preview. Errors are
+/// non-fatal to the caller — the preview just falls back to showing the
+/// image `alt` text for an orphaned reference.
+#[tauri::command]
+pub fn read_attachment(rel_path: String) -> Result<AttachmentData, String> {
+    use base64::Engine;
+    let (mime, bytes) = crate::attachments::read(&rel_path).map_err(|e| {
+        tracing::warn!(error = ?e, rel = %rel_path, "read_attachment failed");
+        e.to_string()
+    })?;
+    Ok(AttachmentData {
+        mime,
+        base64: base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
 }
 
 // ───────────────────────── task ↔ project mapping ─────────────────────────
@@ -1731,7 +1785,10 @@ pub async fn create_ideia(
 
 #[tauri::command]
 pub async fn delete_ideia(state: State<'_, Arc<AppState>>, id: String) -> Result<(), String> {
-    state.repo.delete_ideia(&id).await.map_err(to_str_err)
+    state.repo.delete_ideia(&id).await.map_err(to_str_err)?;
+    // Best-effort cleanup of any images embedded in the ideia body.
+    crate::attachments::delete_owner("ideias", &id);
+    Ok(())
 }
 
 #[tauri::command]

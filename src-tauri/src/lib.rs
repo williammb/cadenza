@@ -10,6 +10,7 @@ use tauri::{
 use cadenza_i18n::I18n;
 
 mod agent;
+mod attachments;
 mod auth;
 mod commands;
 mod config;
@@ -98,6 +99,9 @@ pub fn run() {
             commands::update_task_body,
             commands::delete_task,
             commands::current_task,
+            // attachments (images embedded in task/ideia bodies)
+            commands::save_attachment,
+            commands::read_attachment,
             // triage
             commands::list_pending_propostas,
             commands::read_proposta,
