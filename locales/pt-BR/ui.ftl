@@ -150,6 +150,14 @@ task-field-estado = Estado
 task-field-body = Descrição (markdown)
 task-error = Erro: { $error }
 
+# Anexos de imagem (colar / arrastar-e-soltar / botão + preview de markdown)
+attachment-edit = Editar
+attachment-preview = Visualizar
+attachment-button = Anexar imagem
+attachment-error-unsupported-format = Formato de imagem não suportado. Use PNG, JPEG, GIF ou WebP.
+attachment-error-too-large = A imagem excede o tamanho máximo (5 MB).
+attachment-error-save-failed = Não foi possível salvar a imagem.
+
 task-worktree-legend = Worktree / Ramo
 task-worktree-use = Usar worktree
 task-field-branch = Ramo

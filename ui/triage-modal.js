@@ -9,7 +9,7 @@
 // the appropriate exit code (0 / 20).
 
 import { t } from "./i18n.js";
-import { renderMarkdown } from "./markdown.js";
+import { renderMarkdownWithImages } from "./attachments.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -117,9 +117,12 @@ function renderCurrent() {
   titleEl.textContent = p.title ?? "";
   parentEl.textContent = p.parent ?? "—";
   fileEl.textContent = p.file ?? "—";
-  renderMarkdown(reproEl, p.repro ?? "");
-  renderMarkdown(whatFailedEl, p.what_failed ?? "");
-  renderMarkdown(actionEl, p.action ?? "");
+  // Render-only: proposals can reference images saved under a task/ideia
+  // (e.g. a screenshot the agent embedded). Resolve those refs to data:
+  // URLs before rendering; non-image markdown is unaffected.
+  renderMarkdownWithImages(reproEl, p.repro ?? "").catch((e) => console.warn(e));
+  renderMarkdownWithImages(whatFailedEl, p.what_failed ?? "").catch((e) => console.warn(e));
+  renderMarkdownWithImages(actionEl, p.action ?? "").catch((e) => console.warn(e));
   createdEl.textContent = formatCreated(p.created_at_ms);
 
   if (queue.length > 1) {
