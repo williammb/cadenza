@@ -773,6 +773,7 @@ dependencies = [
  "intl-memoizer",
  "sys-locale",
  "tracing",
+ "tracing-subscriber",
  "unic-langid",
 ]
 

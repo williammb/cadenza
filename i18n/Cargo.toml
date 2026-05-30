@@ -17,3 +17,6 @@ unic-langid = { workspace = true }
 include_dir = { workspace = true }
 sys-locale = { workspace = true }
 tracing = { workspace = true }
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
