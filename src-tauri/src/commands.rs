@@ -1152,6 +1152,18 @@ pub fn pty_snapshot(
     Ok(session.snapshot())
 }
 
+/// Bytes that resync a lagged subscriber: home the cursor, clear the
+/// viewport (`2J`) and xterm's scrollback (`3J`), then replay the current
+/// authoritative ring. The clear avoids doubling content the viewer
+/// already rendered before the lag.
+fn resync_payload(snapshot: Vec<u8>) -> Vec<u8> {
+    const CLEAR: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
+    let mut payload = Vec::with_capacity(snapshot.len() + CLEAR.len());
+    payload.extend_from_slice(CLEAR);
+    payload.extend_from_slice(&snapshot);
+    payload
+}
+
 /// Stream PTY bytes to the frontend over a Tauri channel. The frontend
 /// constructs `new Channel<number[]>()` and passes it as the `channel`
 /// arg — the first message is the current scrollback, subsequent
@@ -1178,6 +1190,9 @@ pub async fn pty_attach(
         let _ = channel.send(snap);
     }
 
+    // Cloned for the resync path below — the forwarding loop needs to
+    // re-snapshot the ring after a broadcast lag.
+    let session_for_resync = session.clone();
     let handle = tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -1187,7 +1202,21 @@ pub async fn pty_attach(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(lagged = n, "pty broadcast lagged");
+                    // The subscriber fell behind and the broadcast dropped
+                    // `n` chunks. Resuming from the next live chunk would
+                    // leave a hole mid-stream and corrupt xterm's escape-
+                    // sequence state. Resync instead: atomically grab a
+                    // fresh snapshot + receiver (so no chunk is lost or
+                    // doubled across the swap), clear the viewport +
+                    // scrollback, and replay the current authoritative
+                    // ring. Best-effort — a backend terminal emulator
+                    // would resync without the visible reset.
+                    tracing::warn!(lagged = n, "pty broadcast lagged; resyncing from ring");
+                    let (resync_snap, fresh_rx) = session_for_resync.subscribe_with_snapshot();
+                    rx = fresh_rx;
+                    if channel.send(resync_payload(resync_snap)).is_err() {
+                        break;
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -2111,7 +2140,7 @@ pub async fn list_agent_models(
 
 #[cfg(test)]
 mod tests {
-    use super::{highest_task_number, proposta_to_body, Proposta};
+    use super::{highest_task_number, proposta_to_body, resync_payload, Proposta};
 
     fn sample_proposta() -> Proposta {
         Proposta {
@@ -2125,6 +2154,23 @@ mod tests {
             action: "criar a task no backend".to_string(),
             created_at_ms: 0,
         }
+    }
+
+    #[test]
+    fn resync_payload_clears_then_replays_snapshot() {
+        let payload = resync_payload(b"scrollback".to_vec());
+        // Cursor home + clear viewport + clear scrollback, THEN the ring.
+        assert!(
+            payload.starts_with(b"\x1b[H\x1b[2J\x1b[3J"),
+            "resync must clear before replaying so content isn't doubled"
+        );
+        assert!(payload.ends_with(b"scrollback"));
+    }
+
+    #[test]
+    fn resync_payload_handles_empty_snapshot() {
+        // An empty ring still produces just the clear sequence — harmless.
+        assert_eq!(resync_payload(Vec::new()), b"\x1b[H\x1b[2J\x1b[3J".to_vec());
     }
 
     #[test]
