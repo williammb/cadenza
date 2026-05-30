@@ -573,22 +573,31 @@ pub fn list_task_worktrees(
     Ok(state.task_worktrees.snapshot())
 }
 
-/// Set (or clear) the worktree/branch for a task. Passing both as
-/// `None` removes the entry.
+/// Persist the task's declarative branch/worktree config from the modal:
+/// origin → destination, the use-worktree intent, and the worktree path.
+/// No git runs here — the actual pull/branch/worktree happens at agent
+/// start (`prepare_task_workspace`). An all-empty config clears the entry.
 #[tauri::command]
 pub fn set_task_worktree(
     state: State<'_, Arc<AppState>>,
     task_id: String,
     worktree_path: Option<String>,
     branch: Option<String>,
+    origin_branch: Option<String>,
+    use_worktree: Option<bool>,
 ) -> Result<(), String> {
+    // Normalize empty strings to None so a cleared field doesn't persist
+    // as `Some("")` and later defeat the `is_empty`/fallback checks.
+    let norm = |s: Option<String>| s.filter(|v| !v.trim().is_empty());
     state
         .task_worktrees
         .set(
             &task_id,
             WorktreeInfo {
-                worktree_path,
-                branch,
+                worktree_path: norm(worktree_path),
+                branch: norm(branch),
+                origin_branch: norm(origin_branch),
+                use_worktree: use_worktree.unwrap_or(false),
             },
         )
         .map_err(to_str_err)
@@ -604,6 +613,12 @@ pub struct TaskWorktreeDefaults {
     pub current_branch: String,
     pub suggested_worktree_path: String,
     pub stored: WorktreeInfo,
+    /// Local branches in the repo, to populate the origin/destination
+    /// pickers. Empty when the repo has no commits yet or git fails.
+    pub branches: Vec<String>,
+    /// The project's configured default branch (`None`/empty when unset);
+    /// the UI pre-fills origin with it before falling back to current.
+    pub default_branch: Option<String>,
 }
 
 /// Resolve the on-disk repo path for a task via its project mapping.
@@ -626,6 +641,20 @@ fn project_path_for_task(state: &AppState, task_id: &str) -> Result<PathBuf, Str
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("project '{project_id}' not found in config"))?;
     Ok(project.path.clone())
+}
+
+/// The configured default branch for a task's project, or `None` when the
+/// task has no project, the project is gone, or its `default_branch` is
+/// unset/blank. Mirrors `project_path_for_task`'s task→project resolution.
+fn default_branch_for_task(state: &AppState, task_id: &str) -> Result<Option<String>, String> {
+    let cfg = state.config.lock().map_err(to_str_err)?;
+    Ok(state
+        .task_projects
+        .snapshot()
+        .get(task_id)
+        .and_then(|pid| cfg.projects.iter().find(|p| &p.id == pid))
+        .and_then(|p| p.default_branch.clone())
+        .filter(|b| !b.trim().is_empty()))
 }
 
 /// Default sibling worktree path: `<repo-parent>/<repo-name>-<branch>`,
@@ -663,126 +692,123 @@ pub async fn task_worktree_defaults(
         .map_err(to_str_err)?;
     let suggested = suggested_worktree_path(&repo, &current_branch);
     let stored = state.task_worktrees.get(&task_id).unwrap_or_default();
+    let branches = crate::git::list_branches(&repo).await.unwrap_or_default();
+    let default_branch = default_branch_for_task(&state, &task_id)?;
     Ok(TaskWorktreeDefaults {
         project_path: repo.to_string_lossy().into_owned(),
         current_branch,
         suggested_worktree_path: suggested.to_string_lossy().into_owned(),
         stored,
+        branches,
+        default_branch,
     })
 }
 
-/// Create a git worktree for a task and record the association. The
-/// branch is created off the project's current HEAD when it doesn't
-/// exist yet (the user's confirmed default).
-#[tauri::command]
-pub async fn create_task_worktree(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-    branch: String,
-    worktree_path: String,
-) -> Result<WorktreeInfo, String> {
-    let branch = branch.trim().to_string();
-    let worktree_path = worktree_path.trim().to_string();
-    if branch.is_empty() {
-        return Err("branch is required".into());
-    }
-    if worktree_path.is_empty() {
-        return Err("worktree path is required".into());
-    }
-    // Refuse to create a second worktree for a task that already has one on
-    // disk: overwriting the association below would orphan the old worktree
-    // (it stays registered in `git worktree list` and on disk, with its
-    // branch pinned). The user must remove the existing one first.
-    if let Some(existing) = state
-        .task_worktrees
-        .get(&task_id)
-        .and_then(|w| w.worktree_path)
-        .filter(|p| !p.trim().is_empty() && Path::new(p).exists())
-    {
-        return Err(format!(
-            "task '{task_id}' already has a worktree at {existing} — remove it before creating another"
-        ));
-    }
-    let repo = project_path_for_task(&state, &task_id)?;
-    let exists = crate::git::branch_exists(&repo, &branch)
+/// Prepare the git workspace for a task right before an agent starts,
+/// driven by the declarative config the modal stored (`set_task_worktree`).
+///
+/// Resolves the origin and destination branches, pulls origin (blocking on
+/// a real failure; a no-op without an upstream), creates/switches the
+/// destination branch, and creates the worktree when requested. Returns the
+/// cwd the agent runs in — the worktree when used, otherwise the project
+/// repo — and persists the resolved config back to the sidecar.
+async fn prepare_task_workspace(state: &AppState, task_id: &str) -> Result<PathBuf, String> {
+    let repo = project_path_for_task(state, task_id)?;
+    let default_branch = default_branch_for_task(state, task_id)?;
+    let stored = state.task_worktrees.get(task_id).unwrap_or_default();
+    let current = crate::git::current_branch(&repo)
         .await
         .map_err(to_str_err)?;
-    crate::git::add_worktree(&repo, Path::new(&worktree_path), &branch, !exists)
-        .await
-        .map_err(to_str_err)?;
-    let info = WorktreeInfo {
-        worktree_path: Some(worktree_path),
-        branch: Some(branch),
-    };
-    state
-        .task_worktrees
-        .set(&task_id, info.clone())
-        .map_err(to_str_err)?;
-    emit_tasks_changed(&state, &task_id);
-    Ok(info)
-}
 
-/// Remove the task's git worktree and clear its association. Git refuses
-/// (with a clear, propagated error) when the worktree has uncommitted
-/// changes — we don't force.
-#[tauri::command]
-pub async fn remove_task_worktree(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-) -> Result<(), String> {
-    let info = state.task_worktrees.get(&task_id).unwrap_or_default();
-    let worktree_path = info
-        .worktree_path
-        .filter(|p| !p.trim().is_empty())
-        .ok_or_else(|| format!("task '{task_id}' has no worktree to remove"))?;
-    let repo = project_path_for_task(&state, &task_id)?;
-    crate::git::remove_worktree(&repo, Path::new(&worktree_path))
-        .await
-        .map_err(to_str_err)?;
-    state
-        .task_worktrees
-        .set(&task_id, WorktreeInfo::default())
-        .map_err(to_str_err)?;
-    emit_tasks_changed(&state, &task_id);
-    Ok(())
-}
+    // 1. Resolve origin (stored → project default → current) and
+    //    destination (stored → origin).
+    let origin = stored
+        .origin_branch
+        .clone()
+        .filter(|b| !b.trim().is_empty())
+        .or(default_branch)
+        .unwrap_or_else(|| current.clone())
+        .trim()
+        .to_string();
+    let destination = stored
+        .branch
+        .clone()
+        .filter(|b| !b.trim().is_empty())
+        .unwrap_or_else(|| origin.clone())
+        .trim()
+        .to_string();
 
-/// Switch the branch for a task. Operates inside the task's worktree when
-/// it has one, otherwise on the project repo itself. Creates the branch
-/// off current HEAD when it doesn't exist yet.
-#[tauri::command]
-pub async fn switch_task_branch(
-    state: State<'_, Arc<AppState>>,
-    task_id: String,
-    branch: String,
-) -> Result<WorktreeInfo, String> {
-    let branch = branch.trim().to_string();
-    if branch.is_empty() {
-        return Err("branch is required".into());
-    }
-    let repo = project_path_for_task(&state, &task_id)?;
-    let stored = state.task_worktrees.get(&task_id).unwrap_or_default();
-    // Switch inside the worktree if it exists on disk; otherwise the repo.
-    let target = match stored.worktree_path.as_deref() {
-        Some(p) if !p.trim().is_empty() && Path::new(p).exists() => PathBuf::from(p),
-        _ => repo.clone(),
+    // 2. Pull origin. Blocks on a real failure; no-op without an upstream.
+    crate::git::pull_branch(&repo, &origin)
+        .await
+        .map_err(to_str_err)?;
+
+    let dest_exists = crate::git::branch_exists(&repo, &destination)
+        .await
+        .map_err(to_str_err)?;
+    // New destination branches are based on origin; for an existing branch
+    // git ignores the start point, so passing it is harmless either way.
+    let start_point = if dest_exists {
+        None
+    } else {
+        Some(origin.as_str())
     };
-    let exists = crate::git::branch_exists(&repo, &branch)
-        .await
-        .map_err(to_str_err)?;
-    crate::git::switch_branch(&target, &branch, !exists)
-        .await
-        .map_err(to_str_err)?;
-    let info = WorktreeInfo {
-        worktree_path: stored.worktree_path,
-        branch: Some(branch),
+
+    // 3 + 4. Land on the destination branch, in a worktree when asked.
+    let cwd = if stored.use_worktree {
+        let wt_path = stored
+            .worktree_path
+            .clone()
+            .filter(|p| !p.trim().is_empty())
+            .ok_or_else(|| {
+                format!("task '{task_id}' is set to use a worktree but has no worktree path")
+            })?;
+        let wt = PathBuf::from(&wt_path);
+        if wt.exists() {
+            // Reuse the existing worktree: switch it to the destination only
+            // when it isn't already there.
+            let on = crate::git::current_branch(&wt).await.map_err(to_str_err)?;
+            if on != destination {
+                crate::git::switch_branch(&wt, &destination, !dest_exists, start_point)
+                    .await
+                    .map_err(to_str_err)?;
+            }
+        } else {
+            crate::git::add_worktree(&repo, &wt, &destination, !dest_exists, start_point)
+                .await
+                .map_err(to_str_err)?;
+        }
+        wt
+    } else {
+        // No worktree: operate on the project repo. Switch only when not
+        // already on the destination ("se for igual só vai para o ramo se
+        // já não estiver").
+        if current != destination {
+            crate::git::switch_branch(&repo, &destination, !dest_exists, start_point)
+                .await
+                .map_err(to_str_err)?;
+        }
+        repo.clone()
+    };
+
+    // 5. Persist the resolved config so the read-only displays and the next
+    //    open reflect what actually happened.
+    let resolved = WorktreeInfo {
+        worktree_path: if stored.use_worktree {
+            Some(cwd.to_string_lossy().into_owned())
+        } else {
+            None
+        },
+        branch: Some(destination),
+        origin_branch: Some(origin),
+        use_worktree: stored.use_worktree,
     };
     state
         .task_worktrees
-        .set(&task_id, info.clone())
+        .set(task_id, resolved)
         .map_err(to_str_err)?;
-    emit_tasks_changed(&state, &task_id);
-    Ok(info)
+    emit_tasks_changed(state, task_id);
+    Ok(cwd)
 }
 
 /// Persist `active_project_id` to config.json. The board re-renders
@@ -1474,33 +1500,19 @@ pub async fn start_task_agent(
         (project_path, cmd)
     };
 
-    // Run inside the task's worktree when one is set and present on disk;
-    // otherwise the project repo. A registered-but-missing worktree falls
-    // back to the project path (logged) so a stale entry doesn't block the
-    // start.
-    let cwd = match state
-        .task_worktrees
-        .get(&task_id)
-        .and_then(|w| w.worktree_path)
-    {
-        Some(wt) if Path::new(&wt).exists() => PathBuf::from(wt),
-        Some(wt) => {
-            tracing::warn!(
-                task = %task_id,
-                worktree = %wt,
-                "task worktree path missing; falling back to project path"
-            );
-            project_path
-        }
-        None => project_path,
-    };
-
-    if !cwd.exists() {
+    if !project_path.exists() {
         return Err(format!(
             "project path does not exist: {} — fix it in Settings → Projetos",
-            cwd.display()
+            project_path.display()
         ));
     }
+
+    // Prepare the git workspace from the task's declarative config: pull the
+    // origin branch, create/switch the destination branch, and create the
+    // worktree when requested. A pull or git failure blocks the start with
+    // the error surfaced to the caller. `cwd` is the worktree when used,
+    // otherwise the project repo.
+    let cwd = prepare_task_workspace(&state, &task_id).await?;
 
     // 3. Decide new vs resume from `task-runs.json`. Plan mode always
     //    starts fresh: planning runs are never recorded, and matching an

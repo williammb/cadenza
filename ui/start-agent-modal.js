@@ -137,9 +137,16 @@ async function loadWorktreeInfo(targetId) {
   try {
     const d = await invoke("task_worktree_defaults", { taskId: targetId });
     if (myGen !== worktreeInfoGen) return; // a newer open superseded this one
-    branchValEl.textContent = d?.stored?.branch || d?.current_branch || "—";
+    // Show origin → destination (just the branch when they're equal). The
+    // pull + branch/worktree creation runs server-side in start_task_agent.
+    const origin =
+      d?.stored?.origin_branch || d?.default_branch || d?.current_branch || "—";
+    const dest = d?.stored?.branch || origin;
+    branchValEl.textContent = origin === dest ? dest : `${origin} → ${dest}`;
     worktreeValEl.textContent =
-      d?.stored?.worktree_path || t("start-agent-worktree-none") || "—";
+      (d?.stored?.use_worktree && d?.stored?.worktree_path) ||
+      t("start-agent-worktree-none") ||
+      "—";
     worktreeInfoEl.hidden = false;
   } catch {
     if (myGen !== worktreeInfoGen) return;

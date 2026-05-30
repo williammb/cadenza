@@ -135,9 +135,6 @@ pub fn run() {
             commands::list_task_worktrees,
             commands::set_task_worktree,
             commands::task_worktree_defaults,
-            commands::create_task_worktree,
-            commands::remove_task_worktree,
-            commands::switch_task_branch,
             // ideias (Inbox)
             commands::list_ideias,
             commands::read_ideia,

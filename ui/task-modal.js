@@ -31,14 +31,17 @@ const deleteBtn = document.getElementById("btn-delete-task");
 const startBtn = document.getElementById("btn-start-task");
 const statusEl = document.getElementById("task-status");
 
-// Worktree / branch section — edit mode only.
+// Worktree / branch section — edit mode only. Declarative: the user sets
+// origin → destination + whether to use a worktree; the actual git (pull,
+// branch create/switch, worktree create) runs at "Iniciar", server-side in
+// start_task_agent. No per-action buttons here anymore.
 const worktreeSection = document.getElementById("task-worktree-section");
+const originBranchEl = document.getElementById("task-origin-branch");
+const branchEl = document.getElementById("task-branch"); // destination
+const branchListEl = document.getElementById("task-branch-list");
 const useWorktreeEl = document.getElementById("task-use-worktree");
-const branchEl = document.getElementById("task-branch");
 const worktreePathEl = document.getElementById("task-worktree-path");
-const createWorktreeBtn = document.getElementById("btn-create-worktree");
-const switchBranchBtn = document.getElementById("btn-switch-branch");
-const removeWorktreeBtn = document.getElementById("btn-remove-worktree");
+const worktreePathField = document.getElementById("task-worktree-path-field");
 const worktreeStatusEl = document.getElementById("worktree-status");
 
 let mode = "create"; // "create" | "edit"
@@ -136,31 +139,41 @@ export async function openEditTask(id) {
   tituloEl.focus();
 }
 
-// Pre-fill the worktree section in one round-trip. Branch defaults to the
-// project's current branch (unless the task already has one stored); the
-// worktree path defaults to the suggested sibling path. Git failures
+// Pre-fill the worktree section in one round-trip. Origin defaults to the
+// project's configured default branch (else the repo's current branch);
+// destination defaults to the stored branch or, on first setup, equals
+// origin. The branch list populates both editable pickers. Git failures
 // (e.g. the project isn't a git repo) leave the fields editable and just
 // show a hint — they don't block editing the rest of the task.
 async function loadWorktreeDefaults(id) {
   const myGen = ++worktreeLoadGen;
   setWorktreeStatus("");
+  originBranchEl.value = "";
   branchEl.value = "";
   worktreePathEl.value = "";
+  branchListEl.replaceChildren();
   // Reset to "no worktree" up front so a failed defaults load (below)
-  // doesn't carry the previously-opened task's checkbox / control
-  // visibility into this task.
+  // doesn't carry the previously-opened task's checkbox / path visibility
+  // into this task.
   useWorktreeEl.checked = false;
   syncWorktreeMode();
   try {
     const d = await invoke("task_worktree_defaults", { taskId: id });
     if (myGen !== worktreeLoadGen) return; // a newer task was opened meanwhile
-    branchEl.value = d?.stored?.branch || d?.current_branch || "";
+    // Populate the shared datalist with the repo's local branches.
+    for (const name of d?.branches ?? []) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      branchListEl.append(opt);
+    }
+    const origin =
+      d?.stored?.origin_branch || d?.default_branch || d?.current_branch || "";
+    originBranchEl.value = origin;
+    // Destination starts equal to origin until the user changes it.
+    branchEl.value = d?.stored?.branch || origin;
     worktreePathEl.value =
       d?.stored?.worktree_path || d?.suggested_worktree_path || "";
-    // "Using a worktree" is derived from whether one is actually stored —
-    // there's no separate persisted flag. Creating/removing a worktree is
-    // what flips this; the checkbox only gates which controls are shown.
-    useWorktreeEl.checked = !!d?.stored?.worktree_path;
+    useWorktreeEl.checked = !!d?.stored?.use_worktree;
     syncWorktreeMode();
   } catch (e) {
     if (myGen !== worktreeLoadGen) return;
@@ -168,14 +181,23 @@ async function loadWorktreeDefaults(id) {
   }
 }
 
-// Toggle the worktree-only controls (path field + create/remove) based on the
-// "use worktree" checkbox. The branch field and "switch branch" stay visible
-// either way: without a worktree, switching operates on the project repo.
+// Show the worktree path field only when "use worktree" is checked.
 function syncWorktreeMode() {
-  const useWorktree = useWorktreeEl.checked;
-  worktreePathEl.closest("label").hidden = !useWorktree;
-  createWorktreeBtn.hidden = !useWorktree;
-  removeWorktreeBtn.hidden = !useWorktree;
+  worktreePathField.hidden = !useWorktreeEl.checked;
+}
+
+// Persist the declarative branch/worktree config for the open task. Pure
+// metadata — no git runs here; the workspace is prepared at "Iniciar".
+async function persistWorktreeConfig(id) {
+  await invoke("set_task_worktree", {
+    taskId: id,
+    originBranch: originBranchEl.value.trim() || null,
+    branch: branchEl.value.trim() || null,
+    useWorktree: useWorktreeEl.checked,
+    worktreePath: useWorktreeEl.checked
+      ? worktreePathEl.value.trim() || null
+      : null,
+  });
 }
 
 function setWorktreeStatus(msg, kind) {
@@ -202,10 +224,19 @@ document
 // dialogs don't stack, then open the start-agent modal for the same
 // task. The backend moves the task to `fazendo` AFTER a successful
 // spawn, so we don't pre-flip the estado here anymore.
-startBtn.addEventListener("click", () => {
+startBtn.addEventListener("click", async () => {
   if (mode !== "edit" || !editingId) return;
   const id = editingId;
   const titulo = original?.titulo ?? tituloEl.value.trim();
+  // Persist the branch/worktree config first so the start-agent flow
+  // prepares the workspace the user just configured. A failure here is
+  // surfaced in the section status rather than silently dropping the config.
+  try {
+    await persistWorktreeConfig(id);
+  } catch (e) {
+    setWorktreeStatus(t("task-worktree-error", { error: e }), "error");
+    return;
+  }
   closeTaskModal();
   onClosedRefresh?.();
   openStartAgent(id, { titulo });
@@ -223,70 +254,11 @@ deleteBtn.addEventListener("click", async () => {
   }
 });
 
-// ─────────────────── worktree / branch actions (edit mode) ───────────────────
-// These run real git in the project repo and keep the modal open so the
-// user can see the result/error and keep working with the branch fields.
-
+// ─────────────────── worktree / branch config (edit mode) ───────────────────
+// The section is declarative now: changes are persisted on Save (see the
+// form submit) and the git work happens at "Iniciar". The checkbox only
+// gates the worktree path field's visibility.
 useWorktreeEl.addEventListener("change", syncWorktreeMode);
-
-createWorktreeBtn.addEventListener("click", async () => {
-  if (mode !== "edit" || !editingId) return;
-  const branch = branchEl.value.trim();
-  const worktreePath = worktreePathEl.value.trim();
-  if (!branch || !worktreePath) {
-    setWorktreeStatus(t("task-worktree-fields-required"), "error");
-    return;
-  }
-  setWorktreeStatus(t("task-worktree-working"));
-  try {
-    const info = await invoke("create_task_worktree", {
-      taskId: editingId,
-      branch,
-      worktreePath,
-    });
-    branchEl.value = info?.branch ?? branch;
-    worktreePathEl.value = info?.worktree_path ?? worktreePath;
-    setWorktreeStatus(t("task-worktree-created"), "ok");
-    onClosedRefresh?.();
-  } catch (e) {
-    setWorktreeStatus(t("task-worktree-error", { error: e }), "error");
-  }
-});
-
-switchBranchBtn.addEventListener("click", async () => {
-  if (mode !== "edit" || !editingId) return;
-  const branch = branchEl.value.trim();
-  if (!branch) {
-    setWorktreeStatus(t("task-worktree-fields-required"), "error");
-    return;
-  }
-  setWorktreeStatus(t("task-worktree-working"));
-  try {
-    const info = await invoke("switch_task_branch", {
-      taskId: editingId,
-      branch,
-    });
-    branchEl.value = info?.branch ?? branch;
-    setWorktreeStatus(t("task-worktree-switched", { branch }), "ok");
-    onClosedRefresh?.();
-  } catch (e) {
-    setWorktreeStatus(t("task-worktree-error", { error: e }), "error");
-  }
-});
-
-removeWorktreeBtn.addEventListener("click", async () => {
-  if (mode !== "edit" || !editingId) return;
-  if (!confirm(t("confirm-remove-worktree"))) return;
-  setWorktreeStatus(t("task-worktree-working"));
-  try {
-    await invoke("remove_task_worktree", { taskId: editingId });
-    worktreePathEl.value = "";
-    setWorktreeStatus(t("task-worktree-removed"), "ok");
-    onClosedRefresh?.();
-  } catch (e) {
-    setWorktreeStatus(t("task-worktree-error", { error: e }), "error");
-  }
-});
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -334,6 +306,8 @@ form.addEventListener("submit", async (e) => {
     if (body !== (original.body ?? "")) {
       await invoke("update_task_body", { id: editingId, body });
     }
+    // Persist the declarative branch/worktree config (no git here).
+    await persistWorktreeConfig(editingId);
     closeTaskModal();
     onClosedRefresh?.();
   } catch (err) {

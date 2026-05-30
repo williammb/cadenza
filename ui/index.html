@@ -650,6 +650,10 @@
               <span data-i18n="settings-agent-command">Comando (opcional)</span>
               <input type="text" id="project-agent-command" placeholder="claude" />
             </label>
+            <label class="field">
+              <span data-i18n="settings-project-default-branch">Ramo padrão</span>
+              <input type="text" id="project-edit-default-branch" autocomplete="off" spellcheck="false" placeholder="main" />
+            </label>
             <div class="field">
               <span data-i18n="settings-project-color">Cor</span>
               <div id="project-color-swatches" class="project-color-swatches"></div>
@@ -771,23 +775,25 @@
 
         <fieldset class="worktree-section" id="task-worktree-section" hidden>
           <legend data-i18n="task-worktree-legend">Worktree / Ramo</legend>
+          <!-- Shared list of the repo's local branches; both pickers are
+               editable so a new destination name can be typed to create it. -->
+          <datalist id="task-branch-list"></datalist>
+          <label class="field">
+            <span data-i18n="task-field-origin-branch">Ramo de origem</span>
+            <input type="text" id="task-origin-branch" list="task-branch-list" autocomplete="off" spellcheck="false" />
+          </label>
+          <label class="field">
+            <span data-i18n="task-field-branch">Ramo de destino</span>
+            <input type="text" id="task-branch" list="task-branch-list" autocomplete="off" spellcheck="false" />
+          </label>
           <label class="field field-checkbox">
             <input type="checkbox" id="task-use-worktree" />
             <span data-i18n="task-worktree-use">Usar worktree</span>
           </label>
-          <label class="field">
-            <span data-i18n="task-field-branch">Ramo</span>
-            <input type="text" id="task-branch" autocomplete="off" spellcheck="false" />
-          </label>
-          <label class="field">
+          <label class="field" id="task-worktree-path-field">
             <span data-i18n="task-field-worktree-path">Caminho do worktree</span>
             <input type="text" id="task-worktree-path" autocomplete="off" spellcheck="false" />
           </label>
-          <div class="worktree-actions">
-            <button type="button" class="btn" id="btn-create-worktree" data-i18n="task-worktree-create">Criar worktree</button>
-            <button type="button" class="btn" id="btn-switch-branch" data-i18n="task-worktree-switch">Trocar ramo</button>
-            <button type="button" class="btn btn-danger" id="btn-remove-worktree" data-i18n="task-worktree-remove">Remover worktree</button>
-          </div>
           <span class="modal-status" id="worktree-status" aria-live="polite"></span>
         </fieldset>
 
