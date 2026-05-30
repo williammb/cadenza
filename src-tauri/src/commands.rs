@@ -15,7 +15,7 @@ use tauri::ipc::Channel;
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
-use crate::agent::{self, CodexCapture, LaunchPlan};
+use crate::agent::{self, CodexCapture, LaunchPlan, PromptDelivery};
 use crate::config::{AgenteKind, Config, PgConfig, PgSslMode, StorageBackend};
 use crate::ordering::TaskOrder;
 use crate::projects::TaskProjects;
@@ -1152,6 +1152,18 @@ pub fn pty_snapshot(
     Ok(session.snapshot())
 }
 
+/// Bytes that resync a lagged subscriber: home the cursor, clear the
+/// viewport (`2J`) and xterm's scrollback (`3J`), then replay the current
+/// authoritative ring. The clear avoids doubling content the viewer
+/// already rendered before the lag.
+fn resync_payload(snapshot: Vec<u8>) -> Vec<u8> {
+    const CLEAR: &[u8] = b"\x1b[H\x1b[2J\x1b[3J";
+    let mut payload = Vec::with_capacity(snapshot.len() + CLEAR.len());
+    payload.extend_from_slice(CLEAR);
+    payload.extend_from_slice(&snapshot);
+    payload
+}
+
 /// Stream PTY bytes to the frontend over a Tauri channel. The frontend
 /// constructs `new Channel<number[]>()` and passes it as the `channel`
 /// arg — the first message is the current scrollback, subsequent
@@ -1178,6 +1190,9 @@ pub async fn pty_attach(
         let _ = channel.send(snap);
     }
 
+    // Cloned for the resync path below — the forwarding loop needs to
+    // re-snapshot the ring after a broadcast lag.
+    let session_for_resync = session.clone();
     let handle = tokio::spawn(async move {
         loop {
             match rx.recv().await {
@@ -1187,7 +1202,21 @@ pub async fn pty_attach(
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                    tracing::warn!(lagged = n, "pty broadcast lagged");
+                    // The subscriber fell behind and the broadcast dropped
+                    // `n` chunks. Resuming from the next live chunk would
+                    // leave a hole mid-stream and corrupt xterm's escape-
+                    // sequence state. Resync instead: atomically grab a
+                    // fresh snapshot + receiver (so no chunk is lost or
+                    // doubled across the swap), clear the viewport +
+                    // scrollback, and replay the current authoritative
+                    // ring. Best-effort — a backend terminal emulator
+                    // would resync without the visible reset.
+                    tracing::warn!(lagged = n, "pty broadcast lagged; resyncing from ring");
+                    let (resync_snap, fresh_rx) = session_for_resync.subscribe_with_snapshot();
+                    rx = fresh_rx;
+                    if channel.send(resync_payload(resync_snap)).is_err() {
+                        break;
+                    }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             }
@@ -1535,7 +1564,20 @@ pub async fn start_task_agent(
     });
     let resumed = existing_conv_id.is_some();
 
-    // 4. Build SpawnConfig via the per-agent planner.
+    // 4. Render the initial prompt (fresh start only) and build the
+    //    SpawnConfig via the per-agent planner. Preferred delivery is argv:
+    //    the planner bakes the prompt into the command line so the backend
+    //    never types into the live PTY (no race with the agent's UI boot).
+    let initial_prompt: Option<String> = if resumed {
+        None
+    } else {
+        Some(render_initial_task_prompt(
+            &state.i18n,
+            &task_id,
+            &task_titulo,
+            mode,
+        ))
+    };
     let plan: LaunchPlan = agent::plan_launch(
         agent_kind,
         &model,
@@ -1544,11 +1586,13 @@ pub async fn start_task_agent(
         &task_id,
         &project_id,
         existing_conv_id.as_deref(),
+        initial_prompt.as_deref(),
     );
     let LaunchPlan {
         spawn,
         conversation_id_known,
         pending_codex_capture,
+        prompt_delivery,
     } = plan;
 
     // 5. Spawn PTY + register session in AppState.
@@ -1568,13 +1612,12 @@ pub async fn start_task_agent(
         session = %session_id, "task agent started"
     );
 
-    // 5a. On a fresh start (not a resume), seed an initial prompt into
-    //     the PTY so the agent knows which task to work on and that the
-    //     `cadenza` skill is the contract. We delay ~1.5s to let the
-    //     agent's UI initialize — writing before the input box is ready
-    //     causes the bytes to be dropped on both Claude Code and Codex.
-    if !resumed {
-        let prompt = render_initial_task_prompt(&state.i18n, &task_id, &task_titulo, mode);
+    // 5a. Deliver the initial prompt on a fresh start. The planner has
+    //     already baked it into the spawn argv for agents that support it
+    //     (PromptDelivery::Argv) — those need nothing here. Only agents
+    //     without a verified initial-prompt flag fall back to typing it
+    //     into the PTY after a delay, which races the agent's UI boot.
+    if let (Some(prompt), PromptDelivery::TypeIn) = (initial_prompt, prompt_delivery) {
         let session_for_prompt = session.clone();
         tauri::async_runtime::spawn(async move {
             send_initial_prompt(&session_for_prompt, &prompt).await;
@@ -1873,7 +1916,10 @@ pub async fn destrinchar_ideia(
     //    fazendo sentido sem precisar entrar em `task-runs.json`.
     let synthetic_task_id = format!("IDEIA-{}", ideia.id);
 
-    // 4. Plan + adiciona env vars específicas da ideia.
+    // 4. Plan + adiciona env vars específicas da ideia. A decomposição é
+    //    sempre fresh, então sempre há um prompt inicial — entregue via
+    //    argv quando o agente suporta (igual a `start_task_agent`).
+    let prompt = render_initial_ideia_prompt(&state.i18n, &ideia.id);
     let plan: LaunchPlan = agent::plan_launch(
         agent_kind,
         &model,
@@ -1882,11 +1928,13 @@ pub async fn destrinchar_ideia(
         &synthetic_task_id,
         &ideia.project_id,
         None,
+        Some(&prompt),
     );
     let LaunchPlan {
         spawn,
         conversation_id_known,
         pending_codex_capture,
+        prompt_delivery,
     } = plan;
     let spawn = spawn.ideia_env(&ideia.id, &ideia.body);
 
@@ -1906,12 +1954,14 @@ pub async fn destrinchar_ideia(
         session = %session_id, "destrinchar agent started"
     );
 
-    // 5a. Seed an initial prompt — same rationale as start_task_agent.
-    let prompt = render_initial_ideia_prompt(&state.i18n, &ideia.id);
-    let session_for_prompt = session.clone();
-    tauri::async_runtime::spawn(async move {
-        send_initial_prompt(&session_for_prompt, &prompt).await;
-    });
+    // 5a. Deliver the initial prompt — argv when the agent supports it,
+    //     otherwise type it in (same split as start_task_agent).
+    if prompt_delivery == PromptDelivery::TypeIn {
+        let session_for_prompt = session.clone();
+        tauri::async_runtime::spawn(async move {
+            send_initial_prompt(&session_for_prompt, &prompt).await;
+        });
+    }
 
     // 6. Capturar UUID do Codex se for o caso (mesmo padrão de
     //    `start_task_agent`). Não armazenamos em `task_runs` porque
@@ -2090,7 +2140,7 @@ pub async fn list_agent_models(
 
 #[cfg(test)]
 mod tests {
-    use super::{highest_task_number, proposta_to_body, Proposta};
+    use super::{highest_task_number, proposta_to_body, resync_payload, Proposta};
 
     fn sample_proposta() -> Proposta {
         Proposta {
@@ -2104,6 +2154,23 @@ mod tests {
             action: "criar a task no backend".to_string(),
             created_at_ms: 0,
         }
+    }
+
+    #[test]
+    fn resync_payload_clears_then_replays_snapshot() {
+        let payload = resync_payload(b"scrollback".to_vec());
+        // Cursor home + clear viewport + clear scrollback, THEN the ring.
+        assert!(
+            payload.starts_with(b"\x1b[H\x1b[2J\x1b[3J"),
+            "resync must clear before replaying so content isn't doubled"
+        );
+        assert!(payload.ends_with(b"scrollback"));
+    }
+
+    #[test]
+    fn resync_payload_handles_empty_snapshot() {
+        // An empty ring still produces just the clear sequence — harmless.
+        assert_eq!(resync_payload(Vec::new()), b"\x1b[H\x1b[2J\x1b[3J".to_vec());
     }
 
     #[test]

@@ -10,6 +10,7 @@
 use anyhow::Result;
 use std::collections::VecDeque;
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
@@ -89,6 +90,11 @@ pub struct TerminalSession {
     /// attach replaces (and aborts) the previous one so there is at most
     /// one live stream loop per session, even across webview reloads.
     attach_task: Mutex<Option<tokio::task::AbortHandle>>,
+    /// Whether the reader thread still answers the ConPTY DSR query on the
+    /// child's behalf. Armed at spawn so the agent can boot before any UI
+    /// exists; cleared the first time a frontend attaches, after which
+    /// xterm.js is the sole CPR responder. See `run_reader_loop`.
+    dsr_armed: Arc<AtomicBool>,
 }
 
 impl TerminalSession {
@@ -106,6 +112,7 @@ impl TerminalSession {
         let writer = Arc::new(Mutex::new(pty.take_writer()?));
         let ring = Arc::new(Mutex::new(RingBuffer::new(ring_cap)));
         let (tx, _) = broadcast::channel::<Vec<u8>>(BROADCAST_CAPACITY);
+        let dsr_armed = Arc::new(AtomicBool::new(true));
 
         let session = Arc::new(Self {
             id: id.clone(),
@@ -115,6 +122,7 @@ impl TerminalSession {
             pty: Mutex::new(pty),
             last_size: Mutex::new(None),
             attach_task: Mutex::new(None),
+            dsr_armed: dsr_armed.clone(),
         });
 
         // Move reader + ring + tx into a dedicated thread. PTY reads
@@ -125,7 +133,7 @@ impl TerminalSession {
         std::thread::Builder::new()
             .name(format!("pty-reader-{id}"))
             .spawn(move || {
-                run_reader_loop(reader, ring, tx, writer_for_reader);
+                run_reader_loop(reader, ring, tx, writer_for_reader, dsr_armed);
             })?;
 
         Ok(session)
@@ -153,10 +161,22 @@ impl TerminalSession {
     /// The reader publishes while holding the same ring lock, so there is
     /// no gap where a chunk can be absent from the snapshot and also sent
     /// before this receiver exists.
+    ///
+    /// This is also the bring-up → steady-state boundary: a frontend is now
+    /// attached and owns the terminal, so the reader stops answering the
+    /// ConPTY DSR query on the child's behalf (see `run_reader_loop`).
     pub fn subscribe_with_snapshot(&self) -> (Vec<u8>, broadcast::Receiver<Vec<u8>>) {
         let ring = self.ring.lock().unwrap();
         let rx = self.tx.subscribe();
+        self.dsr_armed.store(false, Ordering::Relaxed);
         (ring.snapshot(), rx)
+    }
+
+    /// Whether the reader thread is still answering the ConPTY DSR query on
+    /// the child's behalf. True only during bring-up (before any frontend
+    /// attaches); cleared by the first `subscribe_with_snapshot`.
+    pub fn dsr_armed(&self) -> bool {
+        self.dsr_armed.load(Ordering::Relaxed)
     }
 
     /// Copy of the current ring buffer (entire scrollback within cap).
@@ -195,6 +215,7 @@ fn run_reader_loop(
     ring: Arc<Mutex<RingBuffer>>,
     tx: broadcast::Sender<Vec<u8>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
+    dsr_armed: Arc<AtomicBool>,
 ) {
     // Windows ConPTY withholds the child's output until the terminal
     // answers a Device Status Report query at startup; the writer goes
@@ -216,7 +237,14 @@ fn run_reader_loop(
                     // "bytes entered scrollback" and "bytes went live".
                     let _ = tx.send(buf[..n].to_vec());
                 }
-                crate::spawn::answer_dsr_cpr(&mut dsr_state, &buf[..n], &writer);
+                // Only stand in for the terminal during bring-up — before any
+                // frontend attaches. Once a webview is attached it owns the
+                // terminal and answers CPR with the REAL cursor position; a
+                // second, fabricated "1;1" reply from here would race xterm's
+                // and corrupt the agent's mid-session layout.
+                if dsr_armed.load(Ordering::Relaxed) {
+                    crate::spawn::answer_dsr_cpr(&mut dsr_state, &buf[..n], &writer);
+                }
             }
             Err(e) => {
                 tracing::warn!(error = %e, "pty reader: read error, stopping");
@@ -372,6 +400,27 @@ mod tests {
         assert!(
             !b_snap.contains("AAA"),
             "A's output leaked into B: {b_snap:?}"
+        );
+    }
+
+    #[test]
+    fn dsr_disarms_on_first_attach() {
+        // During bring-up (no frontend attached) the reader answers the
+        // ConPTY DSR query so the agent can boot before any UI exists. The
+        // moment a viewer attaches, xterm.js becomes the sole CPR responder
+        // and the backend must stop injecting its fabricated "1;1" reply —
+        // otherwise the agent gets two conflicting answers mid-session and
+        // its layout corrupts.
+        let session = TerminalSession::start("dsr", PtyHandle::spawn(echo_hi()).expect("spawn"))
+            .expect("start");
+        assert!(
+            session.dsr_armed(),
+            "DSR must be armed during bring-up so the agent can boot"
+        );
+        let _ = session.subscribe_with_snapshot();
+        assert!(
+            !session.dsr_armed(),
+            "DSR must be disarmed once a frontend attaches"
         );
     }
 
