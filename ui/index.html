@@ -753,10 +753,21 @@
           </select>
         </label>
 
-        <label class="field">
-          <span data-i18n="task-field-body">Descrição</span>
+        <div class="field">
+          <div class="field-label-row">
+            <span data-i18n="task-field-body">Descrição</span>
+            <div class="attach-toolbar">
+              <div class="attach-toggle" role="group">
+                <button type="button" class="btn btn-toggle is-active" id="task-body-edit" data-i18n="attachment-edit">Editar</button>
+                <button type="button" class="btn btn-toggle" id="task-body-preview-btn" data-i18n="attachment-preview">Visualizar</button>
+              </div>
+              <button type="button" class="btn btn-attach" id="task-attach-btn" data-i18n="attachment-button">Anexar imagem</button>
+            </div>
+          </div>
           <textarea id="task-body" rows="6"></textarea>
-        </label>
+          <div class="markdown-preview" id="task-body-preview-pane" hidden></div>
+          <input type="file" id="task-attach-input" accept="image/*" multiple hidden />
+        </div>
 
         <fieldset class="worktree-section" id="task-worktree-section" hidden>
           <legend data-i18n="task-worktree-legend">Worktree / Ramo</legend>
@@ -943,10 +954,21 @@
           <select id="ideia-project" required></select>
         </label>
 
-        <label class="field">
-          <span data-i18n="ideia-field-body">Descrição livre</span>
+        <div class="field">
+          <div class="field-label-row">
+            <span data-i18n="ideia-field-body">Descrição livre</span>
+            <div class="attach-toolbar">
+              <div class="attach-toggle" role="group">
+                <button type="button" class="btn btn-toggle is-active" id="ideia-body-edit" data-i18n="attachment-edit">Editar</button>
+                <button type="button" class="btn btn-toggle" id="ideia-body-preview-btn" data-i18n="attachment-preview">Visualizar</button>
+              </div>
+              <button type="button" class="btn btn-attach" id="ideia-attach-btn" data-i18n="attachment-button">Anexar imagem</button>
+            </div>
+          </div>
           <textarea id="ideia-body" rows="8"></textarea>
-        </label>
+          <div class="markdown-preview" id="ideia-body-preview-pane" hidden></div>
+          <input type="file" id="ideia-attach-input" accept="image/*" multiple hidden />
+        </div>
 
         <footer class="modal-footer">
           <span class="modal-status" id="ideia-status" aria-live="polite"></span>

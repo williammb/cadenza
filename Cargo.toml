@@ -44,6 +44,7 @@ vte = "0.15"
 interprocess = { version = "2", features = ["tokio"] }
 rand = "0.8"
 base64 = "0.22"
+sha2 = "0.10"
 sqlx = { version = "0.9", default-features = false, features = [
     "sqlite",
     "postgres",

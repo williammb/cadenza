@@ -12,6 +12,7 @@
 
 import { t } from "./i18n.js";
 import { openStartAgent } from "./start-agent-modal.js";
+import { setupAttachments } from "./attachments.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -44,6 +45,21 @@ let mode = "create"; // "create" | "edit"
 let editingId = null;
 let original = null;
 let onClosedRefresh = null;
+
+// Image attachments: paste / drop / file button + Edit/Preview toggle.
+// For a new task there's no id yet, so images are buffered and flushed to
+// disk right after create mints the id.
+const attachments = setupAttachments({
+  textarea: bodyEl,
+  preview: document.getElementById("task-body-preview-pane"),
+  editBtn: document.getElementById("task-body-edit"),
+  previewBtn: document.getElementById("task-body-preview-btn"),
+  fileInput: document.getElementById("task-attach-input"),
+  attachBtn: document.getElementById("task-attach-btn"),
+  kind: "tasks",
+  getOwnerId: () => (mode === "edit" ? editingId : null),
+  onError: (msg) => setStatus(msg, "error"),
+});
 // Bumped on each worktree-defaults load so a stale in-flight response from a
 // previously-opened task can't overwrite the fields of the task now open.
 let worktreeLoadGen = 0;
@@ -66,6 +82,7 @@ export async function openNewTask(prefill = {}) {
   startBtn.hidden = true;
   projectFieldEl.hidden = false;
   worktreeSection.hidden = true; // no task id yet → nothing to attach a worktree to
+  attachments.reset();
   setStatus("");
 
   // Populate the project selector.
@@ -113,6 +130,7 @@ export async function openEditTask(id) {
   startBtn.hidden = false;
   projectFieldEl.hidden = true;
   worktreeSection.hidden = false;
+  attachments.reset();
   loadWorktreeDefaults(id);
   if (!dialog.open) dialog.showModal();
   tituloEl.focus();
@@ -290,8 +308,11 @@ form.addEventListener("submit", async (e) => {
       // Sequential id minted by the backend (T-1, T-2, ...) — readable
       // and stable across the on-disk format shared with task-ai (Node).
       const id = await invoke("next_task_id");
+      // Persist any pasted/dropped images now that we have an id, and
+      // rewrite the buffered tokens to their saved relative paths.
+      const finalBody = await attachments.flush(id);
       await invoke("create_task", {
-        task: { id, titulo, estado, responsavel: DEFAULT_RESPONSAVEL, body },
+        task: { id, titulo, estado, responsavel: DEFAULT_RESPONSAVEL, body: finalBody },
         projectId,
       });
       closeTaskModal();

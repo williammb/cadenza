@@ -9,6 +9,7 @@
 //                                  e poder apagar via Delete.
 
 import { t } from "./i18n.js";
+import { setupAttachments } from "./attachments.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -25,6 +26,22 @@ const statusEl = document.getElementById("ideia-status");
 let mode = "create"; // "create" | "edit"
 let editingId = null;
 let onClosedRefresh = null;
+
+// Image attachments. Ideias have no body-patch op, so on create we mint
+// the id client-side (create_ideia accepts an optional id), flush the
+// buffered images to that id, and pass the rewritten body straight into
+// create. Edit mode is read-only, so the attach button is hidden there.
+const attachments = setupAttachments({
+  textarea: bodyEl,
+  preview: document.getElementById("ideia-body-preview-pane"),
+  editBtn: document.getElementById("ideia-body-edit"),
+  previewBtn: document.getElementById("ideia-body-preview-btn"),
+  fileInput: document.getElementById("ideia-attach-input"),
+  attachBtn: document.getElementById("ideia-attach-btn"),
+  kind: "ideias",
+  getOwnerId: () => (mode === "edit" ? editingId : null),
+  onError: (msg) => setStatus(msg, "error"),
+});
 
 export function setIdeiaRefreshCallback(fn) {
   onClosedRefresh = fn;
@@ -43,6 +60,7 @@ export async function openNewIdeia(prefill = {}) {
   tituloEl.disabled = false;
   bodyEl.disabled = false;
   projectEl.disabled = false;
+  attachments.reset();
   setStatus("");
   if (!dialog.open) dialog.showModal();
   tituloEl.focus();
@@ -75,6 +93,9 @@ export async function openEditIdeia(id) {
   bodyEl.disabled = true;
   projectEl.disabled = true;
   deleteBtn.hidden = false;
+  // Read-only view: hide the attach button but keep the preview toggle so
+  // the user can still see embedded images rendered.
+  attachments.reset(true);
   if (!dialog.open) dialog.showModal();
 }
 
@@ -142,11 +163,17 @@ form.addEventListener("submit", async (e) => {
     return;
   }
   try {
+    // Mint the id up front so buffered images can be saved under it and
+    // the body refs rewritten before the ideia row is created (ideias
+    // have no body-patch op to apply afterwards). Matches the backend's
+    // `I-<simple-uuid>` shape.
+    const id = "I-" + crypto.randomUUID().replaceAll("-", "");
+    const finalBody = await attachments.flush(id);
     await invoke("create_ideia", {
       // Campos da struct viajam como serde os espera (snake_case) —
       // só os nomes de parâmetro top-level do #[tauri::command] são
       // auto-convertidos de camelCase pelo Tauri.
-      args: { titulo, body: bodyEl.value, project_id: projectId },
+      args: { id, titulo, body: finalBody, project_id: projectId },
     });
     closeIdeiaModal();
     onClosedRefresh?.();
