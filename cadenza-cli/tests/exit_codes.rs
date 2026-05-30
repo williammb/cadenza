@@ -202,6 +202,30 @@ fn exit_12_protocol_mismatch() {
         .code(12);
 }
 
+/// `current_task` returns JSON null when no task is in `fazendo`.
+#[cfg(windows)]
+#[test]
+fn current_json_accepts_null_result() {
+    let user = unique_user();
+    let data = make_data_dir(Some("any-token"));
+    let _srv = start_mock(
+        &format!("cadenza-{user}"),
+        vec![
+            hello_ok(),
+            serde_json::json!({
+                "v": 1,
+                "ok": true,
+                "result": null
+            }),
+        ],
+    );
+    cli(&user, data.path())
+        .args(["current", "--json"])
+        .assert()
+        .success()
+        .stdout("null\n");
+}
+
 /// Server returns decision `rejeitada` → client creates `WireError("proposal_rejected")` → exit 20.
 #[cfg(windows)]
 #[test]

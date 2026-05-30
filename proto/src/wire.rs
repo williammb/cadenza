@@ -1,6 +1,6 @@
 //! NDJSON envelopes — Request, Response, Event, ErrorBody.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::WIRE_VERSION;
@@ -27,10 +27,21 @@ pub struct Response {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub result: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<ErrorBody>,
+}
+
+fn deserialize_present_value<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 /// Server → client unsolicited push (id is `null`). Used during
@@ -145,6 +156,17 @@ mod tests {
         let s = serde_json::to_string(&r).unwrap();
         assert!(s.contains("\"ok\":true"));
         assert!(!s.contains("\"error\""));
+    }
+
+    #[test]
+    fn response_preserves_present_null_result() {
+        let with_null: Response =
+            serde_json::from_str(r#"{"v":1,"id":"1","ok":true,"result":null}"#).unwrap();
+        assert_eq!(with_null.result, Some(Value::Null));
+
+        let without_result: Response =
+            serde_json::from_str(r#"{"v":1,"id":"1","ok":true}"#).unwrap();
+        assert_eq!(without_result.result, None);
     }
 
     #[test]
