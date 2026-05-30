@@ -228,3 +228,14 @@ start-agent-launching = Iniciando agente…
 update-available-title = Atualização disponível
 update-available-body = Uma nova versão do Cadenza está pronta.
 update-restart-now = Reiniciar agora
+
+# Settings → Geral: botão de verificação manual de atualizações. O app
+# checa sozinho no boot e a cada 24h; este botão permite checar na hora
+# e, ao contrário da checagem silenciosa, dá retorno mesmo quando já está
+# atualizado.
+settings-section-updates = Atualizações
+settings-update-check = Verificar atualizações
+settings-update-checking = Verificando…
+settings-update-uptodate = Você está atualizado.
+settings-update-available = Nova versão disponível: v{ $version }
+settings-update-error = Falha ao verificar atualizações: { $error }

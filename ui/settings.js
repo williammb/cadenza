@@ -563,6 +563,34 @@ localeSelectEl.addEventListener("change", async () => {
   }
 });
 
+// Manual update check (Geral tab). The app already checks silently on
+// boot and every 24h; this is an on-demand check that, unlike the silent
+// path, reports the up-to-date case too. When a new version is found the
+// command re-emits `update_available`, so the same banner still appears
+// on top of the inline status here.
+const updateStatusEl = document.getElementById("update-check-status");
+function setUpdateStatus(msg, kind) {
+  updateStatusEl.textContent = msg ?? "";
+  updateStatusEl.className = "modal-status" + (kind ? ` ${kind}` : "");
+}
+document.getElementById("btn-check-update").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-check-update");
+  btn.disabled = true;
+  setUpdateStatus(t("settings-update-checking"));
+  try {
+    const res = await invoke("check_update");
+    if (res && res.status === "available") {
+      setUpdateStatus(t("settings-update-available", { version: res.version }), "ok");
+    } else {
+      setUpdateStatus(t("settings-update-uptodate"), "ok");
+    }
+  } catch (e) {
+    setUpdateStatus(t("settings-update-error", { error: e }), "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // Close buttons (header × and footer Cancel)
 document
   .querySelectorAll('[data-action="close-settings"]')

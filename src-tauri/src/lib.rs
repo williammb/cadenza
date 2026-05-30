@@ -207,7 +207,7 @@ pub fn run() {
                 }
             });
 
-            // Updater: boot check + 24h recurring poll. `Interval::tick`
+            // Updater: boot check + hourly recurring poll. `Interval::tick`
             // resolves immediately on the first call, so we get the boot
             // check for free without a separate up-front invocation.
             // Failures (signature mismatch, network down, no release yet)
@@ -216,10 +216,10 @@ pub fn run() {
             let updater_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 let mut ticker = tokio::time::interval(
-                    std::time::Duration::from_secs(60 * 60 * 24),
+                    std::time::Duration::from_secs(60 * 60),
                 );
                 // Default Burst would replay every missed tick back-to-back
-                // after a multi-day suspend, firing a flurry of checks and
+                // after a long suspend, firing a flurry of checks and
                 // OS notifications at once. Skip collapses them to one.
                 ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
@@ -393,7 +393,7 @@ fn focus_main(app: &tauri::AppHandle) {
 /// notification when there's something to install — the UI decides
 /// whether to prompt the user; we never auto-install.
 ///
-/// Shared between the 24h ticker spawned in `setup()` and the
+/// Shared between the hourly ticker spawned in `setup()` and the
 /// `check_update` Tauri command (manual trigger from the UI).
 pub(crate) async fn check_for_updates(app: &tauri::AppHandle) {
     use tauri_plugin_updater::UpdaterExt;

@@ -228,3 +228,13 @@ start-agent-launching = Starting agent…
 update-available-title = Update available
 update-available-body = A new version of Cadenza is ready.
 update-restart-now = Restart now
+
+# Settings → General: manual update-check button. The app checks on its
+# own at boot and every 24h; this button checks on demand and, unlike
+# the silent check, gives feedback even when already up to date.
+settings-section-updates = Updates
+settings-update-check = Check for updates
+settings-update-checking = Checking…
+settings-update-uptodate = You're up to date.
+settings-update-available = New version available: v{ $version }
+settings-update-error = Update check failed: { $error }
