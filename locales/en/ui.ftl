@@ -122,6 +122,7 @@ settings-skills-col-path = Path
 settings-skills-status-installed = Installed
 settings-skills-status-installed-locale = Installed [{ $locale }]
 settings-skills-status-not-installed = Not installed
+settings-skills-status-outdated = update available
 settings-skills-summary-installed = { $count } installed
 settings-skills-summary-removed = { $count } removed
 settings-skills-summary-skipped = { $count } skipped
@@ -229,6 +230,8 @@ start-agent-launching = Starting agent…
 update-available-title = Update available
 update-available-body = A new version of Cadenza is ready.
 update-restart-now = Restart now
+skill-update-available-title = Skill update available
+skill-update-available-body = A newer Cadenza agent skill is available. Reinstall it from Settings → Skills.
 
 # Settings → General: manual update-check button. The app checks on its
 # own at boot and every 24h; this button checks on demand and, unlike

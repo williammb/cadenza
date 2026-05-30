@@ -229,6 +229,16 @@ pub fn run() {
                 }
             });
 
+            // Skill freshness: a newer app build can ship a newer skill
+            // body, but the copy already written to the user's agent dirs
+            // stays stale until reinstalled. Warn once at boot if any
+            // installed copy is outdated; the Settings panel shows the
+            // per-agent badge and the reinstall button.
+            let skill_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                notify_outdated_skills(&skill_handle).await;
+            });
+
             // Tray labels follow the active app locale. Resolve once at
             // build time; live re-translation of the tray menu would
             // need rebuilding the menu after every locale switch, which
@@ -420,6 +430,33 @@ pub(crate) async fn check_for_updates(app: &tauri::AppHandle) {
         }
         Ok(None) => tracing::debug!("no update available"),
         Err(e) => tracing::warn!(error = ?e, "updater check failed"),
+    }
+}
+
+/// Check the installed agent skills against the current `SKILL_VERSION`
+/// and, if any installed copy is outdated, emit `skill_update_available`
+/// to the webview and surface an OS notification. The UI's Settings panel
+/// also flags each outdated row with a reinstall button; this is the
+/// at-boot nudge so the user notices without opening Settings.
+pub(crate) async fn notify_outdated_skills(app: &tauri::AppHandle) {
+    let outdated = skills_core::status(None)
+        .into_iter()
+        .filter(|r| r.installed && r.outdated)
+        .count();
+    if outdated == 0 {
+        tracing::debug!("skills up to date");
+        return;
+    }
+    tracing::info!(count = outdated, "outdated skill installs detected");
+    if let Err(e) = app.emit("skill_update_available", outdated) {
+        tracing::warn!(error = ?e, "emit skill_update_available");
+    }
+    if let Err(e) = notify::show_info(
+        app,
+        "skill-update-available-title",
+        "skill-update-available-body",
+    ) {
+        tracing::warn!(error = ?e, "show skill update notification");
     }
 }
 

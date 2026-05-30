@@ -14,11 +14,12 @@ use anyhow::{Context, Result};
 use cadenza_proto::{
     ops::{
         self, OP_APPEND_LOG, OP_AWAIT_DECISION, OP_BYE, OP_CREATE_IDEIA, OP_CREATE_TASK,
-        OP_CURRENT_TASK, OP_DELETE_IDEIA, OP_DONE, OP_HELLO, OP_LIST_IDEIAS, OP_LIST_TASKS,
-        OP_PROPOSE, OP_READ_IDEIA, OP_SET_IDEIA_STATUS, OP_SET_TASK_WORKTREE, OP_UPDATE_BODY,
+        OP_CURRENT_TASK, OP_DELETE_IDEIA, OP_DONE, OP_HELLO, OP_LIST_IDEIAS, OP_LIST_PROJECTS,
+        OP_LIST_TASKS, OP_PROPOSE, OP_READ_IDEIA, OP_READ_TASK, OP_SET_IDEIA_STATUS,
+        OP_SET_TASK_WORKTREE, OP_UPDATE_BODY,
     },
     wire::{ErrorBody, Event, Request, Response},
-    Decisao, DecisaoRegistro, Ideia, IdeiaStatus, MAX_PROTOCOL, MIN_PROTOCOL,
+    Decisao, DecisaoRegistro, Ideia, IdeiaStatus, ProjectInfo, MAX_PROTOCOL, MIN_PROTOCOL,
 };
 use interprocess::local_socket::{tokio::prelude::*, ListenerOptions};
 #[cfg(not(windows))]
@@ -428,6 +429,40 @@ async fn dispatch(
             crate::commands::sort_tasks_by_order(&mut enriched, &order);
             let current: ops::current_task::Result = enriched.into_iter().next();
             to_value(&current)
+        }
+        OP_READ_TASK => {
+            let args: ops::read_task::Args = serde_json::from_value(req.args).map_err(bad_args)?;
+            check_id(&args.task_id)?;
+            // A single task by id — `get` returns only the requested card,
+            // not the whole list. A missing id surfaces as `task_not_found`
+            // (CLI exit 30) via `not_found_or_internal`.
+            let task = repo
+                .read_task(&args.task_id)
+                .await
+                .map_err(|e| not_found_or_internal(&e))?;
+            let task: ops::read_task::Result = deps.state.task_worktrees.enrich(task);
+            to_value(&task)
+        }
+        OP_LIST_PROJECTS => {
+            let _: ops::list_projects::Args = serde_json::from_value(req.args).map_err(bad_args)?;
+            // Read-only view of the configured projects so an agent can
+            // discover the `project_id` to pass to `new-task`.
+            let cfg = deps
+                .state
+                .config
+                .lock()
+                .map_err(|_| internal("config lock poisoned"))?;
+            let projects: ops::list_projects::Result = cfg
+                .projects
+                .iter()
+                .map(|p| ProjectInfo {
+                    id: p.id.clone(),
+                    name: p.name.clone(),
+                    path: p.path.to_string_lossy().into_owned(),
+                })
+                .collect();
+            drop(cfg);
+            to_value(&projects)
         }
         OP_SET_TASK_WORKTREE => {
             let args: ops::set_task_worktree::Args =

@@ -11,7 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DecisaoRegistro, Ideia, IdeiaStatus, NewProposta, Task};
+use crate::{DecisaoRegistro, Ideia, IdeiaStatus, NewProposta, ProjectInfo, Task};
 
 // ───────── op name constants
 
@@ -42,6 +42,12 @@ pub const OP_SET_TASK_WORKTREE: &str = "set_task_worktree";
 // under the current protocol window, same rationale as the worktree op
 // above — dispatch matches on the op name, not a negotiated version.
 pub const OP_UPDATE_BODY: &str = "update_body";
+
+// Read a single task by id (`cadenza-cli get`) and list configured
+// projects (`cadenza-cli projects`). Same op-name dispatch rationale as
+// the ops above — no MIN/MAX_PROTOCOL bump.
+pub const OP_READ_TASK: &str = "read_task";
+pub const OP_LIST_PROJECTS: &str = "list_projects";
 
 // ───────── event names
 
@@ -319,6 +325,31 @@ pub mod update_body {
     pub struct Result {
         pub ok: bool,
     }
+}
+
+// ───────── read_task
+
+pub mod read_task {
+    use super::Task;
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub task_id: String,
+    }
+
+    /// A single task. A missing id is an error (`task_not_found`), not a
+    /// `None` — so the result is `Task`, not `Option<Task>`.
+    pub type Result = Task;
+}
+
+// ───────── list_projects
+
+pub mod list_projects {
+    use super::{EmptyArgs, ProjectInfo};
+
+    pub type Args = EmptyArgs;
+    pub type Result = Vec<ProjectInfo>;
 }
 
 // ───────── set_ideia_status

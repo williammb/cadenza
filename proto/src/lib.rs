@@ -6,11 +6,13 @@
 
 pub mod ideia;
 pub mod ops;
+pub mod project;
 pub mod task;
 pub mod triage;
 pub mod wire;
 
 pub use ideia::{Ideia, IdeiaStatus, NewIdeia};
+pub use project::ProjectInfo;
 pub use task::{Estado, Task};
 pub use triage::{Decisao, DecisaoRegistro, NewProposta, Proposta};
 pub use wire::{ErrorBody, Event, Request, Response};

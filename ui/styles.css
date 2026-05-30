@@ -1661,6 +1661,14 @@ textarea::placeholder {
   content: "○ ";
   font-style: normal;
 }
+.skill-status-outdated {
+  color: var(--warn-fg);
+  font-weight: 600;
+}
+.skill-status-outdated::before {
+  content: "▲ ";
+  font-size: 0.7em;
+}
 
 /* ─────────────── Card start button + run indicator ─────────────── */
 
