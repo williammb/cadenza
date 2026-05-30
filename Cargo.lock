@@ -705,7 +705,7 @@ dependencies = [
 
 [[package]]
 name = "cadenza"
-version = "0.2.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -746,7 +746,7 @@ dependencies = [
 
 [[package]]
 name = "cadenza-cli"
-version = "0.2.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -767,7 +767,7 @@ dependencies = [
 
 [[package]]
 name = "cadenza-i18n"
-version = "0.2.0"
+version = "0.0.0"
 dependencies = [
  "fluent-bundle",
  "include_dir",
@@ -780,7 +780,7 @@ dependencies = [
 
 [[package]]
 name = "cadenza-proto"
-version = "0.2.0"
+version = "0.0.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5567,7 +5567,7 @@ dependencies = [
 
 [[package]]
 name = "skills-core"
-version = "0.2.0"
+version = "0.0.0"
 dependencies = [
  "anyhow",
  "dirs",

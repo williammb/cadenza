@@ -9,7 +9,10 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+# Placeholder: `main` is never a published version. The real version is
+# stamped from the git tag by CI (see .github/workflows/release.yml and
+# docs/RELEASING.md). `0.0.0` means "unpublished / dev build".
+version = "0.0.0"
 edition = "2021"
 rust-version = "1.77"
 license = "MIT OR Apache-2.0"
