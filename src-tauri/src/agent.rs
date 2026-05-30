@@ -13,6 +13,13 @@
 //! Verified empirically on 2026-05-27 against `claude --help` and
 //! `codex --help`. If either CLI's argument surface changes, this
 //! module is the single seam to update.
+//!
+//! Initial-prompt delivery (verified 2026-05-30 against `--help` for all
+//! three): the prompt is passed via argv so the backend never types into
+//! the live PTY. Claude and Codex take it as a trailing positional
+//! (`claude/codex [OPTIONS] [PROMPT]`, interactive by default); agy needs
+//! `--prompt-interactive <prompt>` (it rejects a bare positional). See
+//! `PromptDelivery`.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -24,6 +31,27 @@ use crate::spawn::SpawnConfig;
 const DEFAULT_COLS: u16 = 120;
 const DEFAULT_ROWS: u16 = 30;
 
+/// How the freshly-rendered initial prompt reaches the agent.
+///
+/// The preferred path is `Argv`: the prompt is baked into the spawn
+/// command line, so the backend never types into the live PTY and there
+/// is no race with the agent's UI bootstrap. All currently supported
+/// agents (Claude, Codex, agy) have a verified initial-prompt flag and
+/// use `Argv`. `TypeIn` is the retained fallback for an agent whose CLI
+/// surface changes or a future agent without such a flag — keep it wired
+/// so the seam stays extensible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptDelivery {
+    /// Baked into the spawn argv — the caller must NOT type into the PTY.
+    Argv,
+    /// No verified initial-prompt flag for this agent; the caller types
+    /// the prompt into the TUI after boot (`send_initial_prompt`).
+    // No planner constructs this today — it's a deliberate fallback for
+    // CLI drift / future agents, not dead code to delete.
+    #[allow(dead_code)]
+    TypeIn,
+}
+
 /// What `start_task_agent` needs to do after spawning the PTY.
 pub struct LaunchPlan {
     pub spawn: SpawnConfig,
@@ -34,6 +62,10 @@ pub struct LaunchPlan {
     /// Whether the caller should kick off the Codex-specific async
     /// capture task to find the generated session UUID on disk.
     pub pending_codex_capture: Option<CodexCapture>,
+    /// How the caller should deliver the initial prompt (if any). `Argv`
+    /// means it is already in `spawn`; `TypeIn` means the caller must
+    /// type it into the PTY after boot.
+    pub prompt_delivery: PromptDelivery,
 }
 
 #[derive(Clone, Debug)]
@@ -173,6 +205,9 @@ fn path_extensions() -> Vec<std::ffi::OsString> {
 ///
 /// `existing_conversation_id` is the value from `task-runs.json` (if
 /// any). Its presence flips us into resume mode.
+// One positional per launch dimension reads clearly at the two call sites;
+// a params struct is the eventual cleanup if this grows further.
+#[allow(clippy::too_many_arguments)]
 pub fn plan_launch(
     kind: AgenteKind,
     model: &str,
@@ -181,6 +216,7 @@ pub fn plan_launch(
     task_id: &str,
     project_id: &str,
     existing_conversation_id: Option<&str>,
+    initial_prompt: Option<&str>,
 ) -> LaunchPlan {
     let command = command_override
         .map(|p| p.to_string_lossy().into_owned())
@@ -196,6 +232,7 @@ pub fn plan_launch(
             task_id,
             project_id,
             existing_conversation_id,
+            initial_prompt,
         ),
         AgenteKind::Codex => plan_codex(
             command,
@@ -204,6 +241,7 @@ pub fn plan_launch(
             task_id,
             project_id,
             existing_conversation_id,
+            initial_prompt,
         ),
         AgenteKind::Antigravity => plan_antigravity(
             command,
@@ -212,6 +250,7 @@ pub fn plan_launch(
             task_id,
             project_id,
             existing_conversation_id,
+            initial_prompt,
         ),
     }
 }
@@ -223,6 +262,7 @@ fn plan_claude(
     task_id: &str,
     project_id: &str,
     existing_conversation_id: Option<&str>,
+    initial_prompt: Option<&str>,
 ) -> LaunchPlan {
     let mut args: Vec<String> = Vec::new();
 
@@ -249,6 +289,14 @@ fn plan_claude(
         args.push(model.to_string());
     }
 
+    // Claude takes the initial prompt as a trailing positional argument and
+    // stays interactive (it only goes non-interactive with `-p/--print`).
+    // Verified against `claude --help`: "Usage: claude [options] [command]
+    // [prompt]". Baking it here means the backend never types into the PTY.
+    if let Some(prompt) = initial_prompt {
+        args.push(prompt.to_string());
+    }
+
     let cfg = SpawnConfig::new(command)
         .args(args)
         .cwd(cwd)
@@ -259,6 +307,7 @@ fn plan_claude(
         spawn: cfg,
         conversation_id_known: Some(conversation_id),
         pending_codex_capture: None,
+        prompt_delivery: PromptDelivery::Argv,
     }
 }
 
@@ -269,6 +318,7 @@ fn plan_codex(
     task_id: &str,
     project_id: &str,
     existing_conversation_id: Option<&str>,
+    initial_prompt: Option<&str>,
 ) -> LaunchPlan {
     let mut args: Vec<String> = Vec::new();
 
@@ -287,6 +337,16 @@ fn plan_codex(
             }
         }
     };
+
+    // Codex takes the initial prompt as a trailing positional argument and
+    // starts the interactive TUI by default (the `exec` subcommand is the
+    // non-interactive one). Verified against `codex --help`: "Usage: codex
+    // [OPTIONS] [PROMPT]". Only on a fresh start — a resume uses the
+    // `resume <id>` subcommand and carries its own context, so the caller
+    // passes no prompt there.
+    if let Some(prompt) = initial_prompt {
+        args.push(prompt.to_string());
+    }
 
     // CLAUDE_SESSION_ID env var still helps the cadenza-cli skill: the
     // user can re-run `cadenza-cli current` from inside codex and the
@@ -313,6 +373,7 @@ fn plan_codex(
         spawn: cfg,
         conversation_id_known: existing_conversation_id.map(String::from),
         pending_codex_capture: pending_capture,
+        prompt_delivery: PromptDelivery::Argv,
     }
 }
 
@@ -342,6 +403,7 @@ fn plan_antigravity(
     task_id: &str,
     project_id: &str,
     existing_conversation_id: Option<&str>,
+    initial_prompt: Option<&str>,
 ) -> LaunchPlan {
     let mut args: Vec<String> = Vec::new();
 
@@ -361,6 +423,16 @@ fn plan_antigravity(
             }
         }
     };
+
+    // agy takes the initial prompt via `--prompt-interactive <prompt>`,
+    // which "runs an initial prompt interactively and continue[s] the
+    // session" (verified against `agy --help`). It does NOT accept a bare
+    // positional prompt, so the flag is required. Only on a fresh start —
+    // a resume carries its own context.
+    if let Some(prompt) = initial_prompt {
+        args.push("--prompt-interactive".to_string());
+        args.push(prompt.to_string());
+    }
 
     // Seed CLAUDE_SESSION_ID for the cadenza-cli skill the same way as
     // the other agents — empty on a fresh `agy` run (id not yet known).
@@ -385,6 +457,7 @@ fn plan_antigravity(
         spawn: cfg,
         conversation_id_known: existing_conversation_id.map(String::from),
         pending_codex_capture: pending_capture,
+        prompt_delivery: PromptDelivery::Argv,
     }
 }
 
@@ -497,6 +570,7 @@ mod tests {
             "T-1",
             "proj-a",
             None,
+            None,
         );
         let cmd = &plan.spawn.command;
         assert_eq!(cmd, "claude");
@@ -524,6 +598,7 @@ mod tests {
             "T-1",
             "proj-a",
             Some("AAAA-BBBB"),
+            None,
         );
         let args = &plan.spawn.args;
         let i = args.iter().position(|a| a == "--resume").expect("--resume");
@@ -541,6 +616,7 @@ mod tests {
             Path::new("/tmp/proj"),
             "T-2",
             "proj-b",
+            None,
             None,
         );
         assert_eq!(plan.spawn.command, "codex");
@@ -562,6 +638,7 @@ mod tests {
             "T-2",
             "proj-b",
             Some("019d4891-0feb-78a2-8f90-841686dc0175"),
+            None,
         );
         let args = &plan.spawn.args;
         assert_eq!(args[0], "resume");
@@ -580,6 +657,7 @@ mod tests {
             Path::new("/tmp/proj"),
             "T-3",
             "proj-c",
+            None,
             None,
         );
         assert_eq!(plan.spawn.command, "agy");
@@ -602,6 +680,7 @@ mod tests {
             "T-3",
             "proj-c",
             Some("019d4891-0feb-78a2-8f90-841686dc0175"),
+            None,
         );
         let args = &plan.spawn.args;
         let i = args
@@ -628,6 +707,7 @@ mod tests {
             "T-1",
             "p",
             None,
+            None,
         );
         assert_eq!(plan.spawn.command, "/opt/anthropic/bin/claude-beta");
     }
@@ -642,8 +722,93 @@ mod tests {
             "T-1",
             "p",
             None,
+            None,
         );
         assert!(!plan.spawn.args.iter().any(|a| a == "--model"));
+    }
+
+    #[test]
+    fn claude_fresh_bakes_prompt_as_trailing_arg() {
+        // A fresh Claude start delivers the prompt via argv (positional,
+        // last arg) and reports Argv so the caller types nothing.
+        let plan = plan_launch(
+            AgenteKind::ClaudeCode,
+            "opus",
+            None,
+            Path::new("/tmp/proj"),
+            "T-1",
+            "proj-a",
+            None,
+            Some("do the task"),
+        );
+        assert_eq!(
+            plan.spawn.args.last().map(String::as_str),
+            Some("do the task")
+        );
+        assert_eq!(plan.prompt_delivery, PromptDelivery::Argv);
+    }
+
+    #[test]
+    fn antigravity_fresh_uses_prompt_interactive_flag() {
+        // agy takes the prompt via `--prompt-interactive <prompt>`, not a
+        // bare positional, and reports Argv.
+        let plan = plan_launch(
+            AgenteKind::Antigravity,
+            "gemini-3.1-pro",
+            None,
+            Path::new("/tmp/proj"),
+            "T-3",
+            "proj-c",
+            None,
+            Some("decompose this"),
+        );
+        let args = &plan.spawn.args;
+        let i = args
+            .iter()
+            .position(|a| a == "--prompt-interactive")
+            .expect("--prompt-interactive");
+        assert_eq!(args[i + 1], "decompose this");
+        assert_eq!(plan.prompt_delivery, PromptDelivery::Argv);
+    }
+
+    #[test]
+    fn codex_fresh_bakes_prompt_as_trailing_arg() {
+        // A fresh Codex start delivers the prompt via argv (positional, last
+        // arg — `codex [OPTIONS] [PROMPT]`) and reports Argv.
+        let plan = plan_launch(
+            AgenteKind::Codex,
+            "gpt-5.4",
+            None,
+            Path::new("/tmp/proj"),
+            "T-2",
+            "proj-b",
+            None,
+            Some("do the task"),
+        );
+        assert_eq!(
+            plan.spawn.args.last().map(String::as_str),
+            Some("do the task")
+        );
+        assert_eq!(plan.prompt_delivery, PromptDelivery::Argv);
+    }
+
+    #[test]
+    fn resume_never_bakes_a_prompt() {
+        // On resume the caller passes no prompt; nothing extra lands in argv
+        // beyond the resume flags.
+        let plan = plan_launch(
+            AgenteKind::ClaudeCode,
+            "opus",
+            None,
+            Path::new("/tmp/proj"),
+            "T-1",
+            "proj-a",
+            Some("AAAA-BBBB"),
+            None,
+        );
+        // Only --resume <id> --model <m> — last arg is the model, not a prompt.
+        assert_eq!(plan.spawn.args.last().map(String::as_str), Some("opus"));
+        assert_eq!(plan.prompt_delivery, PromptDelivery::Argv);
     }
 
     #[test]

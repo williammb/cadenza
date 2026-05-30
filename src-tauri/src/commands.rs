@@ -15,7 +15,7 @@ use tauri::ipc::Channel;
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
-use crate::agent::{self, CodexCapture, LaunchPlan};
+use crate::agent::{self, CodexCapture, LaunchPlan, PromptDelivery};
 use crate::config::{AgenteKind, Config, PgConfig, PgSslMode, StorageBackend};
 use crate::ordering::TaskOrder;
 use crate::projects::TaskProjects;
@@ -1535,7 +1535,20 @@ pub async fn start_task_agent(
     });
     let resumed = existing_conv_id.is_some();
 
-    // 4. Build SpawnConfig via the per-agent planner.
+    // 4. Render the initial prompt (fresh start only) and build the
+    //    SpawnConfig via the per-agent planner. Preferred delivery is argv:
+    //    the planner bakes the prompt into the command line so the backend
+    //    never types into the live PTY (no race with the agent's UI boot).
+    let initial_prompt: Option<String> = if resumed {
+        None
+    } else {
+        Some(render_initial_task_prompt(
+            &state.i18n,
+            &task_id,
+            &task_titulo,
+            mode,
+        ))
+    };
     let plan: LaunchPlan = agent::plan_launch(
         agent_kind,
         &model,
@@ -1544,11 +1557,13 @@ pub async fn start_task_agent(
         &task_id,
         &project_id,
         existing_conv_id.as_deref(),
+        initial_prompt.as_deref(),
     );
     let LaunchPlan {
         spawn,
         conversation_id_known,
         pending_codex_capture,
+        prompt_delivery,
     } = plan;
 
     // 5. Spawn PTY + register session in AppState.
@@ -1568,13 +1583,12 @@ pub async fn start_task_agent(
         session = %session_id, "task agent started"
     );
 
-    // 5a. On a fresh start (not a resume), seed an initial prompt into
-    //     the PTY so the agent knows which task to work on and that the
-    //     `cadenza` skill is the contract. We delay ~1.5s to let the
-    //     agent's UI initialize — writing before the input box is ready
-    //     causes the bytes to be dropped on both Claude Code and Codex.
-    if !resumed {
-        let prompt = render_initial_task_prompt(&state.i18n, &task_id, &task_titulo, mode);
+    // 5a. Deliver the initial prompt on a fresh start. The planner has
+    //     already baked it into the spawn argv for agents that support it
+    //     (PromptDelivery::Argv) — those need nothing here. Only agents
+    //     without a verified initial-prompt flag fall back to typing it
+    //     into the PTY after a delay, which races the agent's UI boot.
+    if let (Some(prompt), PromptDelivery::TypeIn) = (initial_prompt, prompt_delivery) {
         let session_for_prompt = session.clone();
         tauri::async_runtime::spawn(async move {
             send_initial_prompt(&session_for_prompt, &prompt).await;
@@ -1873,7 +1887,10 @@ pub async fn destrinchar_ideia(
     //    fazendo sentido sem precisar entrar em `task-runs.json`.
     let synthetic_task_id = format!("IDEIA-{}", ideia.id);
 
-    // 4. Plan + adiciona env vars específicas da ideia.
+    // 4. Plan + adiciona env vars específicas da ideia. A decomposição é
+    //    sempre fresh, então sempre há um prompt inicial — entregue via
+    //    argv quando o agente suporta (igual a `start_task_agent`).
+    let prompt = render_initial_ideia_prompt(&state.i18n, &ideia.id);
     let plan: LaunchPlan = agent::plan_launch(
         agent_kind,
         &model,
@@ -1882,11 +1899,13 @@ pub async fn destrinchar_ideia(
         &synthetic_task_id,
         &ideia.project_id,
         None,
+        Some(&prompt),
     );
     let LaunchPlan {
         spawn,
         conversation_id_known,
         pending_codex_capture,
+        prompt_delivery,
     } = plan;
     let spawn = spawn.ideia_env(&ideia.id, &ideia.body);
 
@@ -1906,12 +1925,14 @@ pub async fn destrinchar_ideia(
         session = %session_id, "destrinchar agent started"
     );
 
-    // 5a. Seed an initial prompt — same rationale as start_task_agent.
-    let prompt = render_initial_ideia_prompt(&state.i18n, &ideia.id);
-    let session_for_prompt = session.clone();
-    tauri::async_runtime::spawn(async move {
-        send_initial_prompt(&session_for_prompt, &prompt).await;
-    });
+    // 5a. Deliver the initial prompt — argv when the agent supports it,
+    //     otherwise type it in (same split as start_task_agent).
+    if prompt_delivery == PromptDelivery::TypeIn {
+        let session_for_prompt = session.clone();
+        tauri::async_runtime::spawn(async move {
+            send_initial_prompt(&session_for_prompt, &prompt).await;
+        });
+    }
 
     // 6. Capturar UUID do Codex se for o caso (mesmo padrão de
     //    `start_task_agent`). Não armazenamos em `task_runs` porque
