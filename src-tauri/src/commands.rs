@@ -1159,13 +1159,42 @@ pub fn restart_app(app: tauri::AppHandle) {
     app.restart();
 }
 
-/// Manually poll the updater. Same code path as the 24h ticker — emits
-/// `update_available` + OS notification when there's a newer build.
-/// Invoked by the UI when the user wants to check on demand (e.g. from
-/// a settings entry or after dismissing the banner).
+/// Outcome of a manual update check, returned to the UI so the Settings
+/// button can show inline feedback for *both* the "you're up to date"
+/// and "update available" cases. The hourly ticker stays fire-and-forget
+/// via `check_for_updates`, which only surfaces something when there's a
+/// newer build.
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum UpdateCheckResult {
+    Available { version: String },
+    UpToDate,
+}
+
+/// Manually poll the updater on demand from the Settings button. Unlike
+/// the silent hourly ticker, this returns the outcome so the UI can render
+/// "up to date" vs "vX available". On the available case it still emits
+/// `update_available` so the existing banner appears, but skips the OS
+/// notification the ticker uses — the user is already looking at the app
+/// and gets the inline result instead.
 #[tauri::command]
-pub async fn check_update(app: tauri::AppHandle) {
-    crate::check_for_updates(&app).await;
+pub async fn check_update(app: tauri::AppHandle) -> Result<UpdateCheckResult, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let updater = app.updater().map_err(to_str_err)?;
+    match updater.check().await.map_err(to_str_err)? {
+        Some(update) => {
+            let version = update.version.clone();
+            tracing::info!(version = %version, "update available (manual check)");
+            if let Err(e) = app.emit("update_available", &version) {
+                tracing::warn!(error = ?e, "emit update_available");
+            }
+            Ok(UpdateCheckResult::Available { version })
+        }
+        None => {
+            tracing::debug!("no update available (manual check)");
+            Ok(UpdateCheckResult::UpToDate)
+        }
+    }
 }
 
 /// Download the pending release and relaunch the app into it. Backs
