@@ -1170,13 +1170,14 @@ pub async fn pty_attach(
             .ok_or_else(|| format!("session {session_id} not found"))?
     };
 
-    // Replay scrollback first so reattaches don't lose context.
-    let snap = session.snapshot();
+    // Replay scrollback first so reattaches don't lose context. Snapshot
+    // and subscription are paired atomically so chunks produced during
+    // attach are not lost between the two operations.
+    let (snap, mut rx) = session.subscribe_with_snapshot();
     if !snap.is_empty() {
         let _ = channel.send(snap);
     }
 
-    let mut rx = session.subscribe();
     let handle = tokio::spawn(async move {
         loop {
             match rx.recv().await {

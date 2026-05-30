@@ -148,6 +148,17 @@ impl TerminalSession {
         self.tx.subscribe()
     }
 
+    /// Atomically capture scrollback and subscribe to future bytes.
+    ///
+    /// The reader publishes while holding the same ring lock, so there is
+    /// no gap where a chunk can be absent from the snapshot and also sent
+    /// before this receiver exists.
+    pub fn subscribe_with_snapshot(&self) -> (Vec<u8>, broadcast::Receiver<Vec<u8>>) {
+        let ring = self.ring.lock().unwrap();
+        let rx = self.tx.subscribe();
+        (ring.snapshot(), rx)
+    }
+
     /// Copy of the current ring buffer (entire scrollback within cap).
     pub fn snapshot(&self) -> Vec<u8> {
         self.ring.lock().unwrap().snapshot()
@@ -200,11 +211,12 @@ fn run_reader_loop(
                 {
                     let mut r = ring.lock().unwrap();
                     r.push(&buf[..n]);
+                    // Keep this send under the ring lock so
+                    // subscribe_with_snapshot() cannot interleave between
+                    // "bytes entered scrollback" and "bytes went live".
+                    let _ = tx.send(buf[..n].to_vec());
                 }
                 crate::spawn::answer_dsr_cpr(&mut dsr_state, &buf[..n], &writer);
-                // send fails only when there are no receivers, which
-                // is expected before the frontend subscribes.
-                let _ = tx.send(buf[..n].to_vec());
             }
             Err(e) => {
                 tracing::warn!(error = %e, "pty reader: read error, stopping");

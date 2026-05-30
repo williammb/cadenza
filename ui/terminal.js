@@ -34,6 +34,7 @@ const emptyEl = document.getElementById("terminal-empty");
 const resizeHandle = document.getElementById("terminal-resize-handle");
 
 let activeSession = null;
+const MAX_WRITE_BATCH_BYTES = 64 * 1024;
 
 // Every PTY session the UI knows about, keyed by the backend's `S-…`
 // session id. Each entry:
@@ -105,6 +106,9 @@ export async function attachTerminal(sessionId, opts = {}) {
     channel: null,
     hostEl,
     resizeObserver: null,
+    writeQueue: [],
+    writeInFlight: false,
+    writeClosed: false,
     lastCols: 0,
     lastRows: 0,
   };
@@ -129,7 +133,7 @@ export async function attachTerminal(sessionId, opts = {}) {
   // root of the multi-terminal corruption bug.
   const channel = new Channel();
   channel.onmessage = (bytes) => {
-    term.write(new Uint8Array(bytes));
+    enqueueTerminalBytes(entry, bytes);
   };
   entry.channel = channel;
 
@@ -179,6 +183,8 @@ export async function closeSession(sessionId) {
 
   if (entry) {
     if (entry.resizeObserver) entry.resizeObserver.disconnect();
+    entry.writeClosed = true;
+    entry.writeQueue = [];
     if (entry.term) entry.term.dispose();
     entry.hostEl.remove();
   }
@@ -216,6 +222,46 @@ function showSession(sessionId) {
   for (const [id, entry] of sessions) {
     entry.hostEl.hidden = id !== sessionId;
   }
+}
+
+function enqueueTerminalBytes(entry, bytes) {
+  if (!entry || entry.writeClosed || !entry.term) return;
+  const chunk = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  if (!chunk.byteLength) return;
+  entry.writeQueue.push(chunk);
+  drainTerminalWrites(entry);
+}
+
+function drainTerminalWrites(entry) {
+  if (entry.writeInFlight || entry.writeClosed || !entry.term) return;
+  if (!entry.writeQueue.length) return;
+
+  const chunks = [];
+  let total = 0;
+  while (entry.writeQueue.length && total < MAX_WRITE_BATCH_BYTES) {
+    const next = entry.writeQueue.shift();
+    chunks.push(next);
+    total += next.byteLength;
+  }
+
+  const payload = chunks.length === 1 ? chunks[0] : concatBytes(chunks, total);
+  entry.writeInFlight = true;
+  entry.term.write(payload, () => {
+    entry.writeInFlight = false;
+    if (entry.writeQueue.length) {
+      queueMicrotask(() => drainTerminalWrites(entry));
+    }
+  });
+}
+
+function concatBytes(chunks, total) {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
 }
 
 function renderTabs() {
