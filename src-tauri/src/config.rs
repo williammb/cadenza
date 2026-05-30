@@ -112,6 +112,11 @@ pub struct Project {
     /// Per-project override of the global `agente`.
     #[serde(default)]
     pub agente: Option<Agente>,
+    /// Color key for the board (e.g. "slate", "rust"). Resolved to a
+    /// hex value by `ui/project-colors.js`. Shown only in the
+    /// all-projects view as a left accent bar on cards.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

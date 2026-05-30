@@ -21,6 +21,7 @@ import {
   decorateKindSelect,
   onAgentPresenceRefresh,
 } from "./agent-presence.js";
+import { PROJECT_COLORS } from "./project-colors.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -79,6 +80,7 @@ const projectAgentCommandFieldEl = document.getElementById("project-agent-comman
 const btnProjectNew = document.getElementById("btn-project-new");
 const btnProjectRemove = document.getElementById("btn-project-remove");
 const btnProjectEditBrowse = document.getElementById("btn-project-edit-browse");
+const projectColorSwatchesEl = document.getElementById("project-color-swatches");
 
 let currentConfig = blankConfig();
 // Which project the Projeto tab is showing. Tracked separately from
@@ -293,6 +295,22 @@ function renderProjectDetail() {
   projectAgentKindEl.value = p.agente?.kind ?? "";
   projectAgentCommandEl.value = p.agente?.command ?? "";
   updateProjectAgentCommandVisibility();
+
+  // Rebuild color swatches for the selected project.
+  projectColorSwatchesEl.replaceChildren();
+  for (const [key, hex] of Object.entries(PROJECT_COLORS)) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = "project-color-swatch" + (p.color === key ? " selected" : "");
+    btn.style.background = hex;
+    btn.title = key;
+    btn.addEventListener("click", () => {
+      p.color = p.color === key ? null : key;
+      renderProjectDetail();
+    });
+    projectColorSwatchesEl.append(btn);
+  }
+
   projectSkills.refresh();
 }
 
@@ -353,9 +371,11 @@ projectAgentCommandEl.addEventListener("input", () => {
 btnProjectNew.addEventListener("click", () => {
   const name = t("settings-project-new-name");
   const id = generateProjectId(name, currentConfig.projects ?? []);
+  const usedColors = new Set((currentConfig.projects ?? []).map((p) => p.color).filter(Boolean));
+  const nextColor = Object.keys(PROJECT_COLORS).find((k) => !usedColors.has(k)) ?? null;
   currentConfig.projects = [
     ...(currentConfig.projects ?? []),
-    { id, name, path: "", agente: null },
+    { id, name, path: "", agente: null, color: nextColor },
   ];
   selectedProjectId = id;
   renderProjectTab();

@@ -24,6 +24,7 @@ import {
   openStartAgent,
   setStartAgentRefreshCallback,
 } from "./start-agent-modal.js";
+import { PROJECT_COLORS } from "./project-colors.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -33,6 +34,8 @@ const ESTADOS = ["a_fazer", "fazendo", "aguardando_revisao", "feito"];
 // Cached so the board can re-filter without round-tripping to disk on
 // every project-selector change. Repopulated on every renderBoard().
 let cachedTaskProjects = {};
+// project_id → color key, rebuilt on every renderBoard().
+let cachedProjectColors = {};
 let cachedActiveProject = null;
 // Shown once per session when no projects exist, so the user is guided
 // to add a first project without reopening settings on every re-render.
@@ -66,6 +69,11 @@ async function renderBoard() {
   cachedTaskProjects = mapping ?? {};
   cachedTaskRuns = runs ?? {};
   cachedActiveProject = cfg?.active_project_id ?? null;
+  const colorMap = {};
+  for (const p of (cfg?.projects ?? [])) {
+    if (p.color) colorMap[p.id] = p.color;
+  }
+  cachedProjectColors = colorMap;
   renderProjectOptions(cfg?.projects ?? [], cachedActiveProject);
 
   // First launch: no projects yet — guide the user to add one.
@@ -137,6 +145,21 @@ function makeCard(task) {
   card.className = "card";
   card.draggable = true;
   card.dataset.id = task.id;
+
+  // Color bar — left accent, shown only in the all-projects view so
+  // cards from different projects are visually distinguishable.
+  if (!cachedActiveProject) {
+    const projectId = cachedTaskProjects[task.id];
+    const colorKey = projectId ? cachedProjectColors[projectId] : null;
+    const hex = colorKey ? PROJECT_COLORS[colorKey] : null;
+    if (hex) {
+      const bar = document.createElement("span");
+      bar.className = "card-project-bar";
+      bar.style.background = hex;
+      card.append(bar);
+      card.classList.add("card--colored");
+    }
+  }
 
   const title = document.createElement("strong");
   title.textContent = task.titulo ?? task.id;
