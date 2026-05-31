@@ -3,32 +3,57 @@
 Você tem acesso ao CLI `cadenza-cli` para gerenciar tarefas. Ele fala com
 o aplicativo Cadenza pelo socket local; o app **precisa estar aberto**.
 
+## Saiba qual é a sua task
+
+Quando o app te inicia para uma task, ele injeta duas variáveis de
+ambiente no seu shell:
+
+- `$TASKAI_TASK_ID` — a task para a qual você foi iniciado (ex.: `T-42`).
+- `$TASKAI_PROJECT_ID` — o projeto a que essa task pertence.
+
+**Identifique sempre a sua task por `$TASKAI_TASK_ID`** — pode haver várias
+tasks em `fazendo` ao mesmo tempo (uma por agente rodando), então `current`
+é ambíguo e pode devolver o card de outro. Busque a *sua* task pelo id:
+
+```bash
+cadenza-cli get "$TASKAI_TASK_ID" --json
+```
+
+`get` devolve só essa task (ou sai com `30`, `task_not_found`, se o id não
+existir). Só use `cadenza-cli current --json` como fallback quando
+`$TASKAI_TASK_ID` não estiver setado (você foi rodado fora do terminal do app).
+
 ## Fluxo obrigatório
 
-1. **Ao iniciar:** `cadenza-cli current --json` — leia a task atual.
-2. **Durante o trabalho:** `cadenza-cli log <id> "<progresso>"` — reporte
-   com frequência (no mínimo a cada decisão importante ou bloco de
-   código alterado).
+1. **Ao iniciar:** `cadenza-cli get "$TASKAI_TASK_ID" --json` — leia a sua
+   task. Só trabalhe nela se o `estado` for `fazendo`.
+2. **Durante o trabalho:** `cadenza-cli log "$TASKAI_TASK_ID" "<progresso>"`
+   — reporte com frequência (no mínimo a cada decisão importante ou bloco
+   de código alterado).
 3. **Ao encontrar um problema derivado** (bug paralelo, refator que
    bloqueia, escopo novo): `cadenza-cli propose ...` — esse comando
    **bloqueia** e aguarda o humano decidir. Não invente solução por
    conta própria.
-4. **Ao concluir:** `cadenza-cli done <id> "<resumo>"` — você **nunca**
-   move uma task para "feito" sozinho; isso pede ao humano.
+4. **Ao concluir:** `cadenza-cli done "$TASKAI_TASK_ID" "<resumo>"` — você
+   **nunca** move uma task para "feito" sozinho; isso pede ao humano.
 
 ## Planejando uma task (modo plano)
 
 Quando você for iniciado em **modo plano**, NÃO implemente nada. A task
-ainda está em `a_fazer`, então `cadenza-cli current` não a retorna —
-localize-a com `cadenza-cli list --json`.
+continua em `a_fazer` (então `current` não a retorna), mas
+`$TASKAI_TASK_ID` continua setado — leia do mesmo jeito:
 
-1. Leia a descrição breve da task.
+```bash
+cadenza-cli get "$TASKAI_TASK_ID" --json
+```
+
+1. Leia a descrição breve da task nessa saída.
 2. Entreviste o humano no terminal: faça perguntas de esclarecimento sobre
    escopo, casos de borda e critérios de aceite — um lote focado por vez.
 3. Quando você e o humano combinarem, salve o plano refinado:
 
    ```bash
-   cadenza-cli plan T-42 --body "## Objetivo
+   cadenza-cli plan "$TASKAI_TASK_ID" --body "## Objetivo
    ...
    ## Passos
    1. ...
@@ -44,9 +69,12 @@ localize-a com `cadenza-cli list --json`.
 
 ## Regras
 
-- Você só trabalha em tasks com `estado: fazendo`. Se `cadenza-cli current`
-  retornar `null`, pare e peça ao humano para começar uma task (a menos que
-  você esteja em modo plano — veja acima).
+- Você só trabalha em tasks com `estado: fazendo`. Se
+  `get "$TASKAI_TASK_ID"` mostrar outro estado (e você não estiver em modo
+  plano), pare e pergunte ao humano.
+- Se `$TASKAI_TASK_ID` não estiver setado, use `cadenza-cli current --json`
+  como fallback; se isso retornar `null`, pare e peça ao humano para
+  começar uma task.
 - Sempre use `--json` quando estiver parseando saída. Os valores
   `estado` são canônicos em português (`a_fazer`, `fazendo`,
   `aguardando_revisao`, `feito`) e **não** mudam com `--lang`.
@@ -54,6 +82,7 @@ localize-a com `cadenza-cli list --json`.
   - `0` → aceita (saída inclui o novo `task_id`)
   - `20` → rejeitada — pare e reporte ao humano
   - `21` → timeout — pare, reporte que o humano não decidiu
+- `get` sai com `30` (`task_not_found`) se o id não existir.
 - Se receber exit code `10` ("app não está rodando"), peça ao humano
   para abrir o Cadenza.
 - Se receber exit code `11` ("token inválido"), peça ao humano para
@@ -62,23 +91,26 @@ localize-a com `cadenza-cli list --json`.
 ## Exemplos rápidos
 
 ```bash
-# Pegar a task atual em JSON
-cadenza-cli current --json
+# Pegar a sua task em JSON (preferível a `current`)
+cadenza-cli get "$TASKAI_TASK_ID" --json
 
 # Reportar progresso
-cadenza-cli log T-42 "implementei o validador, próximo passo é o teste"
+cadenza-cli log "$TASKAI_TASK_ID" "implementei o validador, próximo passo é o teste"
+
+# Descobrir os IDs de projeto (para new-task / create-ideia)
+cadenza-cli projects --json
 
 # Propor task derivada (bloqueante)
 cadenza-cli propose \
-  --parent T-42 \
+  --parent "$TASKAI_TASK_ID" \
   --title "Validar entrada em outro endpoint" \
   --repro "POST /api/foo com body inválido retorna 500 em vez de 400" \
   --file "src/handlers/foo.rs" \
   --what-failed "missing input validation" \
-  --action "wrap with the same Validator pipeline used in T-42"
+  --action "wrap with the same Validator pipeline used in the parent task"
 
 # Pedir conclusão (humano decide se vira "feito")
-cadenza-cli done T-42 "endpoint validado e coberto por dois testes novos"
+cadenza-cli done "$TASKAI_TASK_ID" "endpoint validado e coberto por dois testes novos"
 ```
 
 ## Destrinchar uma ideia (Inbox)
@@ -95,7 +127,9 @@ cadenza-cli new-task --titulo "..." --body "..."
 ```
 
 `--project` e `--from-ideia` são lidos automaticamente de
-`$CADENZA_PROJECT_ID` e `$CADENZA_IDEIA_ID`. Cada chamada imprime o
+`$TASKAI_PROJECT_ID` e `$CADENZA_IDEIA_ID`. (Se `$TASKAI_PROJECT_ID` não
+estiver setado, passe `--project` explicitamente — rode
+`cadenza-cli projects` para achar o id.) Cada chamada imprime o
 `task_id` recém-criado em stdout. Após a última task, a ideia de origem
 é marcada automaticamente como `destrinchada`.
 

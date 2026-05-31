@@ -214,6 +214,8 @@ fn emit_status(rows: &[StatusRow], json: bool) {
                     "path": r.path.display().to_string(),
                     "installed": r.installed,
                     "locale": r.locale,
+                    "version": r.version,
+                    "outdated": r.outdated,
                 })
             })
             .collect();
@@ -222,18 +224,23 @@ fn emit_status(rows: &[StatusRow], json: bool) {
             serde_json::to_string(&arr).unwrap_or_else(|_| "[]".into())
         );
     } else {
-        println!("{:<7} {:<8} {:<10} path", "agent", "scope", "status");
+        println!("{:<7} {:<8} {:<14} path", "agent", "scope", "status");
         for r in rows {
             let status = if r.installed {
-                match r.locale.as_deref() {
+                let loc = match r.locale.as_deref() {
                     Some(l) => format!("yes [{l}]"),
                     None => "yes".to_string(),
+                };
+                if r.outdated {
+                    format!("{loc} (update available)")
+                } else {
+                    loc
                 }
             } else {
                 "no".to_string()
             };
             println!(
-                "{:<7} {:<8} {:<10} {}",
+                "{:<7} {:<8} {:<14} {}",
                 r.agent.as_str(),
                 r.scope.as_str(),
                 status,

@@ -824,10 +824,16 @@ function createSkillsPanel({ prefix, scope, getProjectPath }) {
 
       const tdStatus = document.createElement("td");
       if (r.installed) {
-        tdStatus.textContent = r.locale
+        const installedText = r.locale
           ? t("settings-skills-status-installed-locale", { locale: r.locale })
           : t("settings-skills-status-installed");
-        tdStatus.className = "skill-status-yes";
+        if (r.outdated) {
+          tdStatus.textContent = `${installedText} — ${t("settings-skills-status-outdated")}`;
+          tdStatus.className = "skill-status-outdated";
+        } else {
+          tdStatus.textContent = installedText;
+          tdStatus.className = "skill-status-yes";
+        }
       } else {
         tdStatus.textContent = t("settings-skills-status-not-installed");
         tdStatus.className = "skill-status-no";
@@ -845,7 +851,10 @@ function createSkillsPanel({ prefix, scope, getProjectPath }) {
       const actBtn = iconButton(
         r.installed ? "ic-refresh" : "ic-download",
         r.installed ? t("settings-skills-update") : t("settings-skills-install"),
-        { primary: !r.installed },
+        // Highlight the action when there's nothing installed yet, or when
+        // an installed copy is outdated (force-reinstall picks up the new
+        // skill body).
+        { primary: !r.installed || r.outdated },
       );
       actBtn.addEventListener("click", () =>
         runAction("skill_install", r.agent, r.installed),

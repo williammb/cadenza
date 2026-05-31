@@ -41,7 +41,17 @@ enum Cmd {
         estado: Option<String>,
     },
     /// Show the current task (the single task in `fazendo`).
+    ///
+    /// Ambiguous when several tasks are in `fazendo` (one per running
+    /// agent): it returns only the topmost card. Prefer `get
+    /// "$TASKAI_TASK_ID"` to fetch the task this agent was started for.
     Current,
+    /// Show a single task by id — returns only that task, or exits 30
+    /// (`task_not_found`) if it doesn't exist.
+    Get { task_id: String },
+    /// List the configured projects (id, name, path) so you can discover
+    /// the `project_id` to pass to `new-task` / `create-ideia`.
+    Projects,
     /// Append a progress log line to a task.
     Log { task_id: String, text: String },
     /// Propose a derived task and block until the human decides.
@@ -89,14 +99,14 @@ enum Cmd {
     /// Create a new task in `a_fazer`, bound to a project. Used by the
     /// "destrinchar ideia" flow: o agente chama isso N vezes para
     /// transformar uma ideia em tasks concretas. Defaults pegam do
-    /// ambiente do PTY do agente (`$CADENZA_PROJECT_ID`,
+    /// ambiente do PTY do agente (`$TASKAI_PROJECT_ID`,
     /// `$CADENZA_IDEIA_ID`).
     NewTask {
         #[arg(long)]
         titulo: String,
         #[arg(long, default_value = "")]
         body: String,
-        /// Project ID (default: $CADENZA_PROJECT_ID).
+        /// Project ID (default: $TASKAI_PROJECT_ID, fallback $CADENZA_PROJECT_ID).
         #[arg(long)]
         project: Option<String>,
         /// Marca a ideia de origem como `destrinchada` ao final.
@@ -114,7 +124,7 @@ enum Cmd {
         titulo: String,
         #[arg(long, default_value = "")]
         body: String,
-        /// Project ID (default: $CADENZA_PROJECT_ID).
+        /// Project ID (default: $TASKAI_PROJECT_ID, fallback $CADENZA_PROJECT_ID).
         #[arg(long)]
         project: Option<String>,
     },
@@ -223,6 +233,8 @@ async fn run(cli: Cli) -> Result<()> {
     match cli.cmd {
         Cmd::List { estado } => cmd_list(&mut client, cli.json, estado).await?,
         Cmd::Current => cmd_current(&mut client, cli.json).await?,
+        Cmd::Get { task_id } => cmd_get(&mut client, cli.json, task_id).await?,
+        Cmd::Projects => cmd_projects(&mut client, cli.json).await?,
         Cmd::Log { task_id, text } => cmd_log(&mut client, cli.json, task_id, text).await?,
         Cmd::Propose {
             parent,
@@ -320,6 +332,37 @@ async fn cmd_current(client: &mut Client, json: bool) -> Result<()> {
         match current {
             None => println!("(no current task)"),
             Some(t) => println!("{}\t[{}]\t{}", t.id, t.estado.as_str(), t.titulo),
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_get(client: &mut Client, json: bool, task_id: String) -> Result<()> {
+    let task: ops::read_task::Result = client
+        .request(ops::OP_READ_TASK, ops::read_task::Args { task_id })
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string(&task)?);
+    } else {
+        println!("{}\t[{}]\t{}", task.id, task.estado.as_str(), task.titulo);
+        if !task.body.trim().is_empty() {
+            println!("\n{}", task.body);
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_projects(client: &mut Client, json: bool) -> Result<()> {
+    let projects: ops::list_projects::Result = client
+        .request(ops::OP_LIST_PROJECTS, ops::list_projects::Args::default())
+        .await?;
+    if json {
+        println!("{}", serde_json::to_string(&projects)?);
+    } else if projects.is_empty() {
+        println!("(no projects)");
+    } else {
+        for p in &projects {
+            println!("{}\t{}\t{}", p.id, p.name, p.path);
         }
     }
     Ok(())
@@ -458,20 +501,24 @@ async fn cmd_plan(
     Ok(())
 }
 
-/// Resolver `--project` ou env `CADENZA_PROJECT_ID`. Erro útil quando
-/// nenhum dos dois está presente (agente foi rodado fora do PTY do app
-/// e esqueceu de passar `--project`).
+/// Resolver `--project`, ou a env injetada pelo app. O app injeta
+/// `TASKAI_PROJECT_ID` no PTY do agente; aceitamos também o nome legado
+/// `CADENZA_PROJECT_ID` como fallback de compatibilidade. Erro útil quando
+/// nada disso está presente (agente rodado fora do PTY do app e sem
+/// `--project`; use `cadenza-cli projects` para descobrir o id).
 fn resolve_project(explicit: Option<String>) -> Result<String> {
     if let Some(p) = explicit.filter(|s| !s.trim().is_empty()) {
         return Ok(p);
     }
-    if let Ok(p) = std::env::var("CADENZA_PROJECT_ID") {
-        if !p.trim().is_empty() {
-            return Ok(p);
+    for var in ["TASKAI_PROJECT_ID", "CADENZA_PROJECT_ID"] {
+        if let Ok(p) = std::env::var(var) {
+            if !p.trim().is_empty() {
+                return Ok(p);
+            }
         }
     }
     Err(anyhow::anyhow!(
-        "project required (pass --project or set $CADENZA_PROJECT_ID)"
+        "project required (pass --project or set $TASKAI_PROJECT_ID)"
     ))
 }
 

@@ -3,30 +3,56 @@
 You have access to the `cadenza-cli` CLI to manage tasks. It talks to the
 Cadenza desktop app over a local socket; the app **must be running**.
 
+## Know your task
+
+When the app starts you for a task, it injects two environment variables
+into your shell:
+
+- `$TASKAI_TASK_ID` — the task you were started for (e.g. `T-42`).
+- `$TASKAI_PROJECT_ID` — the project that task belongs to.
+
+**Always identify your task from `$TASKAI_TASK_ID`** — there can be several
+tasks in `fazendo` at once (one per running agent), so `current` is
+ambiguous and may return someone else's card. Fetch *your* task by id:
+
+```bash
+cadenza-cli get "$TASKAI_TASK_ID" --json
+```
+
+`get` returns only that one task (or exits `30`, `task_not_found`, if the id
+doesn't exist). Fall back to `cadenza-cli current --json` only when
+`$TASKAI_TASK_ID` is unset (you were run outside the app's terminal).
+
 ## Required flow
 
-1. **At session start:** `cadenza-cli current --json` — read the active task.
-2. **While working:** `cadenza-cli log <id> "<progress>"` — report often,
-   at minimum on every meaningful decision or code block touched.
+1. **At session start:** `cadenza-cli get "$TASKAI_TASK_ID" --json` — read
+   your task. Only work on it if its `estado` is `fazendo`.
+2. **While working:** `cadenza-cli log "$TASKAI_TASK_ID" "<progress>"` —
+   report often, at minimum on every meaningful decision or code block
+   touched.
 3. **When you hit a derived problem** (parallel bug, blocking refactor,
    new scope): `cadenza-cli propose ...` — this command **blocks** and
    waits for a human decision. Do not invent your own fix.
-4. **When done:** `cadenza-cli done <id> "<summary>"` — you **never** move a
-   task to "done" yourself; this requests it from the human.
+4. **When done:** `cadenza-cli done "$TASKAI_TASK_ID" "<summary>"` — you
+   **never** move a task to "done" yourself; this requests it from the human.
 
 ## Planning a task (plan mode)
 
 When you are started in **plan mode**, you must NOT implement anything. The
-task is still in `a_fazer`, so `cadenza-cli current` will not return it —
-find it with `cadenza-cli list --json`.
+task stays in `a_fazer` (so `current` won't return it), but
+`$TASKAI_TASK_ID` is still set — read it the same way:
 
-1. Read the task's brief description.
+```bash
+cadenza-cli get "$TASKAI_TASK_ID" --json
+```
+
+1. Read the task's brief description from that output.
 2. Interview the human in the terminal: ask clarifying questions about
    scope, edge cases, and acceptance criteria — one focused batch at a time.
 3. When you and the human agree, save the refined plan:
 
    ```bash
-   cadenza-cli plan T-42 --body "## Goal
+   cadenza-cli plan "$TASKAI_TASK_ID" --body "## Goal
    ...
    ## Steps
    1. ...
@@ -42,9 +68,11 @@ find it with `cadenza-cli list --json`.
 
 ## Rules
 
-- You only work on tasks with `estado: fazendo`. If `cadenza-cli current`
-  returns `null`, stop and ask the human to start a task (unless you are in
-  plan mode — see above).
+- You only work on tasks with `estado: fazendo`. If `get "$TASKAI_TASK_ID"`
+  shows a different state (and you are not in plan mode), stop and ask the
+  human.
+- If `$TASKAI_TASK_ID` is unset, fall back to `cadenza-cli current --json`;
+  if that returns `null`, stop and ask the human to start a task.
 - Always use `--json` when parsing output. `estado` values stay in PT
   canonical (`a_fazer`, `fazendo`, `aguardando_revisao`, `feito`) — they
   do **not** change with `--lang`.
@@ -52,6 +80,7 @@ find it with `cadenza-cli list --json`.
   - `0` → accepted (output includes the new `task_id`)
   - `20` → rejected — stop and report to the human
   - `21` → timeout — stop, report that no decision was made
+- `get` exits `30` (`task_not_found`) if the id doesn't exist.
 - If you see exit code `10` ("app not running"), ask the human to open
   the Cadenza app.
 - If you see exit code `11` ("invalid token"), ask the human to use
@@ -60,23 +89,26 @@ find it with `cadenza-cli list --json`.
 ## Quick examples
 
 ```bash
-# Read the active task as JSON
-cadenza-cli current --json
+# Read your task as JSON (preferred over `current`)
+cadenza-cli get "$TASKAI_TASK_ID" --json
 
 # Report progress
-cadenza-cli log T-42 "validator wired up, next is the test"
+cadenza-cli log "$TASKAI_TASK_ID" "validator wired up, next is the test"
+
+# Discover project IDs (for new-task / create-ideia)
+cadenza-cli projects --json
 
 # Propose a derived task (blocking)
 cadenza-cli propose \
-  --parent T-42 \
+  --parent "$TASKAI_TASK_ID" \
   --title "Validate input on another endpoint" \
   --repro "POST /api/foo with an invalid body returns 500 instead of 400" \
   --file "src/handlers/foo.rs" \
   --what-failed "missing input validation" \
-  --action "wrap with the same Validator pipeline used in T-42"
+  --action "wrap with the same Validator pipeline used in the parent task"
 
 # Request completion (human decides whether it really goes to "done")
-cadenza-cli done T-42 "endpoint validated and covered by two new tests"
+cadenza-cli done "$TASKAI_TASK_ID" "endpoint validated and covered by two new tests"
 ```
 
 ## Decomposing an idea (Inbox)
@@ -92,9 +124,10 @@ cadenza-cli new-task --titulo "..." --body "..."
 ```
 
 The `--project` and `--from-ideia` flags are picked up automatically from
-`$CADENZA_PROJECT_ID` and `$CADENZA_IDEIA_ID`. Each invocation prints the
-newly created `task_id` on stdout. After your final task, the originating
-idea is automatically marked `destrinchada`.
+`$TASKAI_PROJECT_ID` and `$CADENZA_IDEIA_ID`. (If `$TASKAI_PROJECT_ID` isn't
+set, pass `--project` explicitly — run `cadenza-cli projects` to find the id.)
+Each invocation prints the newly created `task_id` on stdout. After your
+final task, the originating idea is automatically marked `destrinchada`.
 
 Aim for 3–8 actionable tasks per idea: each should be small enough to be
 self-contained but big enough to deserve its own card. Don't paste the

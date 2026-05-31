@@ -13,7 +13,7 @@
 //! remove can edit a shared file without clobbering unrelated content:
 //!
 //! ```text
-//! <!-- cadenza:start v=1 locale=pt-BR -->
+//! <!-- cadenza:start v=<SKILL_VERSION> locale=pt-BR -->
 //! ...skill body...
 //! <!-- cadenza:end -->
 //! ```
@@ -41,11 +41,24 @@ const SKILL_EN: &str = include_str!("../../skills/cadenza.en.md");
 const CODEX_MARKER_START_PREFIX: &str = "<!-- cadenza:start";
 const CODEX_MARKER_END: &str = "<!-- cadenza:end -->";
 
+/// Content version of the installed skill. Bump whenever the skill body
+/// (`skills/cadenza.*.md`) or the generated wrapper changes, so an
+/// already-installed copy can be detected as outdated and the user
+/// prompted to reinstall. Stamped into every install (Codex start marker
+/// `v=`, Claude/Antigravity `CLAUDE_VERSION_MARKER_PREFIX` comment) and
+/// read back by the `status` probes.
+pub const SKILL_VERSION: &str = "2";
+
+/// Invisible marker line inserted after the YAML frontmatter of a
+/// SKILL.md so its version can be read back. HTML comment → the agent
+/// never sees it and it doesn't clash with the frontmatter.
+const CLAUDE_VERSION_MARKER_PREFIX: &str = "<!-- cadenza:skill v=";
+
 const CLAUDE_SKILL_NAME: &str = "cadenza";
 const CLAUDE_SKILL_DESCRIPTION_PT: &str =
-    "Como gerenciar tarefas via o CLI `cadenza` (current, log, plan, propose, done).";
+    "Como gerenciar tarefas via o CLI `cadenza` (current, get, projects, log, plan, propose, done).";
 const CLAUDE_SKILL_DESCRIPTION_EN: &str =
-    "How to manage tasks via the `cadenza` CLI (current, log, plan, propose, done).";
+    "How to manage tasks via the `cadenza` CLI (current, get, projects, log, plan, propose, done).";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -108,6 +121,35 @@ pub struct StatusRow {
     pub path: PathBuf,
     pub installed: bool,
     pub locale: Option<String>,
+    /// Version stamped into the installed copy, if any. `None` for a copy
+    /// installed before versioning existed.
+    pub version: Option<String>,
+    /// `true` when installed but the stamped version differs from the
+    /// current `SKILL_VERSION` (including the un-stamped legacy case) —
+    /// i.e. the user should reinstall to pick up the newer skill.
+    pub outdated: bool,
+}
+
+impl StatusRow {
+    fn new(
+        agent: Agent,
+        scope: Scope,
+        path: PathBuf,
+        installed: bool,
+        locale: Option<String>,
+        version: Option<String>,
+    ) -> Self {
+        let outdated = installed && version.as_deref() != Some(SKILL_VERSION);
+        Self {
+            agent,
+            scope,
+            path,
+            installed,
+            locale,
+            version,
+            outdated,
+        }
+    }
 }
 
 fn serialize_path<S: serde::Serializer>(p: &Path, s: S) -> std::result::Result<S::Ok, S::Error> {
@@ -189,9 +231,11 @@ fn install_skill_md(
         _ => CLAUDE_SKILL_DESCRIPTION_EN,
     };
     let content = format!(
-        "---\nname: {name}\ndescription: {desc}\n---\n\n{body}",
+        "---\nname: {name}\ndescription: {desc}\n---\n{marker}{ver} -->\n\n{body}",
         name = CLAUDE_SKILL_NAME,
         desc = description,
+        marker = CLAUDE_VERSION_MARKER_PREFIX,
+        ver = SKILL_VERSION,
         body = body,
     );
     write_atomic(&path, content.as_bytes())?;
@@ -211,8 +255,9 @@ fn install_codex(
     }
     let existing = fs::read_to_string(&path).unwrap_or_default();
     let block = format!(
-        "{start} v=1 locale={locale} -->\n{body}\n{end}\n",
+        "{start} v={ver} locale={locale} -->\n{body}\n{end}\n",
         start = CODEX_MARKER_START_PREFIX,
+        ver = SKILL_VERSION,
         locale = locale,
         body = body,
         end = CODEX_MARKER_END,
@@ -333,37 +378,32 @@ pub fn status(project_root: Option<&Path>) -> Vec<StatusRow> {
 fn probe_claude(scope: Scope, project_root: Option<&Path>) -> StatusRow {
     let path = claude_path(scope, project_root).unwrap_or_else(|_| PathBuf::from("<no home>"));
     let installed = path.exists();
-    let locale = if installed {
-        fs::read_to_string(&path).ok().and_then(parse_claude_locale)
+    let (locale, version) = if installed {
+        match fs::read_to_string(&path) {
+            Ok(content) => (
+                parse_claude_locale(&content),
+                parse_claude_version(&content),
+            ),
+            Err(_) => (None, None),
+        }
     } else {
-        None
+        (None, None)
     };
-    StatusRow {
-        agent: Agent::Claude,
-        scope,
-        path,
-        installed,
-        locale,
-    }
+    StatusRow::new(Agent::Claude, scope, path, installed, locale, version)
 }
 
 fn probe_codex(scope: Scope, project_root: Option<&Path>) -> StatusRow {
     let path =
         codex_agents_path(scope, project_root).unwrap_or_else(|_| PathBuf::from("<no home>"));
-    let (installed, locale) = if path.exists() {
+    let (installed, locale, version) = if path.exists() {
         let content = fs::read_to_string(&path).unwrap_or_default();
         let loc = parse_codex_locale(&content);
-        (loc.is_some(), loc)
+        let ver = parse_codex_version(&content);
+        (loc.is_some(), loc, ver)
     } else {
-        (false, None)
+        (false, None, None)
     };
-    StatusRow {
-        agent: Agent::Codex,
-        scope,
-        path,
-        installed,
-        locale,
-    }
+    StatusRow::new(Agent::Codex, scope, path, installed, locale, version)
 }
 
 fn probe_antigravity(scope: Scope, project_root: Option<&Path>) -> StatusRow {
@@ -371,21 +411,21 @@ fn probe_antigravity(scope: Scope, project_root: Option<&Path>) -> StatusRow {
     // applies.
     let path = antigravity_path(scope, project_root).unwrap_or_else(|_| PathBuf::from("<no home>"));
     let installed = path.exists();
-    let locale = if installed {
-        fs::read_to_string(&path).ok().and_then(parse_claude_locale)
+    let (locale, version) = if installed {
+        match fs::read_to_string(&path) {
+            Ok(content) => (
+                parse_claude_locale(&content),
+                parse_claude_version(&content),
+            ),
+            Err(_) => (None, None),
+        }
     } else {
-        None
+        (None, None)
     };
-    StatusRow {
-        agent: Agent::Antigravity,
-        scope,
-        path,
-        installed,
-        locale,
-    }
+    StatusRow::new(Agent::Antigravity, scope, path, installed, locale, version)
 }
 
-fn parse_claude_locale(content: String) -> Option<String> {
+fn parse_claude_locale(content: &str) -> Option<String> {
     // Skill body is verbatim from skills/cadenza.{locale}.md after the
     // YAML frontmatter. Locale is not encoded in frontmatter; detect by
     // body content — the EN file's first heading is "How to use Cadenza".
@@ -400,14 +440,34 @@ fn parse_claude_locale(content: String) -> Option<String> {
     }
 }
 
+fn parse_claude_version(content: &str) -> Option<String> {
+    // Marker line: <!-- cadenza:skill v=2 -->
+    let line = content
+        .lines()
+        .find(|l| l.starts_with(CLAUDE_VERSION_MARKER_PREFIX))?;
+    let rest = line.strip_prefix(CLAUDE_VERSION_MARKER_PREFIX)?;
+    Some(rest.trim_end_matches("-->").trim().to_string())
+}
+
 fn parse_codex_locale(content: &str) -> Option<String> {
     let start_line = content
         .lines()
         .find(|l| l.starts_with(CODEX_MARKER_START_PREFIX))?;
-    // Marker format: <!-- cadenza:start v=1 locale=pt-BR -->
+    // Marker format: <!-- cadenza:start v=2 locale=pt-BR -->
     start_line
         .split_whitespace()
         .find_map(|tok| tok.strip_prefix("locale="))
+        .map(|s| s.trim_end_matches("-->").trim().to_string())
+}
+
+fn parse_codex_version(content: &str) -> Option<String> {
+    let start_line = content
+        .lines()
+        .find(|l| l.starts_with(CODEX_MARKER_START_PREFIX))?;
+    // Marker format: <!-- cadenza:start v=2 locale=pt-BR -->
+    start_line
+        .split_whitespace()
+        .find_map(|tok| tok.strip_prefix("v="))
         .map(|s| s.trim_end_matches("-->").trim().to_string())
 }
 
@@ -568,7 +628,63 @@ mod tests {
     #[test]
     fn parse_claude_locale_detects_pt() {
         let body = "---\nname: cadenza\n---\n\n# Cadenza — Como usar\nfoo";
-        assert_eq!(parse_claude_locale(body.into()).as_deref(), Some("pt-BR"));
+        assert_eq!(parse_claude_locale(body).as_deref(), Some("pt-BR"));
+    }
+
+    #[test]
+    fn install_stamps_version_and_status_is_current() {
+        let root = tempfile::TempDir::new().unwrap();
+        let project = Some(root.path());
+
+        install(&[Agent::Claude], Scope::Project, "en", false, project).unwrap();
+        let content = std::fs::read_to_string(
+            root.path()
+                .join(".claude")
+                .join("skills")
+                .join("cadenza")
+                .join("SKILL.md"),
+        )
+        .unwrap();
+        assert!(
+            content.contains(&format!(
+                "{CLAUDE_VERSION_MARKER_PREFIX}{SKILL_VERSION} -->"
+            )),
+            "expected version marker, got:\n{content}"
+        );
+
+        let rows = status(project);
+        let row = rows
+            .iter()
+            .find(|r| r.agent == Agent::Claude && r.scope == Scope::Project)
+            .unwrap();
+        assert!(row.installed);
+        assert_eq!(row.version.as_deref(), Some(SKILL_VERSION));
+        assert!(
+            !row.outdated,
+            "freshly installed skill must not be outdated"
+        );
+    }
+
+    #[test]
+    fn legacy_install_without_marker_is_outdated() {
+        // A copy installed before versioning existed: no marker line.
+        assert!(parse_claude_version("---\nname: cadenza\n---\n\nbody").is_none());
+        // The status row math: installed + no version => outdated.
+        let row = StatusRow::new(
+            Agent::Claude,
+            Scope::Global,
+            PathBuf::from("x"),
+            true,
+            Some("en".into()),
+            None,
+        );
+        assert!(row.outdated);
+    }
+
+    #[test]
+    fn parse_codex_version_reads_marker() {
+        let content = "<!-- cadenza:start v=7 locale=en -->\nx\n<!-- cadenza:end -->";
+        assert_eq!(parse_codex_version(content).as_deref(), Some("7"));
     }
 
     #[test]
