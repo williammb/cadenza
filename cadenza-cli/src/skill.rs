@@ -1,5 +1,6 @@
 //! `cadenza skill` — install/remove the Cadenza usage instructions into
-//! AI agents (Claude Code, Codex) at project or global scope.
+//! AI agents (Claude Code, Codex, Antigravity, OpenCode) at project or
+//! global scope.
 //!
 //! The actual filesystem logic lives in the `skills-core` crate so the
 //! Tauri app and the CLI share one implementation. This file is just
@@ -59,6 +60,7 @@ pub enum CliAgent {
     Claude,
     Codex,
     Antigravity,
+    Opencode,
 }
 
 impl From<CliAgent> for Agent {
@@ -67,6 +69,7 @@ impl From<CliAgent> for Agent {
             CliAgent::Claude => Agent::Claude,
             CliAgent::Codex => Agent::Codex,
             CliAgent::Antigravity => Agent::Antigravity,
+            CliAgent::Opencode => Agent::OpenCode,
         }
     }
 }
@@ -126,26 +129,35 @@ fn prompt_agents(action: &str) -> Result<Vec<Agent>> {
     let stdin = io::stdin();
     if !stdin.is_terminal() {
         anyhow::bail!(
-            "no --agent given and stdin is not a TTY; pass --agent claude, --agent codex, --agent antigravity, or comma-separate (e.g. --agent claude,codex,antigravity)"
+            "no --agent given and stdin is not a TTY; pass --agent claude, --agent codex, --agent antigravity, --agent opencode, or comma-separate (e.g. --agent claude,codex,antigravity,opencode)"
         );
     }
     eprintln!("Which agent(s) to {action}?");
     eprintln!("  [1] claude");
     eprintln!("  [2] codex");
     eprintln!("  [3] antigravity");
-    eprintln!("  [4] all");
+    eprintln!("  [4] opencode");
+    eprintln!("  [5] all");
     eprint!("> ");
     io::stderr().flush().ok();
     let mut line = String::new();
     stdin.read_line(&mut line)?;
     let trimmed = line.trim();
-    let all = || vec![Agent::Claude, Agent::Codex, Agent::Antigravity];
+    let all = || {
+        vec![
+            Agent::Claude,
+            Agent::Codex,
+            Agent::Antigravity,
+            Agent::OpenCode,
+        ]
+    };
     match trimmed {
         "1" | "claude" => Ok(vec![Agent::Claude]),
         "2" | "codex" => Ok(vec![Agent::Codex]),
         "3" | "antigravity" => Ok(vec![Agent::Antigravity]),
+        "4" | "opencode" => Ok(vec![Agent::OpenCode]),
         // "both" kept as a back-compat alias; it now means every agent.
-        "4" | "all" | "both" | "" => Ok(all()),
+        "5" | "all" | "both" | "" => Ok(all()),
         other => anyhow::bail!("invalid choice: {other:?}"),
     }
 }

@@ -143,7 +143,7 @@ enum Cmd {
     },
     /// Print runtime diagnostics.
     Diag,
-    /// Install / remove the Cadenza skill in Claude or Codex.
+    /// Install / remove the Cadenza skill in supported agents.
     Skill(SkillCmd),
 }
 

@@ -15,7 +15,7 @@ use tauri::ipc::Channel;
 use tauri::{Emitter, State};
 use uuid::Uuid;
 
-use crate::agent::{self, CodexCapture, LaunchPlan, PromptDelivery};
+use crate::agent::{self, CodexCapture, LaunchPlan, OpenCodeCapture, PromptDelivery};
 use crate::blockers::TaskBlockers;
 use crate::config::{AgenteKind, Config, PgConfig, PgSslMode, StorageBackend};
 use crate::ordering::TaskOrder;
@@ -1557,7 +1557,7 @@ pub enum TaskAgentMode {
     Plan,
 }
 
-/// Launch the configured agent CLI (Claude Code / Codex) in a PTY
+/// Launch the configured agent CLI in a PTY
 /// running inside the task's project directory. The frontend then
 /// calls `pty_attach` with the returned `session_id` to stream output.
 ///
@@ -1629,8 +1629,14 @@ pub async fn start_task_agent(
         let cmd = project
             .agente
             .as_ref()
+            .filter(|a| a.kind == agent_kind)
             .and_then(|a| a.command.clone())
-            .or_else(|| cfg.agente.as_ref().and_then(|a| a.command.clone()));
+            .or_else(|| {
+                cfg.agente
+                    .as_ref()
+                    .filter(|a| a.kind == agent_kind)
+                    .and_then(|a| a.command.clone())
+            });
         (project_path, cmd)
     };
 
@@ -1696,8 +1702,23 @@ pub async fn start_task_agent(
         spawn,
         conversation_id_known,
         pending_codex_capture,
+        mut pending_opencode_capture,
         prompt_delivery,
     } = plan;
+
+    // 4a. OpenCode needs a snapshot of existing session ids taken *before*
+    //     spawn so the post-spawn poll can isolate the new one. The probe
+    //     is a blocking `opencode session list` subprocess, so run it on
+    //     the blocking pool rather than stalling the async runtime.
+    if let Some(capture) = pending_opencode_capture.as_mut() {
+        let command = capture.command.clone();
+        let cwd = capture.cwd.clone();
+        capture.before_ids = tauri::async_runtime::spawn_blocking(move || {
+            agent::snapshot_opencode_session_ids(&command, &cwd)
+        })
+        .await
+        .unwrap_or_default();
+    }
 
     // 5. Spawn PTY + register session in AppState.
     let pty = PtyHandle::spawn(spawn).map_err(|e| {
@@ -1739,7 +1760,7 @@ pub async fn start_task_agent(
         }
     }
 
-    // 6./7. Persist the run record and (Codex/Antigravity first-run only)
+    // 6./7. Persist the run record and (Codex/Antigravity/OpenCode first-run only)
     //        kick off async session-UUID capture — but ONLY for execution
     //        runs. A planning run is intentionally not recorded so it can't
     //        be resumed into a later execution; with no record there is also
@@ -1775,6 +1796,30 @@ pub async fn start_task_agent(
                     }
                     None => {
                         tracing::warn!(task = %task_id_clone, "codex uuid capture timed out");
+                    }
+                }
+            });
+        }
+
+        if let Some(capture) = pending_opencode_capture {
+            let task_runs = state.task_runs.clone();
+            let app_handle = state.app_handle.lock().ok().and_then(|h| h.clone());
+            let task_id_clone = task_id.clone();
+            tauri::async_runtime::spawn(async move {
+                let found = wait_for_opencode_session(capture).await;
+                match found {
+                    Some(session_id) => {
+                        if let Err(e) = task_runs.set_conversation_id(&task_id_clone, &session_id) {
+                            tracing::warn!(error = ?e, task = %task_id_clone, "set_conversation_id failed");
+                        } else {
+                            tracing::info!(task = %task_id_clone, session = %session_id, "captured opencode session id");
+                            if let Some(app) = app_handle {
+                                let _ = app.emit("task_run_changed", &task_id_clone);
+                            }
+                        }
+                    }
+                    None => {
+                        tracing::warn!(task = %task_id_clone, "opencode session capture timed out");
                     }
                 }
             });
@@ -1860,6 +1905,27 @@ async fn wait_for_codex_uuid(capture: CodexCapture) -> Option<String> {
             return Some(uuid);
         }
         sleep(Duration::from_millis(250)).await;
+    }
+    None
+}
+
+/// Poll `opencode session list --format json` until a new session appears
+/// or we give up. The command is non-interactive but still a process
+/// spawn, so each attempt runs on the blocking pool.
+async fn wait_for_opencode_session(capture: OpenCodeCapture) -> Option<String> {
+    use tokio::time::{sleep, Duration};
+    for _ in 0..20 {
+        let capture_for_poll = capture.clone();
+        let found = tauri::async_runtime::spawn_blocking(move || {
+            agent::find_opencode_session_id(&capture_for_poll)
+        })
+        .await
+        .ok()
+        .flatten();
+        if found.is_some() {
+            return found;
+        }
+        sleep(Duration::from_millis(500)).await;
     }
     None
 }
@@ -2003,8 +2069,14 @@ pub async fn destrinchar_ideia(
         let cmd = project
             .agente
             .as_ref()
+            .filter(|a| a.kind == agent_kind)
             .and_then(|a| a.command.clone())
-            .or_else(|| cfg.agente.as_ref().and_then(|a| a.command.clone()));
+            .or_else(|| {
+                cfg.agente
+                    .as_ref()
+                    .filter(|a| a.kind == agent_kind)
+                    .and_then(|a| a.command.clone())
+            });
         (project_path, cmd)
     };
 
@@ -2038,6 +2110,11 @@ pub async fn destrinchar_ideia(
         spawn,
         conversation_id_known,
         pending_codex_capture,
+        // OpenCode capture is intentionally unused here: idea-decomposition
+        // runs are synthetic (IDEIA-*) and never recorded, so there is no run
+        // record to patch and nothing to resume. Skipping it also avoids the
+        // post-spawn `opencode session list` polling subprocesses entirely.
+        pending_opencode_capture: _,
         prompt_delivery,
     } = plan;
     let spawn = spawn.ideia_env(&ideia.id, &ideia.body);
@@ -2153,6 +2230,7 @@ pub async fn list_agent_models(
         let cfg = state.config.lock().map_err(to_str_err)?;
         cfg.agente
             .as_ref()
+            .filter(|a| a.kind == agent_kind)
             .and_then(|a| a.command.clone())
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| agent::default_command(agent_kind).to_string())
@@ -2183,7 +2261,14 @@ pub async fn list_agent_models(
         // launch in an unknown cwd; codex shows an onboarding step.
         // One Enter handles both with no false negative on already-
         // trusted setups (the extra Enter becomes a no-op at the prompt).
-        crate::models::discover_models(&cmd_for_spawn, agent_kind, 8, 6, 1)
+        crate::models::discover_models(
+            &cmd_for_spawn,
+            agent_kind,
+            8,
+            6,
+            1,
+            refresh.unwrap_or(false),
+        )
     })
     .await
     .map_err(to_str_err)?
@@ -2206,8 +2291,13 @@ pub async fn list_agent_models(
         }
     })?;
     if entries.is_empty() {
+        let source = if agent_kind == AgenteKind::OpenCode {
+            "`opencode models` output"
+        } else {
+            "the agent's `/model` menu"
+        };
         return Err(format!(
-            "no models parsed from `{command}` — the agent's `/model` menu likely changed shape; please report this"
+            "no models parsed from `{command}` — {source} likely changed shape; please report this"
         ));
     }
     state

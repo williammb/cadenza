@@ -1,11 +1,13 @@
 //! Per-agent model discovery via PTY spawn + `/model` TUI capture.
 //!
-//! Both Claude Code and Codex hide their model list inside an interactive
-//! REPL menu — there is no `--list-models` flag (`agente --help` confirmed
+//! Claude Code and Codex hide their model list inside an interactive REPL
+//! menu — there is no `--list-models` flag (`agente --help` confirmed
 //! 2026-05-28). To list them at runtime we spawn the agent under a PTY,
 //! reply to terminal capability queries the binary blocks on (DSR /
 //! cursor-position), inject `/model<Enter>`, capture the rendered bytes,
-//! reconstruct the final frame with `vte`, and regex the rows.
+//! reconstruct the final frame with `vte`, and regex the rows. OpenCode
+//! exposes `opencode models`, so it takes the simpler non-interactive
+//! subprocess path.
 //!
 //! Runtime entry point is `discover_models`; results are cached per
 //! `AgenteKind` on `AppState` so the 10-15 s PTY warm-up only happens
@@ -14,6 +16,7 @@
 //! shape and are the unit-test inputs.
 
 use std::io::{Read, Write};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -54,6 +57,7 @@ pub fn parse_models(bytes: &[u8], kind: AgenteKind) -> Vec<ModelEntry> {
         AgenteKind::ClaudeCode => parse_claude(&frame),
         AgenteKind::Codex => parse_codex(&frame),
         AgenteKind::Antigravity => parse_antigravity(&frame),
+        AgenteKind::OpenCode => parse_opencode(&frame),
     }
 }
 
@@ -69,9 +73,44 @@ pub fn discover_models(
     warmup_secs: u64,
     tail_secs: u64,
     predismiss_enters: u32,
+    refresh: bool,
 ) -> Result<Vec<ModelEntry>> {
+    if kind == AgenteKind::OpenCode {
+        let text = capture_opencode_models(binary, refresh)?;
+        return Ok(parse_opencode_text(&text));
+    }
     let bytes = capture_model_menu(binary, warmup_secs, tail_secs, predismiss_enters)?;
     Ok(parse_models(&bytes, kind))
+}
+
+fn capture_opencode_models(binary: &str, refresh: bool) -> Result<String> {
+    let (resolved, prefix_args) = crate::spawn::resolve_command(binary);
+    let mut cmd = Command::new(&resolved);
+    cmd.args(prefix_args);
+    cmd.arg("models");
+    if refresh {
+        cmd.arg("--refresh");
+    }
+    cmd.env_clear();
+    for name in crate::spawn::FORWARD_ENV_ALLOWLIST {
+        if let Some(val) = std::env::var_os(name) {
+            cmd.env(name, val);
+        }
+    }
+    cmd.env("PATH", crate::spawn::search_path());
+
+    let output = cmd
+        .output()
+        .map_err(|e| anyhow!("spawn {binary} models: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow!(
+            "{binary} models failed ({}): {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Drive the PTY exactly like the T-29 probe does. Kept in this module
@@ -532,6 +571,36 @@ fn parse_antigravity(frame: &[String]) -> Vec<ModelEntry> {
     entries
 }
 
+fn parse_opencode(frame: &[String]) -> Vec<ModelEntry> {
+    parse_opencode_text(&frame.join("\n"))
+}
+
+fn parse_opencode_text(text: &str) -> Vec<ModelEntry> {
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in text.lines() {
+        let id = line.trim();
+        if id.is_empty()
+            || id.eq_ignore_ascii_case("models cache refreshed")
+            || id.contains(char::is_whitespace)
+            || !id.contains('/')
+        {
+            continue;
+        }
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        entries.push(ModelEntry {
+            id: id.to_string(),
+            label: id.to_string(),
+            // `opencode models` lists available ids; it does not mark the
+            // current/default selection.
+            current: false,
+        });
+    }
+    entries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -601,6 +670,29 @@ mod tests {
         );
         let current = entries.iter().find(|e| e.current).expect("a current row");
         assert_eq!(current.id, "gemini-3.1-pro");
+    }
+
+    #[test]
+    fn parse_opencode_models_lists_provider_model_ids_without_current() {
+        let text = concat!(
+            "Models cache refreshed\n",
+            "anthropic/claude-sonnet-4-6\n",
+            "github-copilot/gpt-5.1\n",
+            "openai/gpt-5.2\n",
+            "not-a-model\n",
+            "openai/gpt-5.2\n",
+        );
+        let entries = parse_models(text.as_bytes(), AgenteKind::OpenCode);
+        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "anthropic/claude-sonnet-4-6",
+                "github-copilot/gpt-5.1",
+                "openai/gpt-5.2"
+            ]
+        );
+        assert!(entries.iter().all(|e| !e.current));
     }
 
     #[test]

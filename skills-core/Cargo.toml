@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Cadenza skill installer — install/remove/status of the agent skill snippet (Claude, Codex), shared between cadenza-cli and the Tauri app"
+description = "Cadenza skill installer — install/remove/status of the agent skill snippet, shared between cadenza-cli and the Tauri app"
 publish = false
 
 [lib]

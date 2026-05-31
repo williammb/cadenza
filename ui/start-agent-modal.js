@@ -1,4 +1,4 @@
-// Start-agent modal — picks platform (Claude Code / Codex) + model and
+// Start-agent modal — picks platform + model and
 // spawns the agent CLI in a PTY by calling `start_task_agent`. On
 // success it attaches the terminal drawer to the new session.
 //
@@ -189,6 +189,14 @@ async function populateModels(kind, preselectedId) {
   showModelSelect();
   modelSel.replaceChildren();
   let foundPreselected = false;
+  let selectedKnownModel = false;
+  if (!preselectedId && !entries.some((m) => m.current)) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = t("start-agent-model-default") || "(padrão do agente)";
+    opt.selected = true;
+    modelSel.append(opt);
+  }
   for (const m of entries) {
     const opt = document.createElement("option");
     opt.value = m.id;
@@ -196,11 +204,13 @@ async function populateModels(kind, preselectedId) {
     if (preselectedId === m.id) {
       opt.selected = true;
       foundPreselected = true;
+      selectedKnownModel = true;
     } else if (!preselectedId && m.current) {
       // Mirror the agent's own current selection when we have no
       // saved-run hint — matches the value the agent would pick if
       // invoked without `--model`, so the UI default tracks the CLI.
       opt.selected = true;
+      selectedKnownModel = true;
     }
     modelSel.append(opt);
   }
@@ -213,6 +223,9 @@ async function populateModels(kind, preselectedId) {
     opt.textContent = `${preselectedId} (${t("start-agent-model-saved") || "salvo"})`;
     opt.selected = true;
     modelSel.append(opt);
+  }
+  if (!selectedKnownModel && !preselectedId && modelSel.options.length) {
+    modelSel.options[0].selected = true;
   }
   modelSel.disabled = false;
   submitBtn.disabled = false;

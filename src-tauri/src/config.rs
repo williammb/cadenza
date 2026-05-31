@@ -39,6 +39,10 @@ pub enum AgenteKind {
     /// Antigravity CLI (`agy`) — Google's Gemini-based terminal TUI
     /// coding agent. Runs interactively under a PTY like the others.
     Antigravity,
+    /// OpenCode CLI (`opencode`) — terminal TUI coding agent with
+    /// provider/model ids and resumable sessions.
+    #[serde(rename = "opencode")]
+    OpenCode,
 }
 
 /// Where Cadenza persists tasks + triage. The `files` backend keeps
@@ -301,6 +305,15 @@ mod tests {
         // And serializes back to the snake_case wire form.
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(json.contains("\"antigravity\""), "got: {json}");
+    }
+
+    #[test]
+    fn opencode_kind_roundtrips() {
+        let f = write_tmp(r#"{"data_version":1,"agente":{"kind":"opencode"}}"#);
+        let cfg = Config::load_from(f.path()).unwrap();
+        assert_eq!(cfg.agente.as_ref().unwrap().kind, AgenteKind::OpenCode);
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"opencode\""), "got: {json}");
     }
 
     #[test]

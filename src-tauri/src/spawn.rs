@@ -191,6 +191,7 @@ fn extra_path_dirs() -> Vec<PathBuf> {
             dirs_list.push(h.join(".npm-global").join("bin"));
             dirs_list.push(h.join(".claude").join("local"));
             dirs_list.push(h.join(".codex").join("bin"));
+            dirs_list.push(h.join(".opencode").join("bin"));
         }
     }
 
@@ -295,6 +296,21 @@ pub(crate) fn locate_agent_binary(command: &str) -> Option<PathBuf> {
                 "agy.exe"
             } else {
                 "agy"
+            }
+        }
+        "opencode" => {
+            if let Some(home) = dirs::home_dir() {
+                roots.push(home.join(".opencode"));
+                roots.push(home.join(".local"));
+            }
+            if let Some(data) = dirs::data_local_dir() {
+                roots.push(data.join("opencode"));
+                roots.push(data.join("OpenCode"));
+            }
+            if cfg!(windows) {
+                "opencode.exe"
+            } else {
+                "opencode"
             }
         }
         _ => return None,
