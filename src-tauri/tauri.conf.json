@@ -44,7 +44,7 @@
     },
     "category": "Productivity",
     "shortDescription": "Cadenza — AI agent task manager",
-    "longDescription": "Cadenza is a desktop tray app that lets AI coding agents (Claude Code, Codex) drive a local task board over a CLI."
+    "longDescription": "Cadenza is a desktop tray app that lets AI coding agents (Claude Code, Codex, Antigravity, OpenCode) drive a local task board over a CLI."
   },
   "plugins": {
     "updater": {

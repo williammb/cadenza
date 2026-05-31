@@ -151,7 +151,7 @@ pub fn run() {
             commands::restart_app,
             commands::check_update,
             commands::install_update_and_restart,
-            // skills (CLI snippet for Claude / Codex)
+            // skills (CLI snippets for supported agents)
             commands::skill_install,
             commands::skill_remove,
             commands::skill_status,

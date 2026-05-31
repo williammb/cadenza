@@ -8,6 +8,8 @@
 //!   Codex project       → <cwd>/AGENTS.md                                 (managed section)
 //!   Antigravity global  → ~/.gemini/antigravity-cli/skills/cadenza/SKILL.md
 //!   Antigravity project → <cwd>/.agents/skills/cadenza/SKILL.md
+//!   OpenCode global     → ~/.config/opencode/skills/cadenza/SKILL.md
+//!   OpenCode project    → <cwd>/.opencode/skills/cadenza/SKILL.md
 //!
 //! For Codex, the skill is wrapped in HTML comment markers so install /
 //! remove can edit a shared file without clobbering unrelated content:
@@ -45,9 +47,9 @@ const CODEX_MARKER_END: &str = "<!-- cadenza:end -->";
 /// (`skills/cadenza.*.md`) or the generated wrapper changes, so an
 /// already-installed copy can be detected as outdated and the user
 /// prompted to reinstall. Stamped into every install (Codex start marker
-/// `v=`, Claude/Antigravity `CLAUDE_VERSION_MARKER_PREFIX` comment) and
+/// `v=`, SKILL.md agents' `CLAUDE_VERSION_MARKER_PREFIX` comment) and
 /// read back by the `status` probes.
-pub const SKILL_VERSION: &str = "2";
+pub const SKILL_VERSION: &str = "3";
 
 /// Invisible marker line inserted after the YAML frontmatter of a
 /// SKILL.md so its version can be read back. HTML comment → the agent
@@ -66,6 +68,7 @@ pub enum Agent {
     Claude,
     Codex,
     Antigravity,
+    OpenCode,
 }
 
 impl Agent {
@@ -74,6 +77,7 @@ impl Agent {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
             Agent::Antigravity => "antigravity",
+            Agent::OpenCode => "opencode",
         }
     }
 }
@@ -172,6 +176,7 @@ pub fn install(
             Agent::Claude => install_claude(scope, locale, body, force, project_root)?,
             Agent::Codex => install_codex(scope, locale, body, force, project_root)?,
             Agent::Antigravity => install_antigravity(scope, locale, body, force, project_root)?,
+            Agent::OpenCode => install_opencode(scope, locale, body, force, project_root)?,
         };
         report.push(outcome);
     }
@@ -204,7 +209,21 @@ fn install_antigravity(
     install_skill_md(Agent::Antigravity, path, scope, locale, body, force)
 }
 
-/// Shared writer for the SKILL.md-folder agents (Claude, Antigravity):
+/// OpenCode discovers native skills from `.opencode/skills` (project)
+/// and `~/.config/opencode/skills` (global), with the same SKILL.md
+/// frontmatter shape as Claude-compatible skills.
+fn install_opencode(
+    scope: Scope,
+    locale: &str,
+    body: &str,
+    force: bool,
+    project_root: Option<&Path>,
+) -> Result<Outcome> {
+    let path = opencode_path(scope, project_root)?;
+    install_skill_md(Agent::OpenCode, path, scope, locale, body, force)
+}
+
+/// Shared writer for the SKILL.md-folder agents (Claude, Antigravity, OpenCode):
 /// write a self-contained Skill file with YAML frontmatter so the agent
 /// can discover it by name. Skips an existing file unless `force`.
 fn install_skill_md(
@@ -299,6 +318,7 @@ pub fn remove(agents: &[Agent], scope: Scope, project_root: Option<&Path>) -> Re
             Agent::Claude => remove_claude(scope, project_root)?,
             Agent::Codex => remove_codex(scope, project_root)?,
             Agent::Antigravity => remove_antigravity(scope, project_root)?,
+            Agent::OpenCode => remove_opencode(scope, project_root)?,
         };
         report.push(outcome);
     }
@@ -315,7 +335,12 @@ fn remove_antigravity(scope: Scope, project_root: Option<&Path>) -> Result<Outco
     remove_skill_md(Agent::Antigravity, path, scope)
 }
 
-/// Shared remover for the SKILL.md-folder agents (Claude, Antigravity):
+fn remove_opencode(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
+    let path = opencode_path(scope, project_root)?;
+    remove_skill_md(Agent::OpenCode, path, scope)
+}
+
+/// Shared remover for the SKILL.md-folder agents (Claude, Antigravity, OpenCode):
 /// delete the file and best-effort drop the now-empty `cadenza/` folder.
 fn remove_skill_md(agent: Agent, path: PathBuf, scope: Scope) -> Result<Outcome> {
     if !path.exists() {
@@ -366,11 +391,12 @@ fn remove_codex(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
 // --- status ----------------------------------------------------------------
 
 pub fn status(project_root: Option<&Path>) -> Vec<StatusRow> {
-    let mut rows = Vec::with_capacity(6);
+    let mut rows = Vec::with_capacity(8);
     for scope in [Scope::Project, Scope::Global] {
         rows.push(probe_claude(scope, project_root));
         rows.push(probe_codex(scope, project_root));
         rows.push(probe_antigravity(scope, project_root));
+        rows.push(probe_opencode(scope, project_root));
     }
     rows
 }
@@ -423,6 +449,23 @@ fn probe_antigravity(scope: Scope, project_root: Option<&Path>) -> StatusRow {
         (None, None)
     };
     StatusRow::new(Agent::Antigravity, scope, path, installed, locale, version)
+}
+
+fn probe_opencode(scope: Scope, project_root: Option<&Path>) -> StatusRow {
+    let path = opencode_path(scope, project_root).unwrap_or_else(|_| PathBuf::from("<no home>"));
+    let installed = path.exists();
+    let (locale, version) = if installed {
+        match fs::read_to_string(&path) {
+            Ok(content) => (
+                parse_claude_locale(&content),
+                parse_claude_version(&content),
+            ),
+            Err(_) => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+    StatusRow::new(Agent::OpenCode, scope, path, installed, locale, version)
 }
 
 fn parse_claude_locale(content: &str) -> Option<String> {
@@ -518,6 +561,22 @@ fn antigravity_path(scope: Scope, project_root: Option<&Path>) -> Result<PathBuf
         Scope::Global => home_dir()?
             .join(".gemini")
             .join("antigravity-cli")
+            .join("skills")
+            .join(CLAUDE_SKILL_NAME)
+            .join("SKILL.md"),
+    })
+}
+
+fn opencode_path(scope: Scope, project_root: Option<&Path>) -> Result<PathBuf> {
+    Ok(match scope {
+        Scope::Project => project_root_or_cwd(project_root)?
+            .join(".opencode")
+            .join("skills")
+            .join(CLAUDE_SKILL_NAME)
+            .join("SKILL.md"),
+        Scope::Global => home_dir()?
+            .join(".config")
+            .join("opencode")
             .join("skills")
             .join(CLAUDE_SKILL_NAME)
             .join("SKILL.md"),
@@ -717,6 +776,35 @@ mod tests {
 
         // Remove → file gone, folder cleaned up.
         let report = remove(&[Agent::Antigravity], Scope::Project, project).unwrap();
+        assert_eq!(report[0].action, Action::Removed);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn opencode_project_install_remove_roundtrip() {
+        let root = tempfile::TempDir::new().unwrap();
+        let project = Some(root.path());
+
+        let report = install(&[Agent::OpenCode], Scope::Project, "en", false, project).unwrap();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].action, Action::Installed);
+        let path = root
+            .path()
+            .join(".opencode")
+            .join("skills")
+            .join("cadenza")
+            .join("SKILL.md");
+        assert!(path.exists(), "expected SKILL.md at {}", path.display());
+
+        let rows = status(project);
+        let row = rows
+            .iter()
+            .find(|r| r.agent == Agent::OpenCode && r.scope == Scope::Project)
+            .expect("opencode project status row");
+        assert!(row.installed);
+        assert_eq!(row.version.as_deref(), Some(SKILL_VERSION));
+
+        let report = remove(&[Agent::OpenCode], Scope::Project, project).unwrap();
         assert_eq!(report[0].action, Action::Removed);
         assert!(!path.exists());
     }

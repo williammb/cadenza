@@ -25,8 +25,9 @@ pub struct TaskRun {
     pub model: String,
     /// Claude: UUID we generated and passed via `--session-id`.
     /// Codex: UUID Codex generated, captured from `~/.codex/sessions/`
-    /// asynchronously after first spawn. `None` while still pending or
-    /// when capture failed.
+    /// asynchronously after first spawn. OpenCode: `ses_*` id captured
+    /// from `opencode session list --format json`. `None` while still
+    /// pending or when capture failed.
     #[serde(default)]
     pub conversation_id: Option<String>,
     pub last_started_at: DateTime<Utc>,

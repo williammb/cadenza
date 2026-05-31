@@ -9,19 +9,25 @@
 //!     it asynchronously from `~/.codex/sessions/<y>/<m>/<d>/rollout-…-<uuid>.jsonl`
 //!     after spawning. Resume with `codex resume <uuid>` (UUIDs take
 //!     precedence over thread-name args per `codex resume --help`).
+//!   - OpenCode: generates a `ses_*` id on first start. We capture it by
+//!     comparing `opencode session list --format json` before/after spawn.
+//!     Resume with `opencode --session <id>`.
 //!
 //! Verified empirically on 2026-05-27 against `claude --help` and
 //! `codex --help`. If either CLI's argument surface changes, this
 //! module is the single seam to update.
 //!
 //! Initial-prompt delivery (verified 2026-05-30 against `--help` for all
-//! three): the prompt is passed via argv so the backend never types into
+//! four): the prompt is passed via argv so the backend never types into
 //! the live PTY. Claude and Codex take it as a trailing positional
 //! (`claude/codex [OPTIONS] [PROMPT]`, interactive by default); agy needs
-//! `--prompt-interactive <prompt>` (it rejects a bare positional). See
-//! `PromptDelivery`.
+//! `--prompt-interactive <prompt>` (it rejects a bare positional);
+//! OpenCode uses `--prompt <prompt>`. See `PromptDelivery`.
 
+use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::SystemTime;
 use uuid::Uuid;
 
@@ -62,6 +68,9 @@ pub struct LaunchPlan {
     /// Whether the caller should kick off the Codex-specific async
     /// capture task to find the generated session UUID on disk.
     pub pending_codex_capture: Option<CodexCapture>,
+    /// Whether the caller should kick off the OpenCode async session-id
+    /// capture task to find the generated `ses_*` id.
+    pub pending_opencode_capture: Option<OpenCodeCapture>,
     /// How the caller should deliver the initial prompt (if any). `Argv`
     /// means it is already in `spawn`; `TypeIn` means the caller must
     /// type it into the PTY after boot.
@@ -76,6 +85,29 @@ pub struct CodexCapture {
     pub started_at: SystemTime,
 }
 
+#[derive(Clone, Debug)]
+pub struct OpenCodeCapture {
+    pub command: String,
+    pub cwd: PathBuf,
+    pub before_ids: BTreeSet<String>,
+    pub started_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+pub struct OpenCodeSessionInfo {
+    pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    pub updated: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_optional_i64")]
+    pub created: Option<i64>,
+    #[serde(default, rename = "projectId")]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
+}
+
 /// Choose the binary name for `kind` when the user hasn't overridden
 /// the path in `Config.agente.command` / `Project.agente.command`.
 pub fn default_command(kind: AgenteKind) -> &'static str {
@@ -83,6 +115,7 @@ pub fn default_command(kind: AgenteKind) -> &'static str {
         AgenteKind::ClaudeCode => "claude",
         AgenteKind::Codex => "codex",
         AgenteKind::Antigravity => "agy",
+        AgenteKind::OpenCode => "opencode",
     }
 }
 
@@ -101,12 +134,13 @@ pub struct AgentPresence {
 }
 
 /// Return install presence for every supported agent. Stable order:
-/// Claude Code, Codex, Antigravity — matches the UI's option order.
+/// Claude Code, Codex, Antigravity, OpenCode — matches the UI's option order.
 pub fn list_installed_agents() -> Vec<AgentPresence> {
     [
         AgenteKind::ClaudeCode,
         AgenteKind::Codex,
         AgenteKind::Antigravity,
+        AgenteKind::OpenCode,
     ]
     .into_iter()
     .map(detect_presence)
@@ -138,6 +172,7 @@ fn config_dir_for(kind: AgenteKind) -> Option<PathBuf> {
         // and `~/.config/antigravity` (config.toml). `.gemini` is the
         // one tied to agent state, so prefer it for presence detection.
         AgenteKind::Antigravity => home.join(".gemini").join("antigravity-cli"),
+        AgenteKind::OpenCode => home.join(".config").join("opencode"),
     })
 }
 
@@ -252,6 +287,15 @@ pub fn plan_launch(
             existing_conversation_id,
             initial_prompt,
         ),
+        AgenteKind::OpenCode => plan_opencode(
+            command,
+            model,
+            cwd,
+            task_id,
+            project_id,
+            existing_conversation_id,
+            initial_prompt,
+        ),
     }
 }
 
@@ -307,6 +351,7 @@ fn plan_claude(
         spawn: cfg,
         conversation_id_known: Some(conversation_id),
         pending_codex_capture: None,
+        pending_opencode_capture: None,
         prompt_delivery: PromptDelivery::Argv,
     }
 }
@@ -373,6 +418,7 @@ fn plan_codex(
         spawn: cfg,
         conversation_id_known: existing_conversation_id.map(String::from),
         pending_codex_capture: pending_capture,
+        pending_opencode_capture: None,
         prompt_delivery: PromptDelivery::Argv,
     }
 }
@@ -457,6 +503,70 @@ fn plan_antigravity(
         spawn: cfg,
         conversation_id_known: existing_conversation_id.map(String::from),
         pending_codex_capture: pending_capture,
+        pending_opencode_capture: None,
+        prompt_delivery: PromptDelivery::Argv,
+    }
+}
+
+fn plan_opencode(
+    command: String,
+    model: &str,
+    cwd: &Path,
+    task_id: &str,
+    project_id: &str,
+    existing_conversation_id: Option<&str>,
+    initial_prompt: Option<&str>,
+) -> LaunchPlan {
+    let mut args: Vec<String> = Vec::new();
+
+    match existing_conversation_id {
+        Some(id) => {
+            args.push("--session".to_string());
+            args.push(id.to_string());
+            // Resume keeps the saved session's model/context. Do not pass
+            // --model or --prompt on resume.
+        }
+        None => {
+            if !model.is_empty() {
+                args.push("--model".to_string());
+                args.push(model.to_string());
+            }
+            if let Some(prompt) = initial_prompt {
+                args.push("--prompt".to_string());
+                args.push(prompt.to_string());
+            }
+        }
+    };
+
+    let conv_seed = existing_conversation_id.unwrap_or("");
+
+    let cfg = SpawnConfig::new(command.clone())
+        .args(args)
+        .cwd(cwd)
+        .size(DEFAULT_COLS, DEFAULT_ROWS)
+        .cadenza_env(project_id, task_id, conv_seed);
+
+    // The "before" session snapshot is filled in by the caller via
+    // `snapshot_opencode_session_ids` on the blocking pool — collecting it
+    // here would run a synchronous `opencode session list` subprocess
+    // inside `plan_launch`, which executes on the async runtime thread and
+    // would stall it. Keep the planner pure (no I/O).
+    let pending_capture = if existing_conversation_id.is_none() {
+        Some(OpenCodeCapture {
+            command,
+            cwd: cwd.to_path_buf(),
+            before_ids: BTreeSet::new(),
+            started_at_ms: chrono::Utc::now().timestamp_millis(),
+        })
+    } else {
+        None
+    };
+
+    LaunchPlan {
+        spawn: cfg,
+        conversation_id_known: existing_conversation_id.map(String::from),
+        pending_codex_capture: None,
+        pending_opencode_capture: pending_capture,
         prompt_delivery: PromptDelivery::Argv,
     }
 }
@@ -553,9 +663,145 @@ fn extract_uuid_suffix(stem: &str) -> Option<String> {
     }
 }
 
+pub fn find_opencode_session_id(capture: &OpenCodeCapture) -> Option<String> {
+    let sessions = collect_opencode_sessions(&capture.command, &capture.cwd, 50).ok()?;
+    pick_new_opencode_session(capture, &sessions)
+}
+
+/// Snapshot the set of existing OpenCode session ids before a fresh
+/// launch, so the post-spawn poll can tell the new session apart from
+/// pre-existing ones. Runs `opencode session list` (a blocking
+/// subprocess), so callers must invoke it off the async runtime (e.g.
+/// `spawn_blocking`). Failures degrade to an empty set — the poll then
+/// falls back to timestamp + directory matching.
+pub fn snapshot_opencode_session_ids(command: &str, cwd: &Path) -> BTreeSet<String> {
+    collect_opencode_sessions(command, cwd, 50)
+        .map(|sessions| sessions.into_iter().map(|s| s.id).collect())
+        .unwrap_or_default()
+}
+
+pub fn pick_new_opencode_session(
+    capture: &OpenCodeCapture,
+    sessions: &[OpenCodeSessionInfo],
+) -> Option<String> {
+    let slack_ms = 5_000;
+    let threshold = capture.started_at_ms.saturating_sub(slack_ms);
+    let mut candidates: Vec<&OpenCodeSessionInfo> = sessions
+        .iter()
+        .filter(|s| !capture.before_ids.contains(&s.id))
+        .filter(|s| {
+            s.created
+                .or(s.updated)
+                .map(|ts| ts >= threshold)
+                .unwrap_or(true)
+        })
+        .collect();
+
+    candidates.sort_by_key(|s| std::cmp::Reverse(s.updated.or(s.created).unwrap_or(0)));
+
+    if let Some(session) = candidates
+        .iter()
+        .copied()
+        .find(|s| session_directory_matches(s.directory.as_deref(), &capture.cwd))
+    {
+        return Some(session.id.clone());
+    }
+
+    // No session matched our cwd (every candidate reports a *different*
+    // known directory). If exactly one new session appeared it is almost
+    // certainly ours, so bind it; but if several appeared and none match,
+    // refuse to guess — picking the wrong `ses_*` would silently resume an
+    // unrelated conversation. Better to leave conversation_id unset.
+    match candidates.as_slice() {
+        [only] => Some(only.id.clone()),
+        _ => None,
+    }
+}
+
+fn session_directory_matches(directory: Option<&str>, cwd: &Path) -> bool {
+    let Some(directory) = directory else {
+        return true;
+    };
+    normalize_pathish(directory) == normalize_pathish(&cwd.to_string_lossy())
+}
+
+fn normalize_pathish(path: &str) -> String {
+    let normalized = path.replace('\\', "/").trim_end_matches('/').to_string();
+    if cfg!(windows) {
+        normalized.to_ascii_lowercase()
+    } else {
+        normalized
+    }
+}
+
+pub fn parse_opencode_sessions_json(text: &str) -> anyhow::Result<Vec<OpenCodeSessionInfo>> {
+    let value: serde_json::Value = serde_json::from_str(text)?;
+    let array = if let Some(arr) = value.as_array() {
+        arr.clone()
+    } else if let Some(arr) = value.get("sessions").and_then(|v| v.as_array()) {
+        arr.clone()
+    } else {
+        return Err(anyhow::anyhow!("expected OpenCode session JSON array"));
+    };
+    Ok(serde_json::from_value(serde_json::Value::Array(array))?)
+}
+
+fn collect_opencode_sessions(
+    command: &str,
+    cwd: &Path,
+    max_count: u32,
+) -> anyhow::Result<Vec<OpenCodeSessionInfo>> {
+    let (resolved, prefix_args) = crate::spawn::resolve_command(command);
+    let mut cmd = Command::new(&resolved);
+    cmd.args(prefix_args);
+    cmd.args(["session", "list", "--format", "json", "--max-count"]);
+    cmd.arg(max_count.to_string());
+    cmd.current_dir(cwd);
+    cmd.env_clear();
+    for name in crate::spawn::FORWARD_ENV_ALLOWLIST {
+        if let Some(val) = std::env::var_os(name) {
+            cmd.env(name, val);
+        }
+    }
+    cmd.env("PATH", crate::spawn::search_path());
+
+    let output = cmd.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(anyhow::anyhow!(
+            "opencode session list failed ({}): {}",
+            output.status,
+            stderr.trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if stdout.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    parse_opencode_sessions_json(&stdout)
+}
+
+fn deserialize_optional_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    match value {
+        serde_json::Value::Number(n) => Ok(n.as_i64()),
+        serde_json::Value::String(s) => {
+            s.parse::<i64>().map(Some).map_err(serde::de::Error::custom)
+        }
+        _ => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
     use std::fs;
     use std::time::Duration;
     use tempfile::TempDir;
@@ -694,6 +940,72 @@ mod tests {
         assert_eq!(
             plan.conversation_id_known.as_deref(),
             Some("019d4891-0feb-78a2-8f90-841686dc0175")
+        );
+    }
+
+    #[test]
+    fn opencode_new_session_passes_model_and_prompt() {
+        let plan = plan_launch(
+            AgenteKind::OpenCode,
+            "anthropic/claude-sonnet-4-6",
+            Some(Path::new("definitely-not-opencode")),
+            Path::new("/tmp/proj"),
+            "T-4",
+            "proj-d",
+            None,
+            Some("do the task"),
+        );
+        assert_eq!(plan.spawn.command, "definitely-not-opencode");
+        let args = &plan.spawn.args;
+        let m = args.iter().position(|a| a == "--model").expect("--model");
+        assert_eq!(args[m + 1], "anthropic/claude-sonnet-4-6");
+        let p = args.iter().position(|a| a == "--prompt").expect("--prompt");
+        assert_eq!(args[p + 1], "do the task");
+        assert!(plan.conversation_id_known.is_none());
+        assert!(plan.pending_codex_capture.is_none());
+        assert!(plan.pending_opencode_capture.is_some());
+    }
+
+    #[test]
+    fn opencode_new_session_without_model_omits_model() {
+        let plan = plan_launch(
+            AgenteKind::OpenCode,
+            "",
+            Some(Path::new("definitely-not-opencode")),
+            Path::new("/tmp/proj"),
+            "T-4",
+            "proj-d",
+            None,
+            None,
+        );
+        assert!(!plan.spawn.args.iter().any(|a| a == "--model"));
+        assert!(plan.pending_opencode_capture.is_some());
+    }
+
+    #[test]
+    fn opencode_resume_uses_session_flag_and_skips_model_prompt() {
+        let plan = plan_launch(
+            AgenteKind::OpenCode,
+            "anthropic/claude-sonnet-4-6",
+            None,
+            Path::new("/tmp/proj"),
+            "T-4",
+            "proj-d",
+            Some("ses_2132323b6ffeuRlYHhPcU8DaZ6"),
+            Some("ignored"),
+        );
+        let args = &plan.spawn.args;
+        let s = args
+            .iter()
+            .position(|a| a == "--session")
+            .expect("--session");
+        assert_eq!(args[s + 1], "ses_2132323b6ffeuRlYHhPcU8DaZ6");
+        assert!(!args.iter().any(|a| a == "--model"));
+        assert!(!args.iter().any(|a| a == "--prompt"));
+        assert!(plan.pending_opencode_capture.is_none());
+        assert_eq!(
+            plan.conversation_id_known.as_deref(),
+            Some("ses_2132323b6ffeuRlYHhPcU8DaZ6")
         );
     }
 
@@ -858,10 +1170,11 @@ mod tests {
     #[test]
     fn list_installed_agents_returns_all_kinds_in_stable_order() {
         let rows = list_installed_agents();
-        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.len(), 4);
         assert_eq!(rows[0].kind, AgenteKind::ClaudeCode);
         assert_eq!(rows[1].kind, AgenteKind::Codex);
         assert_eq!(rows[2].kind, AgenteKind::Antigravity);
+        assert_eq!(rows[3].kind, AgenteKind::OpenCode);
         for row in &rows {
             // `installed` may also be set by the off-PATH binary locator,
             // so it's a superset of the on_path/config-dir signals.
@@ -894,5 +1207,66 @@ mod tests {
         };
         let got = find_codex_session_uuid(&capture);
         assert_eq!(got.as_deref(), Some("019d4891-0feb-78a2-8f90-bbbbbbbbbbbb"));
+    }
+
+    #[test]
+    fn parse_opencode_session_list_json_fixture() {
+        let json = r#"[
+          {
+            "id": "ses_old",
+            "title": "Old session",
+            "updated": 1780000000000,
+            "created": 1780000000000,
+            "projectId": "proj-old",
+            "directory": "/tmp/proj"
+          },
+          {
+            "id": "ses_new",
+            "title": "New session",
+            "updated": "1780000100000",
+            "created": "1780000100000",
+            "projectId": "proj-new",
+            "directory": "/tmp/proj"
+          }
+        ]"#;
+        let sessions = parse_opencode_sessions_json(json).unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[1].id, "ses_new");
+        assert_eq!(sessions[1].created, Some(1_780_000_100_000));
+        assert_eq!(sessions[1].project_id.as_deref(), Some("proj-new"));
+    }
+
+    #[test]
+    fn pick_new_opencode_session_prefers_new_matching_directory() {
+        let mut before_ids = BTreeSet::new();
+        before_ids.insert("ses_old".to_string());
+        let capture = OpenCodeCapture {
+            command: "opencode".to_string(),
+            cwd: PathBuf::from("/tmp/proj"),
+            before_ids,
+            started_at_ms: 1_780_000_000_000,
+        };
+        let sessions = vec![
+            OpenCodeSessionInfo {
+                id: "ses_elsewhere".to_string(),
+                title: None,
+                updated: Some(1_780_000_100_000),
+                created: Some(1_780_000_100_000),
+                project_id: None,
+                directory: Some("/tmp/other".to_string()),
+            },
+            OpenCodeSessionInfo {
+                id: "ses_new".to_string(),
+                title: None,
+                updated: Some(1_780_000_090_000),
+                created: Some(1_780_000_090_000),
+                project_id: None,
+                directory: Some("/tmp/proj".to_string()),
+            },
+        ];
+        assert_eq!(
+            pick_new_opencode_session(&capture, &sessions).as_deref(),
+            Some("ses_new")
+        );
     }
 }
