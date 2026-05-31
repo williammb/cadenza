@@ -147,6 +147,7 @@ fn task_from_row(row: &sqlx::postgres::PgRow) -> Result<Task> {
         body: row.try_get("body").map_err(map_sqlx)?,
         worktree_path: None,
         branch: None,
+        blocked_by: Vec::new(),
     })
 }
 

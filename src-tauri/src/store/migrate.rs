@@ -173,6 +173,7 @@ mod tests {
             body: format!("body of {id}"),
             worktree_path: None,
             branch: None,
+            blocked_by: Vec::new(),
         }
     }
 

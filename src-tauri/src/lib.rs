@@ -12,6 +12,7 @@ use cadenza_i18n::I18n;
 mod agent;
 mod attachments;
 mod auth;
+mod blockers;
 mod commands;
 mod config;
 mod git;
@@ -133,6 +134,7 @@ pub fn run() {
             commands::set_active_project,
             // task ↔ worktree/branch
             commands::list_task_worktrees,
+            commands::set_task_blockers,
             commands::set_task_worktree,
             commands::task_worktree_defaults,
             // ideias (Inbox)

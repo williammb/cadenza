@@ -37,6 +37,7 @@ let cachedTaskProjects = {};
 // project_id → color key, rebuilt on every renderBoard().
 let cachedProjectColors = {};
 let cachedActiveProject = null;
+let cachedTasksById = {};
 // Shown once per session when no projects exist, so the user is guided
 // to add a first project without reopening settings on every re-render.
 let _guidedToFirstProject = false;
@@ -68,6 +69,7 @@ async function renderBoard() {
   }
   cachedTaskProjects = mapping ?? {};
   cachedTaskRuns = runs ?? {};
+  cachedTasksById = Object.fromEntries((tasks ?? []).map((task) => [task.id, task]));
   cachedActiveProject = cfg?.active_project_id ?? null;
   const colorMap = {};
   for (const p of (cfg?.projects ?? [])) {
@@ -140,6 +142,28 @@ async function renderBoard() {
   setStatus("");
 }
 
+// Estados that satisfy a blocker so a dependent task may start. Mirror of
+// `Estado::satisfies_blocker` in proto/src/task.rs — keep the two in sync.
+const BLOCKER_SATISFIED_ESTADOS = ["aguardando_revisao", "feito"];
+
+function blockerStatus(task) {
+  const blockers = Array.isArray(task.blocked_by) ? task.blocked_by : [];
+  const pending = [];
+  for (const id of blockers) {
+    const blocker = cachedTasksById[id];
+    if (!blocker) {
+      pending.push(`${id}: ${t("task-blocker-missing") || "not found"}`);
+    } else if (!BLOCKER_SATISFIED_ESTADOS.includes(blocker.estado)) {
+      pending.push(`${id}: ${estadoLabel(blocker.estado)}`);
+    }
+  }
+  return { count: blockers.length, pending };
+}
+
+function estadoLabel(estado) {
+  return t(`estado-${String(estado).replaceAll("_", "-")}`) || estado;
+}
+
 function makeCard(task) {
   const card = document.createElement("div");
   card.className = "card";
@@ -175,15 +199,21 @@ function makeCard(task) {
   startBtn.className = "btn btn-icon card-start";
   startBtn.textContent = "▶";
   const hasRun = !!cachedTaskRuns[task.id];
-  if (hasRun) startBtn.classList.add("has-run");
-  startBtn.title = hasRun
-    ? t("card-start-resume-aria")
-    : t("card-start-aria");
+  const blockers = blockerStatus(task);
+  const isBlocked = blockers.pending.length > 0;
+  if (hasRun && !isBlocked) startBtn.classList.add("has-run");
+  startBtn.title = isBlocked
+    ? `${t("card-blocked-title") || "Blocked"}: ${blockers.pending.join("; ")}`
+    : hasRun
+      ? t("card-start-resume-aria")
+      : t("card-start-aria");
   startBtn.setAttribute(
     "aria-label",
-    hasRun ? t("card-start-resume-aria") : t("card-start-aria"),
+    isBlocked
+      ? t("card-blocked-title") || "Blocked"
+      : hasRun ? t("card-start-resume-aria") : t("card-start-aria"),
   );
-  startBtn.disabled = task.estado === "feito";
+  startBtn.disabled = task.estado === "feito" || isBlocked;
   startBtn.addEventListener("click", (e) => {
     e.stopPropagation();
     if (startBtn.disabled) return;
@@ -210,6 +240,19 @@ function makeCard(task) {
   planBtn.addEventListener("dragstart", (e) => e.preventDefault());
 
   card.append(title, id, startBtn, planBtn);
+
+  if (blockers.count > 0) {
+    const blockerBadge = document.createElement("span");
+    blockerBadge.className =
+      "card-blockers" + (isBlocked ? " is-blocked" : " is-clear");
+    blockerBadge.textContent = isBlocked
+      ? t("card-blocked-title") || "Blocked"
+      : t("card-unblocked-title") || "Unblocked";
+    blockerBadge.title = isBlocked
+      ? blockers.pending.join("; ")
+      : t("card-unblocked-title") || "Unblocked";
+    card.append(blockerBadge);
+  }
 
   // Branch badge — shown when the task is associated with a git branch
   // (field enriched by the backend from task-worktrees.json).

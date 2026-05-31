@@ -149,6 +149,8 @@ task-field-titulo = Título
 task-field-project = Projeto
 task-project-placeholder = — Selecionar projeto —
 task-field-estado = Estado
+task-blockers-legend = Bloqueada por
+task-blockers-empty = Nenhuma task disponível
 task-field-body = Descrição (markdown)
 task-error = Erro: { $error }
 
@@ -203,6 +205,9 @@ task-modal-start-aria = Iniciar agente para esta task
 card-start-aria = Iniciar agente
 card-start-resume-aria = Continuar conversa salva
 card-plan-aria = Planejar task antes de executar
+card-blocked-title = Bloqueada
+card-unblocked-title = Desbloqueada
+task-blocker-missing = não encontrada
 
 start-agent-title = Iniciar agente
 start-agent-branch-label = Ramo

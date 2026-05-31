@@ -16,6 +16,7 @@ use tauri::{Emitter, State};
 use uuid::Uuid;
 
 use crate::agent::{self, CodexCapture, LaunchPlan, PromptDelivery};
+use crate::blockers::TaskBlockers;
 use crate::config::{AgenteKind, Config, PgConfig, PgSslMode, StorageBackend};
 use crate::ordering::TaskOrder;
 use crate::projects::TaskProjects;
@@ -25,7 +26,7 @@ use crate::spawn::{PtyHandle, SpawnConfig};
 use crate::store::{
     migrate, Decisao, DecisaoRegistro, Estado, FileRepository, Ideia, IdeiaStatus, NewProposta,
     PgConnectionParams, PgRepository, PgSslModeChoice, Proposta, Repository, SqliteRepository,
-    Task,
+    StoreError, Task,
 };
 use crate::terminal::TerminalSession;
 use crate::worktrees::{TaskWorktrees, WorktreeInfo};
@@ -53,6 +54,10 @@ pub struct AppState {
     /// `~/.cadenza/task-worktrees.json` — keeps the YAML frontmatter
     /// format frozen for Node.js compat.
     pub task_worktrees: Arc<TaskWorktrees>,
+    /// task_id -> blocker task ids. Lives in `~/.cadenza/task-blockers.json`
+    /// so dependency metadata stays structured without touching legacy
+    /// task frontmatter.
+    pub task_blockers: Arc<TaskBlockers>,
     /// Per-column card priority order. Lives in
     /// `~/.cadenza/task-order.json` — keeps the YAML frontmatter format
     /// frozen and the DB schemas untouched. Applied as a sort in
@@ -118,6 +123,7 @@ impl AppState {
         let task_projects = Arc::new(TaskProjects::load(&home)?);
         let task_runs = Arc::new(TaskRuns::load(&home)?);
         let task_worktrees = Arc::new(TaskWorktrees::load(&home)?);
+        let task_blockers = Arc::new(TaskBlockers::load(&home)?);
         let task_order = Arc::new(TaskOrder::load(&home)?);
 
         // Seed the in-memory model cache from any lists persisted in
@@ -144,6 +150,7 @@ impl AppState {
             task_projects,
             task_runs,
             task_worktrees,
+            task_blockers,
             task_order,
             app_handle: Mutex::new(None),
             agent_models: Mutex::new(seeded_models),
@@ -283,6 +290,67 @@ fn to_str_err<E: std::fmt::Display>(e: E) -> String {
     e.to_string()
 }
 
+/// Layer the sidecar-stored fields (worktree/branch, then blockers) onto a
+/// task read from the repo. The single place that defines the enrichment
+/// order, shared by the Tauri commands here and the IPC dispatch in `ipc`.
+pub(crate) fn enrich_task(state: &AppState, task: Task) -> Task {
+    state
+        .task_blockers
+        .enrich(state.task_worktrees.enrich(task))
+}
+
+async fn normalize_and_validate_blockers(
+    repo: &dyn Repository,
+    task_id: &str,
+    blocked_by: Vec<String>,
+) -> Result<Vec<String>, String> {
+    let mut normalized = Vec::new();
+    for raw in blocked_by {
+        let id = raw.trim();
+        if id.is_empty() || normalized.iter().any(|existing| existing == id) {
+            continue;
+        }
+        crate::store::validate_id(id).map_err(to_str_err)?;
+        if id == task_id {
+            return Err(format!("task '{task_id}' cannot block itself"));
+        }
+        repo.read_task(id).await.map_err(to_str_err)?;
+        normalized.push(id.to_string());
+    }
+    Ok(normalized)
+}
+
+async fn ensure_task_unblocked(state: &AppState, task_id: &str) -> Result<(), String> {
+    let blockers = state.task_blockers.get(task_id);
+    if blockers.is_empty() {
+        return Ok(());
+    }
+
+    let mut unfinished = Vec::new();
+    for blocker_id in blockers {
+        match state.repo.read_task(&blocker_id).await {
+            Ok(task) if task.estado.satisfies_blocker() => {}
+            Ok(task) => unfinished.push(format!(
+                "{} '{}' is {}",
+                task.id,
+                task.titulo,
+                task.estado.as_str()
+            )),
+            Err(StoreError::NotFound(_)) => unfinished.push(format!("{blocker_id} was not found")),
+            Err(e) => return Err(to_str_err(e)),
+        }
+    }
+
+    if unfinished.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "task '{task_id}' is blocked by unfinished task(s): {}",
+            unfinished.join("; ")
+        ))
+    }
+}
+
 // ───────────────────────── tasks ─────────────────────────
 
 #[tauri::command]
@@ -292,10 +360,7 @@ pub async fn list_tasks(
 ) -> Result<Vec<Task>, String> {
     let filter = estado.as_deref().and_then(Estado::parse);
     let tasks = state.repo.list_tasks(filter).await.map_err(to_str_err)?;
-    let mut tasks: Vec<Task> = tasks
-        .into_iter()
-        .map(|t| state.task_worktrees.enrich(t))
-        .collect();
+    let mut tasks: Vec<Task> = tasks.into_iter().map(|t| enrich_task(&state, t)).collect();
     sort_tasks_by_order(&mut tasks, &state.task_order.snapshot());
     Ok(tasks)
 }
@@ -339,7 +404,7 @@ fn task_num(id: &str) -> u64 {
 #[tauri::command]
 pub async fn read_task(state: State<'_, Arc<AppState>>, id: String) -> Result<Task, String> {
     let task = state.repo.read_task(&id).await.map_err(to_str_err)?;
-    Ok(state.task_worktrees.enrich(task))
+    Ok(enrich_task(&state, task))
 }
 
 /// Compute the next sequential task id (`T-<n>`) by scanning existing
@@ -402,7 +467,16 @@ pub async fn create_task(
             return Err(format!("unknown project_id: {pid}"));
         }
     }
+    let blocked_by =
+        normalize_and_validate_blockers(state.repo.as_ref(), &task.id, task.blocked_by.clone())
+            .await?;
     state.repo.create_task(&task).await.map_err(to_str_err)?;
+    if !blocked_by.is_empty() {
+        state
+            .task_blockers
+            .set(&task.id, blocked_by)
+            .map_err(to_str_err)?;
+    }
     state
         .task_projects
         .set(&task.id, Some(pid))
@@ -417,6 +491,9 @@ pub async fn set_estado(
     estado: String,
 ) -> Result<(), String> {
     let parsed = Estado::parse(&estado).ok_or_else(|| format!("invalid estado: {estado}"))?;
+    if parsed == Estado::Fazendo {
+        ensure_task_unblocked(&state, &id).await?;
+    }
     state.repo.set_estado(&id, parsed).await.map_err(to_str_err)
 }
 
@@ -471,6 +548,9 @@ pub async fn delete_task(state: State<'_, Arc<AppState>>, id: String) -> Result<
     }
     if let Err(e) = state.task_worktrees.forget(&id) {
         tracing::warn!(error = ?e, task = %id, "task_worktrees.forget failed");
+    }
+    if let Err(e) = state.task_blockers.forget(&id) {
+        tracing::warn!(error = ?e, task = %id, "task_blockers.forget failed");
     }
     if let Err(e) = state.task_order.forget(&id) {
         tracing::warn!(error = ?e, task = %id, "task_order.forget failed");
@@ -571,6 +651,26 @@ pub fn list_task_worktrees(
     state: State<'_, Arc<AppState>>,
 ) -> Result<HashMap<String, WorktreeInfo>, String> {
     Ok(state.task_worktrees.snapshot())
+}
+
+/// Persist the blockers for a task. Blocker ids must point to existing
+/// tasks and cannot include the task itself.
+#[tauri::command]
+pub async fn set_task_blockers(
+    state: State<'_, Arc<AppState>>,
+    task_id: String,
+    blocked_by: Vec<String>,
+) -> Result<(), String> {
+    crate::store::validate_id(&task_id).map_err(to_str_err)?;
+    state.repo.read_task(&task_id).await.map_err(to_str_err)?;
+    let blocked_by =
+        normalize_and_validate_blockers(state.repo.as_ref(), &task_id, blocked_by).await?;
+    state
+        .task_blockers
+        .set(&task_id, blocked_by)
+        .map_err(to_str_err)?;
+    emit_tasks_changed(&state, &task_id);
+    Ok(())
 }
 
 /// Persist the task's declarative branch/worktree config from the modal:
@@ -846,7 +946,7 @@ pub async fn set_titulo(
 #[tauri::command]
 pub async fn current_task(state: State<'_, Arc<AppState>>) -> Result<Option<Task>, String> {
     let task = state.repo.current_task().await.map_err(to_str_err)?;
-    Ok(task.map(|t| state.task_worktrees.enrich(t)))
+    Ok(task.map(|t| enrich_task(&state, t)))
 }
 
 // ───────────────────────── triage ─────────────────────────
@@ -974,6 +1074,7 @@ async fn create_task_from_proposta(state: &AppState, proposta_id: &str) -> Resul
         body: proposta_to_body(&proposta),
         worktree_path: None,
         branch: None,
+        blocked_by: Vec::new(),
     };
     state.repo.create_task(&task).await.map_err(to_str_err)?;
     state
@@ -1496,6 +1597,9 @@ pub async fn start_task_agent(
             task_id,
             task.estado.as_str()
         ));
+    }
+    if mode == TaskAgentMode::Execute {
+        ensure_task_unblocked(&state, &task_id).await?;
     }
     let original_estado = task.estado;
     let task_titulo = task.titulo.clone();
@@ -2230,6 +2334,7 @@ mod tests {
             body: String::new(),
             worktree_path: None,
             branch: None,
+            blocked_by: Vec::new(),
         }
     }
 

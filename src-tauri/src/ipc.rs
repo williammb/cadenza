@@ -407,7 +407,7 @@ async fn dispatch(
                 .map_err(|e| not_found_or_internal(&e))?;
             let mut enriched: Vec<_> = tasks
                 .into_iter()
-                .map(|t| deps.state.task_worktrees.enrich(t))
+                .map(|t| crate::commands::enrich_task(&deps.state, t))
                 .collect();
             let order = deps.state.task_order.snapshot();
             crate::commands::sort_tasks_by_order(&mut enriched, &order);
@@ -423,7 +423,7 @@ async fn dispatch(
                 .map_err(|e| not_found_or_internal(&e))?;
             let mut enriched: Vec<_> = tasks
                 .into_iter()
-                .map(|t| deps.state.task_worktrees.enrich(t))
+                .map(|t| crate::commands::enrich_task(&deps.state, t))
                 .collect();
             let order = deps.state.task_order.snapshot();
             crate::commands::sort_tasks_by_order(&mut enriched, &order);
@@ -440,7 +440,7 @@ async fn dispatch(
                 .read_task(&args.task_id)
                 .await
                 .map_err(|e| not_found_or_internal(&e))?;
-            let task: ops::read_task::Result = deps.state.task_worktrees.enrich(task);
+            let task: ops::read_task::Result = crate::commands::enrich_task(&deps.state, task);
             to_value(&task)
         }
         OP_LIST_PROJECTS => {
@@ -709,6 +709,7 @@ async fn create_task_op(
         body: args.body.clone(),
         worktree_path: None,
         branch: None,
+        blocked_by: Vec::new(),
     };
     deps.state
         .repo

@@ -33,6 +33,14 @@ impl Estado {
             _ => None,
         }
     }
+
+    /// Whether a task in this state satisfies a downstream blocker — i.e. it
+    /// has reached review or completion, so tasks blocked by it may start.
+    /// The frontend mirrors this set in `BLOCKER_SATISFIED_ESTADOS`
+    /// (`ui/app.js`); keep the two in sync.
+    pub fn satisfies_blocker(&self) -> bool {
+        matches!(self, Estado::AguardandoRevisao | Estado::Feito)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,6 +68,12 @@ pub struct Task {
     /// `worktree_path` in the sidecar. `None` when not set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
+
+    /// Task ids that must be at least `aguardando_revisao` before this
+    /// task can be started for execution. Stored in the Cadenza sidecar
+    /// `task-blockers.json`, not in legacy task frontmatter.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<String>,
 }
 
 #[cfg(test)]
@@ -87,5 +101,21 @@ mod tests {
     #[test]
     fn estado_rejects_unknown() {
         assert_eq!(Estado::parse("WIP"), None);
+    }
+
+    #[test]
+    fn task_defaults_blocked_by_when_absent() {
+        let task: Task = serde_json::from_str(
+            r#"{
+                "id": "T-1",
+                "titulo": "Example",
+                "estado": "a_fazer",
+                "responsavel": "humano",
+                "body": "body"
+            }"#,
+        )
+        .unwrap();
+
+        assert!(task.blocked_by.is_empty());
     }
 }

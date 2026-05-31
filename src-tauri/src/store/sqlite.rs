@@ -95,6 +95,7 @@ fn task_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Task> {
         body: row.try_get("body").map_err(map_sqlx)?,
         worktree_path: None,
         branch: None,
+        blocked_by: Vec::new(),
     })
 }
 
@@ -534,6 +535,7 @@ mod tests {
             body: format!("body of {id}"),
             worktree_path: None,
             branch: None,
+            blocked_by: Vec::new(),
         }
     }
 

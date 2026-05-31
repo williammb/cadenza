@@ -743,7 +743,8 @@ dialog.modal[open] {
 .modal-status.ok    { color: var(--ok);     font-style: normal; font-weight: 500; }
 
 /* Worktree / branch section in the task modal (edit mode only). */
-.worktree-section {
+.worktree-section,
+.blockers-section {
   border: 1px solid var(--hairline);
   border-radius: 4px;
   padding: 0.6rem 0.75rem 0.75rem;
@@ -752,13 +753,53 @@ dialog.modal[open] {
   flex-direction: column;
   gap: 0.5rem;
 }
-.worktree-section legend {
+.worktree-section legend,
+.blockers-section legend {
   font-size: 0.78rem;
   font-weight: 600;
   color: var(--muted);
   padding: 0 0.35rem;
 }
 .worktree-section .modal-status { flex: none; }
+
+.blockers-list {
+  display: grid;
+  gap: 0.35rem;
+  max-height: 9rem;
+  overflow-y: auto;
+  padding-right: 0.1rem;
+}
+.blocker-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2rem;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--hairline);
+  border-radius: 3px;
+  background: var(--card-bg);
+  font-size: 0.82rem;
+}
+.blocker-option input {
+  width: auto;
+  margin: 0;
+}
+.blocker-option-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blocker-state {
+  color: var(--muted);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+.blocker-option.is-stale {
+  border-style: dashed;
+}
+.blockers-section .modal-status { flex: none; }
 
 /* Inline checkbox row (e.g. "Use worktree") — overrides the column .field. */
 .field-checkbox {
@@ -1734,6 +1775,33 @@ textarea::placeholder {
 }
 
 /* ─────────────── Task-modal "Iniciar" header button ─────────────── */
+
+.card-blockers {
+  align-self: flex-start;
+  max-width: 100%;
+  font-family: var(--font-feature);
+  font-size: 0.68rem;
+  line-height: 1;
+  padding: 0.2rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--card-border-strong);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.card-blockers.is-blocked {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.card-blockers.is-clear {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.card-blockers::before {
+  content: "!";
+  margin-right: 0.25rem;
+  font-weight: 700;
+}
 
 .btn-start {
   display: inline-flex;
