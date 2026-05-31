@@ -26,6 +26,8 @@ const tituloEl = document.getElementById("task-titulo");
 const projectFieldEl = document.getElementById("task-project-field");
 const projectEl = document.getElementById("task-project");
 const estadoEl = document.getElementById("task-estado");
+const blockersListEl = document.getElementById("task-blockers-list");
+const blockersEmptyEl = document.getElementById("task-blockers-empty");
 const bodyEl = document.getElementById("task-body");
 const deleteBtn = document.getElementById("btn-delete-task");
 const startBtn = document.getElementById("btn-start-task");
@@ -48,6 +50,8 @@ let mode = "create"; // "create" | "edit"
 let editingId = null;
 let original = null;
 let onClosedRefresh = null;
+let selectedBlockers = new Set();
+let blockerLoadGen = 0;
 
 // Image attachments: paste / drop / file button + Edit/Preview toggle.
 // For a new task there's no id yet, so images are buffered and flushed to
@@ -106,6 +110,7 @@ export async function openNewTask(prefill = {}) {
     projectEl.append(opt);
   }
   projectEl.value = prefill.projectId ?? "";
+  await loadBlockerChoices(prefill.blockedBy ?? []);
 
   if (!dialog.open) dialog.showModal();
   tituloEl.focus();
@@ -134,9 +139,108 @@ export async function openEditTask(id) {
   projectFieldEl.hidden = true;
   worktreeSection.hidden = false;
   attachments.reset();
+  await loadBlockerChoices(task.blocked_by ?? []);
   loadWorktreeDefaults(id);
   if (!dialog.open) dialog.showModal();
   tituloEl.focus();
+}
+
+function normalizeBlockerIds(ids) {
+  const out = [];
+  for (const raw of ids ?? []) {
+    const id = String(raw ?? "").trim();
+    if (!id || out.includes(id)) continue;
+    out.push(id);
+  }
+  return out;
+}
+
+function sameIdList(a, b) {
+  const aa = normalizeBlockerIds(a);
+  const bb = normalizeBlockerIds(b);
+  return aa.length === bb.length && aa.every((id, idx) => id === bb[idx]);
+}
+
+function readBlockedBy() {
+  return [...selectedBlockers];
+}
+
+async function loadBlockerChoices(selected = readBlockedBy()) {
+  const myGen = ++blockerLoadGen;
+  selectedBlockers = new Set(normalizeBlockerIds(selected));
+  blockersListEl.replaceChildren();
+  blockersEmptyEl.hidden = false;
+  try {
+    const [tasks, mapping] = await Promise.all([
+      invoke("list_tasks", { estado: null }),
+      invoke("list_task_projects"),
+    ]);
+    if (myGen !== blockerLoadGen) return;
+    const currentProject =
+      mode === "create" ? projectEl.value || null : mapping?.[editingId] || null;
+    const candidates = (tasks ?? []).filter((task) => {
+      if (!task?.id || task.id === editingId) return false;
+      return !currentProject || mapping?.[task.id] === currentProject;
+    });
+    renderBlockerChoices(candidates);
+  } catch (e) {
+    if (myGen !== blockerLoadGen) return;
+    blockersEmptyEl.hidden = false;
+    setStatus(t("task-error", { error: e }), "error");
+  }
+}
+
+function renderBlockerChoices(tasks) {
+  blockersListEl.replaceChildren();
+  const shown = new Set();
+  for (const task of tasks) {
+    shown.add(task.id);
+    blockersListEl.append(makeBlockerOption(task));
+  }
+  for (const id of selectedBlockers) {
+    if (!shown.has(id)) {
+      blockersListEl.append(makeBlockerOption({ id, titulo: id, estado: "" }, true));
+    }
+  }
+  blockersEmptyEl.hidden = blockersListEl.children.length > 0;
+}
+
+function makeBlockerOption(task, stale = false) {
+  const label = document.createElement("label");
+  label.className = "blocker-option" + (stale ? " is-stale" : "");
+
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = selectedBlockers.has(task.id);
+  input.addEventListener("change", () => {
+    if (input.checked) {
+      selectedBlockers.add(task.id);
+    } else {
+      selectedBlockers.delete(task.id);
+    }
+  });
+
+  const text = document.createElement("span");
+  text.className = "blocker-option-text";
+  const id = document.createElement("strong");
+  id.textContent = task.id;
+  const title = document.createElement("span");
+  title.textContent = task.titulo ? ` ${task.titulo}` : "";
+  text.append(id, title);
+
+  const state = document.createElement("span");
+  state.className = "blocker-state";
+  state.textContent = task.estado ? t(`estado-${task.estado.replaceAll("_", "-")}`) : "";
+
+  label.append(input, text, state);
+  return label;
+}
+
+async function persistBlockersConfig(id) {
+  await invoke("set_task_blockers", {
+    taskId: id,
+    blockedBy: readBlockedBy(),
+  });
 }
 
 // Pre-fill the worktree section in one round-trip. Origin defaults to the
@@ -229,12 +333,15 @@ startBtn.addEventListener("click", async () => {
   const id = editingId;
   const titulo = original?.titulo ?? tituloEl.value.trim();
   // Persist the branch/worktree config first so the start-agent flow
-  // prepares the workspace the user just configured. A failure here is
+  // prepares the workspace the user just configured. Blockers are also
+  // persisted here because they affect whether execution may start.
+  // A failure here is
   // surfaced in the section status rather than silently dropping the config.
   try {
+    await persistBlockersConfig(id);
     await persistWorktreeConfig(id);
   } catch (e) {
-    setWorktreeStatus(t("task-worktree-error", { error: e }), "error");
+    setStatus(t("task-error", { error: e }), "error");
     return;
   }
   closeTaskModal();
@@ -259,6 +366,9 @@ deleteBtn.addEventListener("click", async () => {
 // form submit) and the git work happens at "Iniciar". The checkbox only
 // gates the worktree path field's visibility.
 useWorktreeEl.addEventListener("change", syncWorktreeMode);
+projectEl.addEventListener("change", () => {
+  if (mode === "create") loadBlockerChoices(readBlockedBy());
+});
 
 form.addEventListener("submit", async (e) => {
   e.preventDefault();
@@ -284,7 +394,14 @@ form.addEventListener("submit", async (e) => {
       // rewrite the buffered tokens to their saved relative paths.
       const finalBody = await attachments.flush(id);
       await invoke("create_task", {
-        task: { id, titulo, estado, responsavel: DEFAULT_RESPONSAVEL, body: finalBody },
+        task: {
+          id,
+          titulo,
+          estado,
+          responsavel: DEFAULT_RESPONSAVEL,
+          body: finalBody,
+          blocked_by: readBlockedBy(),
+        },
         projectId,
       });
       closeTaskModal();
@@ -299,6 +416,9 @@ form.addEventListener("submit", async (e) => {
   try {
     if (titulo !== original.titulo) {
       await invoke("set_titulo", { id: editingId, titulo });
+    }
+    if (!sameIdList(readBlockedBy(), original.blocked_by ?? [])) {
+      await persistBlockersConfig(editingId);
     }
     if (estado !== original.estado) {
       await invoke("set_estado", { id: editingId, estado });
