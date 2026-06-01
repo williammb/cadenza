@@ -1578,8 +1578,11 @@ pub async fn start_task_agent(
     model: String,
     // Absent/null from older callers → `Execute`.
     mode: Option<TaskAgentMode>,
+    // Absent/null from older callers -> false.
+    auto_mode: Option<bool>,
 ) -> Result<StartTaskAgentResult, String> {
     let mode = mode.unwrap_or_default();
+    let auto_mode = auto_mode.unwrap_or(false);
     // 1. Task must exist and not be `feito`. The transition to `fazendo`
     //    (if not already there) happens AFTER a successful spawn — see
     //    step 5b — so a failed start doesn't leave the kanban moved.
@@ -1688,7 +1691,7 @@ pub async fn start_task_agent(
             mode,
         ))
     };
-    let plan: LaunchPlan = agent::plan_launch(
+    let plan: LaunchPlan = agent::plan_launch_with_options(
         agent_kind,
         &model,
         command_override.as_deref(),
@@ -1697,7 +1700,8 @@ pub async fn start_task_agent(
         &project_id,
         existing_conv_id.as_deref(),
         initial_prompt.as_deref(),
-    );
+        agent::LaunchOptions { auto_mode },
+    )?;
     let LaunchPlan {
         spawn,
         conversation_id_known,
@@ -1733,7 +1737,7 @@ pub async fn start_task_agent(
         .map_err(to_str_err)?
         .insert(session_id.clone(), session.clone());
     tracing::info!(
-        task = %task_id, agent = ?agent_kind, model = %model, resumed,
+        task = %task_id, agent = ?agent_kind, model = %model, resumed, auto_mode,
         session = %session_id, "task agent started"
     );
 
