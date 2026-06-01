@@ -36,6 +36,8 @@ pub const DATA_VERSION: u32 = 1;
 pub enum AgenteKind {
     ClaudeCode,
     Codex,
+    /// GitHub Copilot CLI (`copilot`) — terminal TUI coding agent.
+    Copilot,
     /// Antigravity CLI (`agy`) — Google's Gemini-based terminal TUI
     /// coding agent. Runs interactively under a PTY like the others.
     Antigravity,
@@ -314,6 +316,15 @@ mod tests {
         assert_eq!(cfg.agente.as_ref().unwrap().kind, AgenteKind::OpenCode);
         let json = serde_json::to_string(&cfg).unwrap();
         assert!(json.contains("\"opencode\""), "got: {json}");
+    }
+
+    #[test]
+    fn copilot_kind_roundtrips() {
+        let f = write_tmp(r#"{"data_version":1,"agente":{"kind":"copilot"}}"#);
+        let cfg = Config::load_from(f.path()).unwrap();
+        assert_eq!(cfg.agente.as_ref().unwrap().kind, AgenteKind::Copilot);
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("\"copilot\""), "got: {json}");
     }
 
     #[test]

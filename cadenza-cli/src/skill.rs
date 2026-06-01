@@ -1,5 +1,5 @@
 //! `cadenza skill` — install/remove the Cadenza usage instructions into
-//! AI agents (Claude Code, Codex, Antigravity, OpenCode) at project or
+//! AI agents (Claude Code, Codex, Copilot, Antigravity, OpenCode) at project or
 //! global scope.
 //!
 //! The actual filesystem logic lives in the `skills-core` crate so the
@@ -59,6 +59,7 @@ pub struct RemoveOpts {
 pub enum CliAgent {
     Claude,
     Codex,
+    Copilot,
     Antigravity,
     Opencode,
 }
@@ -68,6 +69,7 @@ impl From<CliAgent> for Agent {
         match a {
             CliAgent::Claude => Agent::Claude,
             CliAgent::Codex => Agent::Codex,
+            CliAgent::Copilot => Agent::Copilot,
             CliAgent::Antigravity => Agent::Antigravity,
             CliAgent::Opencode => Agent::OpenCode,
         }
@@ -129,15 +131,16 @@ fn prompt_agents(action: &str) -> Result<Vec<Agent>> {
     let stdin = io::stdin();
     if !stdin.is_terminal() {
         anyhow::bail!(
-            "no --agent given and stdin is not a TTY; pass --agent claude, --agent codex, --agent antigravity, --agent opencode, or comma-separate (e.g. --agent claude,codex,antigravity,opencode)"
+            "no --agent given and stdin is not a TTY; pass --agent claude, --agent codex, --agent copilot, --agent antigravity, --agent opencode, or comma-separate (e.g. --agent claude,codex,copilot,antigravity,opencode)"
         );
     }
     eprintln!("Which agent(s) to {action}?");
     eprintln!("  [1] claude");
     eprintln!("  [2] codex");
-    eprintln!("  [3] antigravity");
-    eprintln!("  [4] opencode");
-    eprintln!("  [5] all");
+    eprintln!("  [3] copilot");
+    eprintln!("  [4] antigravity");
+    eprintln!("  [5] opencode");
+    eprintln!("  [6] all");
     eprint!("> ");
     io::stderr().flush().ok();
     let mut line = String::new();
@@ -147,6 +150,7 @@ fn prompt_agents(action: &str) -> Result<Vec<Agent>> {
         vec![
             Agent::Claude,
             Agent::Codex,
+            Agent::Copilot,
             Agent::Antigravity,
             Agent::OpenCode,
         ]
@@ -154,10 +158,11 @@ fn prompt_agents(action: &str) -> Result<Vec<Agent>> {
     match trimmed {
         "1" | "claude" => Ok(vec![Agent::Claude]),
         "2" | "codex" => Ok(vec![Agent::Codex]),
-        "3" | "antigravity" => Ok(vec![Agent::Antigravity]),
-        "4" | "opencode" => Ok(vec![Agent::OpenCode]),
+        "3" | "copilot" => Ok(vec![Agent::Copilot]),
+        "4" | "antigravity" => Ok(vec![Agent::Antigravity]),
+        "5" | "opencode" => Ok(vec![Agent::OpenCode]),
         // "both" kept as a back-compat alias; it now means every agent.
-        "5" | "all" | "both" | "" => Ok(all()),
+        "6" | "all" | "both" | "" => Ok(all()),
         other => anyhow::bail!("invalid choice: {other:?}"),
     }
 }

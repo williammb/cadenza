@@ -9,6 +9,8 @@
 //!     it asynchronously from `~/.codex/sessions/<y>/<m>/<d>/rollout-…-<uuid>.jsonl`
 //!     after spawning. Resume with `codex resume <uuid>` (UUIDs take
 //!     precedence over thread-name args per `codex resume --help`).
+//!   - GitHub Copilot CLI: accepts `--session-id <uuid>` so we control the
+//!     conversation id from the start. Resume with `--session-id <uuid>`.
 //!   - OpenCode: generates a `ses_*` id on first start. We capture it by
 //!     comparing `opencode session list --format json` before/after spawn.
 //!     Resume with `opencode --session <id>`.
@@ -18,11 +20,12 @@
 //! module is the single seam to update.
 //!
 //! Initial-prompt delivery (verified 2026-05-30 against `--help` for all
-//! four): the prompt is passed via argv so the backend never types into
+//! supported agents): the prompt is passed via argv so the backend never types into
 //! the live PTY. Claude and Codex take it as a trailing positional
 //! (`claude/codex [OPTIONS] [PROMPT]`, interactive by default); agy needs
 //! `--prompt-interactive <prompt>` (it rejects a bare positional);
-//! OpenCode uses `--prompt <prompt>`. See `PromptDelivery`.
+//! Copilot uses `-i <prompt>`; OpenCode uses `--prompt <prompt>`. See
+//! `PromptDelivery`.
 
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -114,6 +117,7 @@ pub fn default_command(kind: AgenteKind) -> &'static str {
     match kind {
         AgenteKind::ClaudeCode => "claude",
         AgenteKind::Codex => "codex",
+        AgenteKind::Copilot => "copilot",
         AgenteKind::Antigravity => "agy",
         AgenteKind::OpenCode => "opencode",
     }
@@ -134,13 +138,14 @@ pub struct AgentPresence {
 }
 
 /// Return install presence for every supported agent. Stable order:
-/// Claude Code, Codex, Antigravity, OpenCode — matches the UI's option order.
+/// Claude Code, Codex, Antigravity, OpenCode, Copilot.
 pub fn list_installed_agents() -> Vec<AgentPresence> {
     [
         AgenteKind::ClaudeCode,
         AgenteKind::Codex,
         AgenteKind::Antigravity,
         AgenteKind::OpenCode,
+        AgenteKind::Copilot,
     ]
     .into_iter()
     .map(detect_presence)
@@ -167,6 +172,7 @@ fn config_dir_for(kind: AgenteKind) -> Option<PathBuf> {
     Some(match kind {
         AgenteKind::ClaudeCode => home.join(".claude"),
         AgenteKind::Codex => home.join(".codex"),
+        AgenteKind::Copilot => home.join(".copilot"),
         // TODO(agy-verify): confirm the dir `agy` actually creates.
         // Docs point at `~/.gemini/antigravity-cli` (skills/MCP config)
         // and `~/.config/antigravity` (config.toml). `.gemini` is the
@@ -278,6 +284,15 @@ pub fn plan_launch(
             existing_conversation_id,
             initial_prompt,
         ),
+        AgenteKind::Copilot => plan_copilot(
+            command,
+            model,
+            cwd,
+            task_id,
+            project_id,
+            existing_conversation_id,
+            initial_prompt,
+        ),
         AgenteKind::Antigravity => plan_antigravity(
             command,
             model,
@@ -296,6 +311,51 @@ pub fn plan_launch(
             existing_conversation_id,
             initial_prompt,
         ),
+    }
+}
+
+fn plan_copilot(
+    command: String,
+    model: &str,
+    cwd: &Path,
+    task_id: &str,
+    project_id: &str,
+    existing_conversation_id: Option<&str>,
+    initial_prompt: Option<&str>,
+) -> LaunchPlan {
+    let mut args: Vec<String> = Vec::new();
+
+    let conversation_id = match existing_conversation_id {
+        Some(id) => id.to_string(),
+        None => Uuid::new_v4().to_string(),
+    };
+
+    args.push("--session-id".to_string());
+    args.push(conversation_id.clone());
+
+    if existing_conversation_id.is_none() {
+        if !model.is_empty() {
+            args.push("--model".to_string());
+            args.push(model.to_string());
+        }
+        if let Some(prompt) = initial_prompt {
+            args.push("-i".to_string());
+            args.push(prompt.to_string());
+        }
+    }
+
+    let cfg = SpawnConfig::new(command)
+        .args(args)
+        .cwd(cwd)
+        .size(DEFAULT_COLS, DEFAULT_ROWS)
+        .cadenza_env(project_id, task_id, &conversation_id);
+
+    LaunchPlan {
+        spawn: cfg,
+        conversation_id_known: Some(conversation_id),
+        pending_codex_capture: None,
+        pending_opencode_capture: None,
+        prompt_delivery: PromptDelivery::Argv,
     }
 }
 
@@ -895,6 +955,64 @@ mod tests {
     }
 
     #[test]
+    fn copilot_new_session_passes_session_id_model_and_prompt() {
+        let plan = plan_launch(
+            AgenteKind::Copilot,
+            "gpt-5.2",
+            None,
+            Path::new("/tmp/proj"),
+            "T-21",
+            "proj-copilot",
+            None,
+            Some("do the task"),
+        );
+        assert_eq!(plan.spawn.command, "copilot");
+        let args = &plan.spawn.args;
+        let s = args
+            .iter()
+            .position(|a| a == "--session-id")
+            .expect("--session-id");
+        let uuid = &args[s + 1];
+        assert_eq!(uuid.len(), 36, "uuid arg should be 36 chars, got {uuid}");
+        let m = args.iter().position(|a| a == "--model").expect("--model");
+        assert_eq!(args[m + 1], "gpt-5.2");
+        let p = args.iter().position(|a| a == "-i").expect("-i");
+        assert_eq!(args[p + 1], "do the task");
+        assert_eq!(plan.conversation_id_known.as_deref(), Some(uuid.as_str()));
+        assert!(plan.pending_codex_capture.is_none());
+        assert!(plan.pending_opencode_capture.is_none());
+        assert_eq!(plan.prompt_delivery, PromptDelivery::Argv);
+    }
+
+    #[test]
+    fn copilot_resume_uses_session_id_and_skips_model_prompt() {
+        let plan = plan_launch(
+            AgenteKind::Copilot,
+            "gpt-5.2",
+            None,
+            Path::new("/tmp/proj"),
+            "T-21",
+            "proj-copilot",
+            Some("019d4891-0feb-78a2-8f90-841686dc0175"),
+            Some("ignored"),
+        );
+        let args = &plan.spawn.args;
+        let s = args
+            .iter()
+            .position(|a| a == "--session-id")
+            .expect("--session-id");
+        assert_eq!(args[s + 1], "019d4891-0feb-78a2-8f90-841686dc0175");
+        assert!(!args.iter().any(|a| a == "--model"));
+        assert!(!args.iter().any(|a| a == "-i"));
+        assert_eq!(
+            plan.conversation_id_known.as_deref(),
+            Some("019d4891-0feb-78a2-8f90-841686dc0175")
+        );
+        assert!(plan.pending_codex_capture.is_none());
+        assert!(plan.pending_opencode_capture.is_none());
+    }
+
+    #[test]
     fn antigravity_new_session_marks_pending_capture() {
         let plan = plan_launch(
             AgenteKind::Antigravity,
@@ -1170,11 +1288,12 @@ mod tests {
     #[test]
     fn list_installed_agents_returns_all_kinds_in_stable_order() {
         let rows = list_installed_agents();
-        assert_eq!(rows.len(), 4);
+        assert_eq!(rows.len(), 5);
         assert_eq!(rows[0].kind, AgenteKind::ClaudeCode);
         assert_eq!(rows[1].kind, AgenteKind::Codex);
         assert_eq!(rows[2].kind, AgenteKind::Antigravity);
         assert_eq!(rows[3].kind, AgenteKind::OpenCode);
+        assert_eq!(rows[4].kind, AgenteKind::Copilot);
         for row in &rows {
             // `installed` may also be set by the off-PATH binary locator,
             // so it's a superset of the on_path/config-dir signals.

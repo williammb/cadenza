@@ -56,6 +56,7 @@ pub fn parse_models(bytes: &[u8], kind: AgenteKind) -> Vec<ModelEntry> {
     match kind {
         AgenteKind::ClaudeCode => parse_claude(&frame),
         AgenteKind::Codex => parse_codex(&frame),
+        AgenteKind::Copilot => parse_copilot(&frame),
         AgenteKind::Antigravity => parse_antigravity(&frame),
         AgenteKind::OpenCode => parse_opencode(&frame),
     }
@@ -517,6 +518,49 @@ fn parse_codex(frame: &[String]) -> Vec<ModelEntry> {
     entries
 }
 
+fn parse_copilot(frame: &[String]) -> Vec<ModelEntry> {
+    let start = frame
+        .iter()
+        .position(|l| {
+            let lower = l.to_lowercase();
+            lower.contains("select model") || lower.contains("/model")
+        })
+        .unwrap_or(0);
+    let mut entries = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for line in frame.iter().skip(start) {
+        let Some((_, rest)) = match_numbered_row(line) else {
+            continue;
+        };
+        let id = rest
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c: char| c == ',' || c == ';')
+            .to_string();
+        if id.is_empty() || id.len() > 80 {
+            continue;
+        }
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let current = rest.contains("(current)")
+            || line.contains("\u{221a}")
+            || line.contains("\u{2713}")
+            || line.contains("\u{2714}")
+            || line.contains("\u{25cf}");
+        entries.push(ModelEntry {
+            id: id.clone(),
+            label: rest.trim().to_string(),
+            current,
+        });
+        if entries.len() >= 12 {
+            break;
+        }
+    }
+    entries
+}
+
 /// Parse the Antigravity (`agy`) `/model` menu.
 ///
 /// TODO(agy-verify): `agy` is not installed on the dev machine, so the
@@ -607,6 +651,7 @@ mod tests {
 
     const CLAUDE_FIXTURE: &[u8] = include_bytes!("../testdata/models_claude.bin");
     const CODEX_FIXTURE: &[u8] = include_bytes!("../testdata/models_codex.bin");
+    const COPILOT_FIXTURE: &[u8] = include_bytes!("../testdata/models_copilot.bin");
 
     #[test]
     fn parse_claude_fixture_lists_three_models_with_default_current() {
@@ -647,6 +692,18 @@ mod tests {
         );
         let current = entries.iter().find(|e| e.current).expect("a current row");
         assert_eq!(current.id, "gpt-5.5");
+    }
+
+    #[test]
+    fn parse_copilot_fixture_lists_gpt_and_claude_models() {
+        let entries = parse_models(COPILOT_FIXTURE, AgenteKind::Copilot);
+        let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec!["gpt-5.2", "gpt-5.1", "claude-sonnet-4.5", "claude-opus-4.1",],
+        );
+        let current = entries.iter().find(|e| e.current).expect("a current row");
+        assert_eq!(current.id, "gpt-5.2");
     }
 
     #[test]

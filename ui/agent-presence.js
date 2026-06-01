@@ -4,7 +4,7 @@
 // config folder can be found on the host.
 //
 // The backend probe (`list_installed_agents`) returns
-//   [{ kind: "claude_code" | "codex" | "antigravity" | "opencode", installed, on_path, has_config_dir }]
+//   [{ kind: "claude_code" | "codex" | "copilot" | "antigravity" | "opencode", installed, on_path, has_config_dir }]
 // — `installed` is `on_path || has_config_dir`. We never mutate values
 // the user has already saved (a non-installed default still loads as
 // the picked value) — we only annotate the label and disable the
@@ -16,16 +16,18 @@ const { invoke } = window.__TAURI__.core;
 
 // Map "claude_code" (CLI / config enum) ↔ "claude" (UI skill enum).
 // Both backend Tauri commands accept their own form; we normalize here.
-// For codex, antigravity, and opencode the kind and skill names coincide.
+// For codex, copilot, antigravity, and opencode the kind and skill names coincide.
 const KIND_TO_SKILL = {
   claude_code: "claude",
   codex: "codex",
+  copilot: "copilot",
   antigravity: "antigravity",
   opencode: "opencode",
 };
 const SKILL_TO_KIND = {
   claude: "claude_code",
   codex: "codex",
+  copilot: "copilot",
   antigravity: "antigravity",
   opencode: "opencode",
 };
@@ -59,7 +61,7 @@ export function presenceBySkillAgent(map, skillAgent) {
 // the user's saved setting.
 //
 // `selectEl` is the <select>; option values must match the backend
-// kind ("claude_code", "codex"). Safe to call repeatedly (idempotent).
+// kind ("claude_code", "codex", "copilot"). Safe to call repeatedly (idempotent).
 export function decorateKindSelect(selectEl, presenceMap) {
   if (!selectEl) return;
   const selected = selectEl.value;
