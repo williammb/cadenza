@@ -16,17 +16,18 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{
-    files_inner::Store as FileStore, ideias_inner::IdeiaStore, triage_inner::Triage as FileTriage,
-    DecisaoRegistro, Estado, Ideia, IdeiaStatus, NewProposta, Proposta, Repository, Result,
-    StoreError, Task,
+    files_inner::Store as FileStore, ideias_inner::IdeiaStore, memory_inner::MemoryStore,
+    triage_inner::Triage as FileTriage, validate_id, DecisaoRegistro, Estado, Ideia, IdeiaStatus,
+    MemoryItem, MemorySuggestion, NewProposta, Proposta, Repository, Result, StoreError, Task,
 };
 
 /// Tasks live under `<home>/tasks/`, triage under `<home>/triage/`,
-/// ideias under `<home>/inbox/`.
+/// ideias under `<home>/inbox/`, memória sob `<home>/memory/`.
 pub struct FileRepository {
     tasks: Arc<FileStore>,
     triage: Arc<FileTriage>,
     ideias: Arc<IdeiaStore>,
+    memory: Arc<MemoryStore>,
 }
 
 impl FileRepository {
@@ -34,10 +35,12 @@ impl FileRepository {
         let tasks = FileStore::new(home.join("tasks")).map_err(StoreError::Io)?;
         let triage = FileTriage::new(home.join("triage"))?;
         let ideias = IdeiaStore::new(home.join("inbox"))?;
+        let memory = MemoryStore::new(home.join("memory"))?;
         Ok(Self {
             tasks: Arc::new(tasks),
             triage: Arc::new(triage),
             ideias: Arc::new(ideias),
+            memory: Arc::new(memory),
         })
     }
 }
@@ -127,5 +130,56 @@ impl Repository for FileRepository {
 
     async fn set_ideia_status(&self, id: &str, status: IdeiaStatus) -> Result<()> {
         Ok(self.ideias.set_status(id, status)?)
+    }
+
+    // ─── memória ───────────────────────────────────────────────────
+    // `project_id` é o nome do arquivo no backend de arquivos, então
+    // validamos contra path traversal antes de qualquer `path_for`.
+
+    async fn list_memory(&self, project_id: &str) -> Result<Vec<MemoryItem>> {
+        validate_id(project_id)?;
+        Ok(self.memory.list(project_id)?)
+    }
+
+    async fn add_memory_item(&self, project_id: &str, item: &MemoryItem) -> Result<()> {
+        validate_id(project_id)?;
+        Ok(self.memory.add_item(project_id, item)?)
+    }
+
+    async fn update_memory_item(&self, project_id: &str, item_id: &str, texto: &str) -> Result<()> {
+        validate_id(project_id)?;
+        Ok(self.memory.update_item(project_id, item_id, texto)?)
+    }
+
+    async fn delete_memory_item(&self, project_id: &str, item_id: &str) -> Result<()> {
+        validate_id(project_id)?;
+        Ok(self.memory.delete_item(project_id, item_id)?)
+    }
+
+    async fn list_memory_suggestions(&self, project_id: &str) -> Result<Vec<MemorySuggestion>> {
+        Ok(self.memory.list_suggestions(project_id)?)
+    }
+
+    async fn read_memory_suggestion(&self, id: &str) -> Result<Option<MemorySuggestion>> {
+        validate_id(id)?;
+        Ok(self.memory.read_suggestion(id)?)
+    }
+
+    async fn create_memory_suggestion(&self, suggestion: &MemorySuggestion) -> Result<()> {
+        validate_id(&suggestion.id)?;
+        Ok(self.memory.create_suggestion(suggestion)?)
+    }
+
+    async fn delete_memory_suggestion(&self, id: &str) -> Result<()> {
+        validate_id(id)?;
+        Ok(self.memory.delete_suggestion(id)?)
+    }
+
+    async fn all_memory_items(&self) -> Result<Vec<(String, MemoryItem)>> {
+        Ok(self.memory.all_items()?)
+    }
+
+    async fn all_memory_suggestions(&self) -> Result<Vec<MemorySuggestion>> {
+        Ok(self.memory.all_suggestions()?)
     }
 }

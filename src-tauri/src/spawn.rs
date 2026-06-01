@@ -95,6 +95,19 @@ impl SpawnConfig {
             .push(("CADENZA_IDEIA_BODY".into(), ideia_body.into()));
         self
     }
+
+    /// Vars para o fluxo "reavaliar memória": `CADENZA_MEMORY_REEVAL=1`
+    /// sinaliza o modo de reavaliação para a skill, e `CADENZA_PROJECT_ID`
+    /// garante que `cadenza-cli memory ...` resolva o projeto certo mesmo
+    /// que `TASKAI_PROJECT_ID` (setado por `cadenza_env`) não esteja
+    /// presente. O `task_id` passado a `cadenza_env` deve ser um
+    /// placeholder estável (ex. `MEMORY-<project_id>`) — só para logs.
+    pub fn memory_reeval_env(mut self, project_id: &str) -> Self {
+        self.env.push(("CADENZA_MEMORY_REEVAL".into(), "1".into()));
+        self.env
+            .push(("CADENZA_PROJECT_ID".into(), project_id.into()));
+        self
+    }
 }
 
 /// Parent-process env vars safe to inherit into spawned agents. Names

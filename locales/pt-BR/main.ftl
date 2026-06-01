@@ -26,3 +26,12 @@ agent-initial-prompt-ideia = Use a skill `cadenza` para coordenar com o Cadenza 
 # refinado via `cadenza-cli plan`. A task ainda está em `a_fazer`, então
 # `current` não a retorna — o agente a lê com `list --json`.
 agent-planning-prompt = Use a skill `cadenza` para coordenar com o Cadenza. Você está em modo PLANEJAMENTO da task { $task_id } ({ $titulo }) — NÃO escreva nem rode código ainda. Leia a task com `cadenza-cli list --json` e localize { $task_id }. Faça perguntas de esclarecimento, em lotes, até que a abordagem, o escopo e os critérios de aceite estejam claros. Quando combinarmos, salve o plano refinado enviando o markdown pela entrada padrão: `cadenza-cli plan { $task_id }` (omita `--body` para que o plano seja lido do stdin, evitando problemas de escape no shell). Não marque nada como concluído e não comece a implementação — eu inicio uma execução separada depois.
+# Bloco anexado ao prompt inicial de execução com a memória oficial do
+# projeto (fatos/decisões/convenções curados). Omitido quando vazia.
+agent-memory-block = Memória do projeto — fatos, decisões e convenções duráveis que valem para este projeto:
+    { $itens }
+# Prompt injetado quando o agente é iniciado em modo REAVALIAÇÃO da
+# memória: ele lê a memória atual e propõe sugestões revisáveis (remover
+# obsoletos, mesclar duplicatas, reescrever confusos, apontar contradições,
+# propor novos) — sem aplicar nada. O humano é o curador.
+agent-initial-prompt-memory-reeval = Use a skill `cadenza` para coordenar com o Cadenza. Você está em modo REAVALIAÇÃO DA MEMÓRIA do projeto { $project_id }. Leia a memória atual com `cadenza-cli memory list --json` e emita sugestões de revisão via `cadenza-cli memory revise --op <remover|reescrever|mesclar|nova|contradicao>` (use `--target`, `--texto`, `--nota` conforme a op). NÃO altere nada diretamente — as sugestões ficam pendentes até o humano aprovar.

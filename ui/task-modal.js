@@ -46,6 +46,15 @@ const worktreePathEl = document.getElementById("task-worktree-path");
 const worktreePathField = document.getElementById("task-worktree-path-field");
 const worktreeStatusEl = document.getElementById("worktree-status");
 
+// Suggested-learnings section — review (aguardando_revisao) only. The
+// execution agent proposes learnings via `cadenza-cli memory suggest`;
+// here the user promotes the ones worth keeping into the project's
+// official memory, or discards them. Independent of completing the task.
+const learningsSection = document.getElementById("task-learnings-section");
+const learningsListEl = document.getElementById("task-learnings-list");
+const learningsEmptyEl = document.getElementById("task-learnings-empty");
+let learningsLoadGen = 0;
+
 let mode = "create"; // "create" | "edit"
 let editingId = null;
 let original = null;
@@ -89,6 +98,7 @@ export async function openNewTask(prefill = {}) {
   startBtn.hidden = true;
   projectFieldEl.hidden = false;
   worktreeSection.hidden = true; // no task id yet → nothing to attach a worktree to
+  learningsSection.hidden = true; // no learnings for a not-yet-created task
   attachments.reset();
   setStatus("");
 
@@ -141,8 +151,83 @@ export async function openEditTask(id) {
   attachments.reset();
   await loadBlockerChoices(task.blocked_by ?? []);
   loadWorktreeDefaults(id);
+  loadSuggestedLearnings(id, task.estado);
   if (!dialog.open) dialog.showModal();
   tituloEl.focus();
+}
+
+// Load the learnings the execution agent proposed for this task, shown
+// only in review. Each can be promoted (added to project memory) or
+// discarded; neither touches the task's own state.
+async function loadSuggestedLearnings(taskId, estado) {
+  const myGen = ++learningsLoadGen;
+  learningsSection.hidden = true;
+  learningsListEl.replaceChildren();
+  if (estado !== "aguardando_revisao") return;
+  let projectId = null;
+  let suggestions = [];
+  try {
+    const mapping = await invoke("list_task_projects");
+    projectId = mapping?.[taskId] || null;
+    if (!projectId) return;
+    suggestions = await invoke("list_memory_suggestions", { projectId });
+  } catch {
+    return;
+  }
+  if (myGen !== learningsLoadGen) return;
+  // Only this task's learnings — filter to aprendizado suggestions whose
+  // origin is this task.
+  const learnings = (suggestions ?? []).filter(
+    (s) => s.kind?.tipo === "aprendizado" && s.kind.origem_task === taskId,
+  );
+  if (learnings.length === 0) return; // keep the section hidden when none
+  learningsSection.hidden = false;
+  learningsEmptyEl.hidden = true;
+  for (const s of learnings) {
+    learningsListEl.append(makeLearningRow(s));
+  }
+}
+
+function makeLearningRow(s) {
+  const li = document.createElement("li");
+  li.className = "learning-item";
+
+  const text = document.createElement("span");
+  text.className = "learning-item-text";
+  text.textContent = s.kind.texto;
+  li.append(text);
+
+  const actions = document.createElement("div");
+  actions.className = "learning-item-actions";
+
+  const promote = document.createElement("button");
+  promote.type = "button";
+  promote.className = "btn btn-sm btn-primary";
+  promote.textContent = t("task-learnings-promote") || "Promover";
+  promote.addEventListener("click", () => resolveLearning(s.id, true, li));
+
+  const discard = document.createElement("button");
+  discard.type = "button";
+  discard.className = "btn btn-sm";
+  discard.textContent = t("task-learnings-discard") || "Descartar";
+  discard.addEventListener("click", () => resolveLearning(s.id, false, li));
+
+  actions.append(promote, discard);
+  li.append(actions);
+  return li;
+}
+
+async function resolveLearning(suggestionId, aprovar, li) {
+  try {
+    await invoke("resolve_memory_suggestion", { suggestionId, aprovar });
+    li.remove();
+    if (!learningsListEl.children.length) {
+      // Nothing left — hide the section so the review reads as cleared.
+      learningsSection.hidden = true;
+    }
+  } catch (e) {
+    setStatus(typeof e === "string" ? e : t("task-error", { error: e }), "error");
+  }
 }
 
 function normalizeBlockerIds(ids) {
