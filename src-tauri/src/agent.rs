@@ -26,6 +26,11 @@
 //! `--prompt-interactive <prompt>` (it rejects a bare positional);
 //! Copilot uses `-i <prompt>`; OpenCode uses `--prompt <prompt>`. See
 //! `PromptDelivery`.
+//!
+//! Auto Mode args were verified on 2026-06-01. Claude and Antigravity
+//! were checked against local `--help`; Codex and Copilot were checked
+//! against their official CLI docs. OpenCode stays unsupported here until
+//! the installed CLI help exposes a stable auto-approval flag.
 
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -111,6 +116,11 @@ pub struct OpenCodeSessionInfo {
     pub directory: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LaunchOptions {
+    pub auto_mode: bool,
+}
+
 /// Choose the binary name for `kind` when the user hasn't overridden
 /// the path in `Config.agente.command` / `Project.agente.command`.
 pub fn default_command(kind: AgenteKind) -> &'static str {
@@ -123,18 +133,54 @@ pub fn default_command(kind: AgenteKind) -> &'static str {
     }
 }
 
+pub fn supports_auto_mode(kind: AgenteKind) -> bool {
+    auto_mode_args(kind).is_some()
+}
+
+fn auto_mode_args(kind: AgenteKind) -> Option<&'static [&'static str]> {
+    match kind {
+        // `claude --help` exposes `--permission-mode <mode>` with `auto`
+        // plus the `auto-mode` subcommand for classifier configuration.
+        AgenteKind::ClaudeCode => Some(&["--permission-mode", "auto"]),
+        // OpenAI Codex CLI docs list `--full-auto` as the full automatic
+        // approval/sandbox mode.
+        AgenteKind::Codex => Some(&["--full-auto"]),
+        // GitHub docs recommend autopilot with all permissions for
+        // unattended Copilot CLI work; `--no-ask-user` suppresses
+        // clarifying-question stops.
+        AgenteKind::Copilot => Some(&["--mode", "autopilot", "--yolo", "--no-ask-user"]),
+        // `agy --help` documents this as auto-approving tool permissions.
+        AgenteKind::Antigravity => Some(&["--dangerously-skip-permissions"]),
+        AgenteKind::OpenCode => None,
+    }
+}
+
+fn initial_args(kind: AgenteKind, options: LaunchOptions) -> Result<Vec<String>, String> {
+    if !options.auto_mode {
+        return Ok(Vec::new());
+    }
+    let args = auto_mode_args(kind).ok_or_else(|| {
+        format!(
+            "Auto Mode is not supported for agent '{}'",
+            default_command(kind)
+        )
+    })?;
+    Ok(args.iter().map(|arg| (*arg).to_string()).collect())
+}
+
 /// Per-agent install detection: whether the agent's CLI binary lives
 /// on `PATH` and/or its dotfile directory exists under `$HOME`.
 ///
-/// `installed` is `on_path || has_config_dir` — the UI considers the
-/// agent usable if either signal is true. We expose the underlying
-/// signals so the UI can show a tooltip explaining what's missing.
+/// `installed` is `on_path || has_config_dir || located` — the UI considers
+/// the agent usable if any signal is true. We expose the underlying
+/// cheap signals so the UI can show a tooltip explaining what's missing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct AgentPresence {
     pub kind: AgenteKind,
     pub installed: bool,
     pub on_path: bool,
     pub has_config_dir: bool,
+    pub supports_auto_mode: bool,
 }
 
 /// Return install presence for every supported agent. Stable order:
@@ -164,6 +210,7 @@ fn detect_presence(kind: AgenteKind) -> AgentPresence {
         installed: on_path || has_config_dir || located,
         on_path,
         has_config_dir,
+        supports_auto_mode: supports_auto_mode(kind),
     }
 }
 
@@ -240,6 +287,15 @@ fn path_extensions() -> Vec<std::ffi::OsString> {
     }
 }
 
+struct AgentPlanContext<'a> {
+    model: &'a str,
+    cwd: &'a Path,
+    task_id: &'a str,
+    project_id: &'a str,
+    existing_conversation_id: Option<&'a str>,
+    initial_prompt: Option<&'a str>,
+}
+
 /// Resolve the launch plan. `command_override` (if `Some`) wins over
 /// `default_command(kind)` — typically comes from `config.agente.command`
 /// or `project.agente.command`.
@@ -259,73 +315,59 @@ pub fn plan_launch(
     existing_conversation_id: Option<&str>,
     initial_prompt: Option<&str>,
 ) -> LaunchPlan {
-    let command = command_override
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|| default_command(kind).to_string());
-
-    let model = model.trim();
-
-    match kind {
-        AgenteKind::ClaudeCode => plan_claude(
-            command,
-            model,
-            cwd,
-            task_id,
-            project_id,
-            existing_conversation_id,
-            initial_prompt,
-        ),
-        AgenteKind::Codex => plan_codex(
-            command,
-            model,
-            cwd,
-            task_id,
-            project_id,
-            existing_conversation_id,
-            initial_prompt,
-        ),
-        AgenteKind::Copilot => plan_copilot(
-            command,
-            model,
-            cwd,
-            task_id,
-            project_id,
-            existing_conversation_id,
-            initial_prompt,
-        ),
-        AgenteKind::Antigravity => plan_antigravity(
-            command,
-            model,
-            cwd,
-            task_id,
-            project_id,
-            existing_conversation_id,
-            initial_prompt,
-        ),
-        AgenteKind::OpenCode => plan_opencode(
-            command,
-            model,
-            cwd,
-            task_id,
-            project_id,
-            existing_conversation_id,
-            initial_prompt,
-        ),
-    }
+    plan_launch_with_options(
+        kind,
+        model,
+        command_override,
+        cwd,
+        task_id,
+        project_id,
+        existing_conversation_id,
+        initial_prompt,
+        LaunchOptions::default(),
+    )
+    .expect("default launch options must always be valid")
 }
 
-fn plan_copilot(
-    command: String,
+#[allow(clippy::too_many_arguments)]
+pub fn plan_launch_with_options(
+    kind: AgenteKind,
     model: &str,
+    command_override: Option<&Path>,
     cwd: &Path,
     task_id: &str,
     project_id: &str,
     existing_conversation_id: Option<&str>,
     initial_prompt: Option<&str>,
-) -> LaunchPlan {
-    let mut args: Vec<String> = Vec::new();
+    options: LaunchOptions,
+) -> Result<LaunchPlan, String> {
+    let command = command_override
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| default_command(kind).to_string());
 
-    let conversation_id = match existing_conversation_id {
+    let model = model.trim();
+    let args = initial_args(kind, options)?;
+    let ctx = AgentPlanContext {
+        model,
+        cwd,
+        task_id,
+        project_id,
+        existing_conversation_id,
+        initial_prompt,
+    };
+
+    let plan = match kind {
+        AgenteKind::ClaudeCode => plan_claude(command, args, &ctx),
+        AgenteKind::Codex => plan_codex(command, args, &ctx),
+        AgenteKind::Copilot => plan_copilot(command, args, &ctx),
+        AgenteKind::Antigravity => plan_antigravity(command, args, &ctx),
+        AgenteKind::OpenCode => plan_opencode(command, args, &ctx),
+    };
+    Ok(plan)
+}
+
+fn plan_copilot(command: String, mut args: Vec<String>, ctx: &AgentPlanContext<'_>) -> LaunchPlan {
+    let conversation_id = match ctx.existing_conversation_id {
         Some(id) => id.to_string(),
         None => Uuid::new_v4().to_string(),
     };
@@ -333,12 +375,12 @@ fn plan_copilot(
     args.push("--session-id".to_string());
     args.push(conversation_id.clone());
 
-    if existing_conversation_id.is_none() {
-        if !model.is_empty() {
+    if ctx.existing_conversation_id.is_none() {
+        if !ctx.model.is_empty() {
             args.push("--model".to_string());
-            args.push(model.to_string());
+            args.push(ctx.model.to_string());
         }
-        if let Some(prompt) = initial_prompt {
+        if let Some(prompt) = ctx.initial_prompt {
             args.push("-i".to_string());
             args.push(prompt.to_string());
         }
@@ -346,9 +388,9 @@ fn plan_copilot(
 
     let cfg = SpawnConfig::new(command)
         .args(args)
-        .cwd(cwd)
+        .cwd(ctx.cwd)
         .size(DEFAULT_COLS, DEFAULT_ROWS)
-        .cadenza_env(project_id, task_id, &conversation_id);
+        .cadenza_env(ctx.project_id, ctx.task_id, &conversation_id);
 
     LaunchPlan {
         spawn: cfg,
@@ -359,18 +401,8 @@ fn plan_copilot(
     }
 }
 
-fn plan_claude(
-    command: String,
-    model: &str,
-    cwd: &Path,
-    task_id: &str,
-    project_id: &str,
-    existing_conversation_id: Option<&str>,
-    initial_prompt: Option<&str>,
-) -> LaunchPlan {
-    let mut args: Vec<String> = Vec::new();
-
-    let conversation_id = match existing_conversation_id {
+fn plan_claude(command: String, mut args: Vec<String>, ctx: &AgentPlanContext<'_>) -> LaunchPlan {
+    let conversation_id = match ctx.existing_conversation_id {
         Some(id) => {
             args.push("--resume".to_string());
             args.push(id.to_string());
@@ -388,24 +420,24 @@ fn plan_claude(
         }
     };
 
-    if !model.is_empty() {
+    if !ctx.model.is_empty() {
         args.push("--model".to_string());
-        args.push(model.to_string());
+        args.push(ctx.model.to_string());
     }
 
     // Claude takes the initial prompt as a trailing positional argument and
     // stays interactive (it only goes non-interactive with `-p/--print`).
     // Verified against `claude --help`: "Usage: claude [options] [command]
     // [prompt]". Baking it here means the backend never types into the PTY.
-    if let Some(prompt) = initial_prompt {
+    if let Some(prompt) = ctx.initial_prompt {
         args.push(prompt.to_string());
     }
 
     let cfg = SpawnConfig::new(command)
         .args(args)
-        .cwd(cwd)
+        .cwd(ctx.cwd)
         .size(DEFAULT_COLS, DEFAULT_ROWS)
-        .cadenza_env(project_id, task_id, &conversation_id);
+        .cadenza_env(ctx.project_id, ctx.task_id, &conversation_id);
 
     LaunchPlan {
         spawn: cfg,
@@ -416,18 +448,8 @@ fn plan_claude(
     }
 }
 
-fn plan_codex(
-    command: String,
-    model: &str,
-    cwd: &Path,
-    task_id: &str,
-    project_id: &str,
-    existing_conversation_id: Option<&str>,
-    initial_prompt: Option<&str>,
-) -> LaunchPlan {
-    let mut args: Vec<String> = Vec::new();
-
-    match existing_conversation_id {
+fn plan_codex(command: String, mut args: Vec<String>, ctx: &AgentPlanContext<'_>) -> LaunchPlan {
+    match ctx.existing_conversation_id {
         Some(id) => {
             args.push("resume".to_string());
             args.push(id.to_string());
@@ -436,9 +458,9 @@ fn plan_codex(
             // (worse) silently break the resume on some versions.
         }
         None => {
-            if !model.is_empty() {
+            if !ctx.model.is_empty() {
                 args.push("--model".to_string());
-                args.push(model.to_string());
+                args.push(ctx.model.to_string());
             }
         }
     };
@@ -449,7 +471,7 @@ fn plan_codex(
     // [OPTIONS] [PROMPT]". Only on a fresh start — a resume uses the
     // `resume <id>` subcommand and carries its own context, so the caller
     // passes no prompt there.
-    if let Some(prompt) = initial_prompt {
+    if let Some(prompt) = ctx.initial_prompt {
         args.push(prompt.to_string());
     }
 
@@ -457,15 +479,15 @@ fn plan_codex(
     // user can re-run `cadenza-cli current` from inside codex and the
     // mapping still works. We seed it with whatever id we know — empty
     // string when we don't (Codex first run).
-    let conv_seed = existing_conversation_id.unwrap_or("");
+    let conv_seed = ctx.existing_conversation_id.unwrap_or("");
 
     let cfg = SpawnConfig::new(command)
         .args(args)
-        .cwd(cwd)
+        .cwd(ctx.cwd)
         .size(DEFAULT_COLS, DEFAULT_ROWS)
-        .cadenza_env(project_id, task_id, conv_seed);
+        .cadenza_env(ctx.project_id, ctx.task_id, conv_seed);
 
-    let pending_capture = if existing_conversation_id.is_none() {
+    let pending_capture = if ctx.existing_conversation_id.is_none() {
         Some(CodexCapture {
             sessions_root: codex_sessions_root(),
             started_at: SystemTime::now(),
@@ -476,7 +498,7 @@ fn plan_codex(
 
     LaunchPlan {
         spawn: cfg,
-        conversation_id_known: existing_conversation_id.map(String::from),
+        conversation_id_known: ctx.existing_conversation_id.map(String::from),
         pending_codex_capture: pending_capture,
         pending_opencode_capture: None,
         prompt_delivery: PromptDelivery::Argv,
@@ -504,16 +526,10 @@ fn codex_sessions_root() -> PathBuf {
 /// fresh conversation. No broken `--conversation` call, no error.
 fn plan_antigravity(
     command: String,
-    model: &str,
-    cwd: &Path,
-    task_id: &str,
-    project_id: &str,
-    existing_conversation_id: Option<&str>,
-    initial_prompt: Option<&str>,
+    mut args: Vec<String>,
+    ctx: &AgentPlanContext<'_>,
 ) -> LaunchPlan {
-    let mut args: Vec<String> = Vec::new();
-
-    match existing_conversation_id {
+    match ctx.existing_conversation_id {
         Some(id) => {
             // Resume by id. Per `agy --help`, `--conversation <id>`
             // resumes a previous conversation. Skip --model on resume for
@@ -523,9 +539,9 @@ fn plan_antigravity(
             args.push(id.to_string());
         }
         None => {
-            if !model.is_empty() {
+            if !ctx.model.is_empty() {
                 args.push("--model".to_string());
-                args.push(model.to_string());
+                args.push(ctx.model.to_string());
             }
         }
     };
@@ -535,22 +551,22 @@ fn plan_antigravity(
     // session" (verified against `agy --help`). It does NOT accept a bare
     // positional prompt, so the flag is required. Only on a fresh start —
     // a resume carries its own context.
-    if let Some(prompt) = initial_prompt {
+    if let Some(prompt) = ctx.initial_prompt {
         args.push("--prompt-interactive".to_string());
         args.push(prompt.to_string());
     }
 
     // Seed CLAUDE_SESSION_ID for the cadenza-cli skill the same way as
     // the other agents — empty on a fresh `agy` run (id not yet known).
-    let conv_seed = existing_conversation_id.unwrap_or("");
+    let conv_seed = ctx.existing_conversation_id.unwrap_or("");
 
     let cfg = SpawnConfig::new(command)
         .args(args)
-        .cwd(cwd)
+        .cwd(ctx.cwd)
         .size(DEFAULT_COLS, DEFAULT_ROWS)
-        .cadenza_env(project_id, task_id, conv_seed);
+        .cadenza_env(ctx.project_id, ctx.task_id, conv_seed);
 
-    let pending_capture = if existing_conversation_id.is_none() {
+    let pending_capture = if ctx.existing_conversation_id.is_none() {
         Some(CodexCapture {
             sessions_root: antigravity_sessions_root(),
             started_at: SystemTime::now(),
@@ -561,25 +577,15 @@ fn plan_antigravity(
 
     LaunchPlan {
         spawn: cfg,
-        conversation_id_known: existing_conversation_id.map(String::from),
+        conversation_id_known: ctx.existing_conversation_id.map(String::from),
         pending_codex_capture: pending_capture,
         pending_opencode_capture: None,
         prompt_delivery: PromptDelivery::Argv,
     }
 }
 
-fn plan_opencode(
-    command: String,
-    model: &str,
-    cwd: &Path,
-    task_id: &str,
-    project_id: &str,
-    existing_conversation_id: Option<&str>,
-    initial_prompt: Option<&str>,
-) -> LaunchPlan {
-    let mut args: Vec<String> = Vec::new();
-
-    match existing_conversation_id {
+fn plan_opencode(command: String, mut args: Vec<String>, ctx: &AgentPlanContext<'_>) -> LaunchPlan {
+    match ctx.existing_conversation_id {
         Some(id) => {
             args.push("--session".to_string());
             args.push(id.to_string());
@@ -587,34 +593,34 @@ fn plan_opencode(
             // --model or --prompt on resume.
         }
         None => {
-            if !model.is_empty() {
+            if !ctx.model.is_empty() {
                 args.push("--model".to_string());
-                args.push(model.to_string());
+                args.push(ctx.model.to_string());
             }
-            if let Some(prompt) = initial_prompt {
+            if let Some(prompt) = ctx.initial_prompt {
                 args.push("--prompt".to_string());
                 args.push(prompt.to_string());
             }
         }
     };
 
-    let conv_seed = existing_conversation_id.unwrap_or("");
+    let conv_seed = ctx.existing_conversation_id.unwrap_or("");
 
     let cfg = SpawnConfig::new(command.clone())
         .args(args)
-        .cwd(cwd)
+        .cwd(ctx.cwd)
         .size(DEFAULT_COLS, DEFAULT_ROWS)
-        .cadenza_env(project_id, task_id, conv_seed);
+        .cadenza_env(ctx.project_id, ctx.task_id, conv_seed);
 
     // The "before" session snapshot is filled in by the caller via
     // `snapshot_opencode_session_ids` on the blocking pool — collecting it
     // here would run a synchronous `opencode session list` subprocess
     // inside `plan_launch`, which executes on the async runtime thread and
     // would stall it. Keep the planner pure (no I/O).
-    let pending_capture = if existing_conversation_id.is_none() {
+    let pending_capture = if ctx.existing_conversation_id.is_none() {
         Some(OpenCodeCapture {
             command,
-            cwd: cwd.to_path_buf(),
+            cwd: ctx.cwd.to_path_buf(),
             before_ids: BTreeSet::new(),
             started_at_ms: chrono::Utc::now().timestamp_millis(),
         })
@@ -624,7 +630,7 @@ fn plan_opencode(
 
     LaunchPlan {
         spawn: cfg,
-        conversation_id_known: existing_conversation_id.map(String::from),
+        conversation_id_known: ctx.existing_conversation_id.map(String::from),
         pending_codex_capture: None,
         pending_opencode_capture: pending_capture,
         prompt_delivery: PromptDelivery::Argv,
@@ -952,6 +958,66 @@ mod tests {
         // No --model on resume — see comment in plan_codex.
         assert!(!args.iter().any(|a| a == "--model"));
         assert!(plan.pending_codex_capture.is_none());
+    }
+
+    #[test]
+    fn auto_mode_disabled_omits_codex_flag() {
+        let plan = plan_launch_with_options(
+            AgenteKind::Codex,
+            "gpt-5.4",
+            None,
+            Path::new("/tmp/proj"),
+            "T-2",
+            "proj-b",
+            None,
+            Some("do the task"),
+            LaunchOptions { auto_mode: false },
+        )
+        .unwrap();
+        assert!(!plan.spawn.args.iter().any(|a| a == "--full-auto"));
+        assert_eq!(
+            plan.spawn.args.last().map(String::as_str),
+            Some("do the task")
+        );
+    }
+
+    #[test]
+    fn auto_mode_enabled_prefixes_codex_resume_args() {
+        let plan = plan_launch_with_options(
+            AgenteKind::Codex,
+            "gpt-5.4",
+            None,
+            Path::new("/tmp/proj"),
+            "T-2",
+            "proj-b",
+            Some("019d4891-0feb-78a2-8f90-841686dc0175"),
+            None,
+            LaunchOptions { auto_mode: true },
+        )
+        .unwrap();
+        assert_eq!(plan.spawn.args[0], "--full-auto");
+        assert_eq!(plan.spawn.args[1], "resume");
+        assert_eq!(plan.spawn.args[2], "019d4891-0feb-78a2-8f90-841686dc0175");
+    }
+
+    #[test]
+    fn auto_mode_rejects_unsupported_agent() {
+        let result = plan_launch_with_options(
+            AgenteKind::OpenCode,
+            "anthropic/claude-sonnet-4-6",
+            None,
+            Path::new("/tmp/proj"),
+            "T-4",
+            "proj-d",
+            None,
+            Some("do the task"),
+            LaunchOptions { auto_mode: true },
+        );
+        let err = match result {
+            Ok(_) => panic!("opencode has no declared Auto Mode support"),
+            Err(err) => err,
+        };
+        assert!(err.contains("Auto Mode is not supported"));
     }
 
     #[test]
@@ -1301,6 +1367,11 @@ mod tests {
                 assert!(row.installed);
             }
         }
+        assert!(rows[0].supports_auto_mode);
+        assert!(rows[1].supports_auto_mode);
+        assert!(rows[2].supports_auto_mode);
+        assert!(!rows[3].supports_auto_mode);
+        assert!(rows[4].supports_auto_mode);
     }
 
     #[test]

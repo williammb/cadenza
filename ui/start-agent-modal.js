@@ -30,6 +30,7 @@ const kindSel = document.getElementById("start-agent-kind");
 const modelSel = document.getElementById("start-agent-model");
 const modelText = document.getElementById("start-agent-model-text");
 const modelHint = document.getElementById("start-agent-model-hint");
+const autoModeEl = document.getElementById("start-agent-auto-mode");
 const titleEl = document.getElementById("start-agent-title");
 const taskBadge = document.getElementById("start-agent-task-badge");
 const resumeBanner = document.getElementById("start-agent-resume-banner");
@@ -44,6 +45,7 @@ const statusEl = document.getElementById("start-agent-status");
 let currentTaskId = null;
 let currentTitulo = null;
 let currentRun = null; // task-run record from backend (or null)
+let agentPresenceMap = new Map();
 // "task" (default): chama start_task_agent + suporta resume.
 // "plan": chama start_task_agent com mode=plan — sem resume; o agente
 // planeja a task e grava o plano no body, sem mover o card.
@@ -56,6 +58,7 @@ let onSpawnedRefresh = null;
 onLocaleChange(() => {
   updateModalTitle();
   updateResumeBanner();
+  updateAutoModeAvailability();
 });
 
 function updateModalTitle() {
@@ -83,6 +86,7 @@ export async function openStartAgent(targetId, opts = {}) {
           ? "plan"
           : "task";
   taskBadge.textContent = targetId;
+  autoModeEl.checked = false;
   updateModalTitle();
   setStatus("");
 
@@ -109,15 +113,27 @@ async function applyAgentPresence() {
   // Force a fresh probe on open so an agent installed since boot is
   // detected — the cache otherwise persists for the whole session and
   // the submit-time hard-block below would keep refusing it.
-  const map = await loadAgentPresence({ force: true });
-  decorateKindSelect(kindSel, map);
+  agentPresenceMap = await loadAgentPresence({ force: true });
+  decorateKindSelect(kindSel, agentPresenceMap);
+  updateAutoModeAvailability();
+}
+
+function updateAutoModeAvailability() {
+  const presence = agentPresenceMap.get(kindSel.value);
+  const supported = currentMode !== "ideia" && presence?.supports_auto_mode === true;
+  autoModeEl.disabled = !supported;
+  autoModeEl.title = supported ? "" : t("start-agent-auto-mode-unavailable") || "";
+  if (!supported) autoModeEl.checked = false;
 }
 
 // Re-decorate the kind select if the locale flips while the modal is
 // open — translations overwrite the option text, wiping the "(not
 // installed)" suffix added by decorateKindSelect.
-onAgentPresenceRefresh(() => {
-  if (dialog.open) applyAgentPresence();
+onAgentPresenceRefresh((map) => {
+  if (!dialog.open) return;
+  agentPresenceMap = map;
+  decorateKindSelect(kindSel, agentPresenceMap);
+  updateAutoModeAvailability();
 });
 
 export function closeStartAgent() {
@@ -297,6 +313,7 @@ function setStatus(msg, kind) {
 kindSel.addEventListener("change", () => {
   populateModels(kindSel.value, currentRun?.agent === kindSel.value ? currentRun.model : null);
   updateResumeBanner();
+  updateAutoModeAvailability();
 });
 
 freshBtn.addEventListener("click", async () => {
@@ -325,6 +342,7 @@ form.addEventListener("submit", async (e) => {
   // the string is empty (see agent::plan_claude_launch / plan_codex_launch).
   const model = readModel();
   const agentKind = kindSel.value;
+  const autoMode = autoModeEl.checked && !autoModeEl.disabled;
   // Hard-block when the picked agent isn't installed. The dropdown
   // already disables non-installed options, but the user's saved
   // default may itself be non-installed (we don't silently change it).
@@ -354,6 +372,7 @@ form.addEventListener("submit", async (e) => {
             agentKind,
             model,
             mode: currentMode === "plan" ? "plan" : "execute",
+            autoMode,
           });
     await attachTerminal(result.session_id, {
       taskId: currentTaskId,

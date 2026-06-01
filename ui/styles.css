@@ -1908,6 +1908,14 @@ textarea::placeholder {
   display: block;
   margin-bottom: 0.3rem;
 }
+#start-agent-modal .start-agent-auto-mode {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+#start-agent-modal .start-agent-auto-mode > span {
+  margin-bottom: 0;
+}
 #start-agent-modal select,
 #start-agent-modal input[type="text"] {
   width: 100%;

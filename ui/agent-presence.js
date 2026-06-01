@@ -4,9 +4,9 @@
 // config folder can be found on the host.
 //
 // The backend probe (`list_installed_agents`) returns
-//   [{ kind: "claude_code" | "codex" | "copilot" | "antigravity" | "opencode", installed, on_path, has_config_dir }]
-// — `installed` is `on_path || has_config_dir`. We never mutate values
-// the user has already saved (a non-installed default still loads as
+//   [{ kind: "claude_code" | "codex" | "copilot" | "antigravity" | "opencode", installed, on_path, has_config_dir, supports_auto_mode }]
+// — `installed` includes PATH/config/off-PATH binary locator signals.
+// We never mutate values the user has already saved (a non-installed default still loads as
 // the picked value) — we only annotate the label and disable the
 // non-current options.
 
