@@ -487,6 +487,7 @@ function setStatus(msg, kind) {
 const MODEL_KIND_LABELS = {
   claude_code: "settings-skills-agent-claude",
   codex: "settings-skills-agent-codex",
+  copilot: "settings-skills-agent-copilot",
   antigravity: "settings-skills-agent-antigravity",
   opencode: "settings-skills-agent-opencode",
 };
@@ -500,7 +501,7 @@ function setModelsStatus(msg, kind) {
 // so opening Settings is instant.
 async function refreshModelsStatus() {
   modelsBodyEl.replaceChildren();
-  for (const kind of ["claude_code", "codex", "antigravity", "opencode"]) {
+  for (const kind of ["claude_code", "codex", "copilot", "antigravity", "opencode"]) {
     let entries = [];
     try {
       entries = await invoke("list_agent_models", { agentKind: kind, cachedOnly: true });
@@ -735,7 +736,7 @@ document.getElementById("btn-pg-clear").addEventListener("click", async () => {
 // ─────────────────────── skills (CLI snippet) ────────────────────────
 //
 // The Settings modal lets the user push the cadenza-cli usage snippet
-// into Claude Code, Codex, Antigravity, and OpenCode. All filesystem work runs
+// into Claude Code, Codex, Copilot, Antigravity, and OpenCode. All filesystem work runs
 // in the Tauri backend via skills-core; the UI is a thin form + status
 // table.
 //

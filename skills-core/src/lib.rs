@@ -1,18 +1,22 @@
 //! Cadenza skill installer — install/remove/status of the agent skill
-//! snippet for Claude Code and Codex, in project or global scope.
+//! snippet for Claude Code, Codex, Copilot, Antigravity, and OpenCode, in
+//! project or global scope.
 //!
 //! Targets:
 //!   Claude global       → ~/.claude/skills/cadenza/SKILL.md
 //!   Claude project      → <cwd>/.claude/skills/cadenza/SKILL.md
 //!   Codex global        → ~/.codex/AGENTS.md                              (managed section)
 //!   Codex project       → <cwd>/AGENTS.md                                 (managed section)
+//!   Copilot global      → ~/.copilot/AGENTS.md                            (managed section)
+//!   Copilot project     → <cwd>/AGENTS.md                                 (managed section)
 //!   Antigravity global  → ~/.gemini/antigravity-cli/skills/cadenza/SKILL.md
 //!   Antigravity project → <cwd>/.agents/skills/cadenza/SKILL.md
 //!   OpenCode global     → ~/.config/opencode/skills/cadenza/SKILL.md
 //!   OpenCode project    → <cwd>/.opencode/skills/cadenza/SKILL.md
 //!
-//! For Codex, the skill is wrapped in HTML comment markers so install /
-//! remove can edit a shared file without clobbering unrelated content:
+//! For AGENTS.md-based agents, the skill is wrapped in HTML comment markers
+//! so install / remove can edit a shared file without clobbering unrelated
+//! content:
 //!
 //! ```text
 //! <!-- cadenza:start v=<SKILL_VERSION> locale=pt-BR -->
@@ -67,6 +71,7 @@ const CLAUDE_SKILL_DESCRIPTION_EN: &str =
 pub enum Agent {
     Claude,
     Codex,
+    Copilot,
     Antigravity,
     OpenCode,
 }
@@ -76,6 +81,7 @@ impl Agent {
         match self {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
+            Agent::Copilot => "copilot",
             Agent::Antigravity => "antigravity",
             Agent::OpenCode => "opencode",
         }
@@ -175,6 +181,7 @@ pub fn install(
         let outcome = match agent {
             Agent::Claude => install_claude(scope, locale, body, force, project_root)?,
             Agent::Codex => install_codex(scope, locale, body, force, project_root)?,
+            Agent::Copilot => install_copilot(scope, locale, body, force, project_root)?,
             Agent::Antigravity => install_antigravity(scope, locale, body, force, project_root)?,
             Agent::OpenCode => install_opencode(scope, locale, body, force, project_root)?,
         };
@@ -269,6 +276,28 @@ fn install_codex(
     project_root: Option<&Path>,
 ) -> Result<Outcome> {
     let path = codex_agents_path(scope, project_root)?;
+    install_agents_md(Agent::Codex, path, scope, locale, body, force)
+}
+
+fn install_copilot(
+    scope: Scope,
+    locale: &str,
+    body: &str,
+    force: bool,
+    project_root: Option<&Path>,
+) -> Result<Outcome> {
+    let path = copilot_agents_path(scope, project_root)?;
+    install_agents_md(Agent::Copilot, path, scope, locale, body, force)
+}
+
+fn install_agents_md(
+    agent: Agent,
+    path: PathBuf,
+    scope: Scope,
+    locale: &str,
+    body: &str,
+    force: bool,
+) -> Result<Outcome> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
     }
@@ -285,7 +314,7 @@ fn install_codex(
     let new_content = if let Some((before, after)) = split_codex_block(&existing) {
         if !force {
             return Ok(Outcome::skipped(
-                Agent::Codex,
+                agent,
                 scope,
                 &path,
                 "managed block already present (use force to update)",
@@ -306,7 +335,7 @@ fn install_codex(
     };
 
     write_atomic(&path, new_content.as_bytes())?;
-    Ok(Outcome::installed(Agent::Codex, scope, &path, locale))
+    Ok(Outcome::installed(agent, scope, &path, locale))
 }
 
 // --- remove ----------------------------------------------------------------
@@ -317,6 +346,7 @@ pub fn remove(agents: &[Agent], scope: Scope, project_root: Option<&Path>) -> Re
         let outcome = match agent {
             Agent::Claude => remove_claude(scope, project_root)?,
             Agent::Codex => remove_codex(scope, project_root)?,
+            Agent::Copilot => remove_copilot(scope, project_root)?,
             Agent::Antigravity => remove_antigravity(scope, project_root)?,
             Agent::OpenCode => remove_opencode(scope, project_root)?,
         };
@@ -356,9 +386,18 @@ fn remove_skill_md(agent: Agent, path: PathBuf, scope: Scope) -> Result<Outcome>
 
 fn remove_codex(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
     let path = codex_agents_path(scope, project_root)?;
+    remove_agents_md(Agent::Codex, path, scope)
+}
+
+fn remove_copilot(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
+    let path = copilot_agents_path(scope, project_root)?;
+    remove_agents_md(Agent::Copilot, path, scope)
+}
+
+fn remove_agents_md(agent: Agent, path: PathBuf, scope: Scope) -> Result<Outcome> {
     if !path.exists() {
         return Ok(Outcome::skipped(
-            Agent::Codex,
+            agent,
             scope,
             &path,
             "AGENTS.md not present",
@@ -366,35 +405,31 @@ fn remove_codex(scope: Scope, project_root: Option<&Path>) -> Result<Outcome> {
     }
     let existing = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     let Some((before, after)) = split_codex_block(&existing) else {
-        return Ok(Outcome::skipped(
-            Agent::Codex,
-            scope,
-            &path,
-            "no managed block",
-        ));
+        return Ok(Outcome::skipped(agent, scope, &path, "no managed block"));
     };
     // Collapse whitespace at the boundary so we don't leave a blank gap.
     let joined = format!("{}{}", before.trim_end_matches('\n'), after);
     let cleaned = if joined.is_empty() {
         // The file had ONLY our block — delete it so we leave the FS tidy.
         fs::remove_file(&path).with_context(|| format!("remove {}", path.display()))?;
-        return Ok(Outcome::removed(Agent::Codex, scope, &path));
+        return Ok(Outcome::removed(agent, scope, &path));
     } else if joined.ends_with('\n') {
         joined
     } else {
         format!("{joined}\n")
     };
     write_atomic(&path, cleaned.as_bytes())?;
-    Ok(Outcome::removed(Agent::Codex, scope, &path))
+    Ok(Outcome::removed(agent, scope, &path))
 }
 
 // --- status ----------------------------------------------------------------
 
 pub fn status(project_root: Option<&Path>) -> Vec<StatusRow> {
-    let mut rows = Vec::with_capacity(8);
+    let mut rows = Vec::with_capacity(10);
     for scope in [Scope::Project, Scope::Global] {
         rows.push(probe_claude(scope, project_root));
         rows.push(probe_codex(scope, project_root));
+        rows.push(probe_copilot(scope, project_root));
         rows.push(probe_antigravity(scope, project_root));
         rows.push(probe_opencode(scope, project_root));
     }
@@ -421,6 +456,16 @@ fn probe_claude(scope: Scope, project_root: Option<&Path>) -> StatusRow {
 fn probe_codex(scope: Scope, project_root: Option<&Path>) -> StatusRow {
     let path =
         codex_agents_path(scope, project_root).unwrap_or_else(|_| PathBuf::from("<no home>"));
+    probe_agents_md(Agent::Codex, scope, path)
+}
+
+fn probe_copilot(scope: Scope, project_root: Option<&Path>) -> StatusRow {
+    let path =
+        copilot_agents_path(scope, project_root).unwrap_or_else(|_| PathBuf::from("<no home>"));
+    probe_agents_md(Agent::Copilot, scope, path)
+}
+
+fn probe_agents_md(agent: Agent, scope: Scope, path: PathBuf) -> StatusRow {
     let (installed, locale, version) = if path.exists() {
         let content = fs::read_to_string(&path).unwrap_or_default();
         let loc = parse_codex_locale(&content);
@@ -429,7 +474,7 @@ fn probe_codex(scope: Scope, project_root: Option<&Path>) -> StatusRow {
     } else {
         (false, None, None)
     };
-    StatusRow::new(Agent::Codex, scope, path, installed, locale, version)
+    StatusRow::new(agent, scope, path, installed, locale, version)
 }
 
 fn probe_antigravity(scope: Scope, project_root: Option<&Path>) -> StatusRow {
@@ -587,6 +632,13 @@ fn codex_agents_path(scope: Scope, project_root: Option<&Path>) -> Result<PathBu
     Ok(match scope {
         Scope::Project => project_root_or_cwd(project_root)?.join("AGENTS.md"),
         Scope::Global => home_dir()?.join(".codex").join("AGENTS.md"),
+    })
+}
+
+fn copilot_agents_path(scope: Scope, project_root: Option<&Path>) -> Result<PathBuf> {
+    Ok(match scope {
+        Scope::Project => project_root_or_cwd(project_root)?.join("AGENTS.md"),
+        Scope::Global => home_dir()?.join(".copilot").join("AGENTS.md"),
     })
 }
 
@@ -805,6 +857,33 @@ mod tests {
         assert_eq!(row.version.as_deref(), Some(SKILL_VERSION));
 
         let report = remove(&[Agent::OpenCode], Scope::Project, project).unwrap();
+        assert_eq!(report[0].action, Action::Removed);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn copilot_project_install_remove_roundtrip_uses_agents_md() {
+        let root = tempfile::TempDir::new().unwrap();
+        let project = Some(root.path());
+
+        let report = install(&[Agent::Copilot], Scope::Project, "en", false, project).unwrap();
+        assert_eq!(report.len(), 1);
+        assert_eq!(report[0].action, Action::Installed);
+        let path = root.path().join("AGENTS.md");
+        assert!(path.exists(), "expected AGENTS.md at {}", path.display());
+        let content = std::fs::read_to_string(&path).unwrap();
+        assert!(content.contains(CODEX_MARKER_START_PREFIX));
+        assert!(content.contains("locale=en"));
+
+        let rows = status(project);
+        let row = rows
+            .iter()
+            .find(|r| r.agent == Agent::Copilot && r.scope == Scope::Project)
+            .expect("copilot project status row");
+        assert!(row.installed);
+        assert_eq!(row.version.as_deref(), Some(SKILL_VERSION));
+
+        let report = remove(&[Agent::Copilot], Scope::Project, project).unwrap();
         assert_eq!(report[0].action, Action::Removed);
         assert!(!path.exists());
     }
