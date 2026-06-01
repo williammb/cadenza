@@ -22,8 +22,8 @@ use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 use super::{
-    DecisaoRegistro, Estado, Ideia, IdeiaStatus, NewProposta, Proposta, Repository, Result,
-    StoreError, Task,
+    DecisaoRegistro, Estado, Ideia, IdeiaStatus, MemoryItem, MemorySuggestion, NewProposta,
+    Proposta, Repository, Result, StoreError, SuggestionKind, Task,
 };
 
 /// Embedded migrations from `src-tauri/migrations/`. Runs every startup
@@ -149,6 +149,27 @@ fn ideia_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Ideia> {
         project_id: row.try_get("project_id").map_err(map_sqlx)?,
         status,
         created_at_ms: row.try_get("created_at_ms").map_err(map_sqlx)?,
+    })
+}
+
+fn memory_item_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<MemoryItem> {
+    Ok(MemoryItem {
+        id: row.try_get("id").map_err(map_sqlx)?,
+        texto: row.try_get("texto").map_err(map_sqlx)?,
+        origem_task: row.try_get("origem_task").map_err(map_sqlx)?,
+        criado_em: row.try_get("criado_em").map_err(map_sqlx)?,
+    })
+}
+
+fn memory_suggestion_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<MemorySuggestion> {
+    let kind_json: String = row.try_get("kind_json").map_err(map_sqlx)?;
+    let kind: SuggestionKind = serde_json::from_str(&kind_json)
+        .map_err(|e| StoreError::BadData(format!("bad suggestion kind json: {e}")))?;
+    Ok(MemorySuggestion {
+        id: row.try_get("id").map_err(map_sqlx)?,
+        project_id: row.try_get("project_id").map_err(map_sqlx)?,
+        criado_em: row.try_get("criado_em").map_err(map_sqlx)?,
+        kind,
     })
 }
 
@@ -511,6 +532,143 @@ impl Repository for SqliteRepository {
         }
         Ok(())
     }
+
+    async fn list_memory(&self, project_id: &str) -> Result<Vec<MemoryItem>> {
+        let rows =
+            sqlx::query("SELECT * FROM memory_items WHERE project_id = ?1 ORDER BY criado_em, id")
+                .bind(project_id)
+                .fetch_all(&self.pool)
+                .await
+                .map_err(map_sqlx)?;
+        rows.iter().map(memory_item_from_row).collect()
+    }
+
+    async fn add_memory_item(&self, project_id: &str, item: &MemoryItem) -> Result<()> {
+        let res = sqlx::query(
+            "INSERT INTO memory_items (id, project_id, texto, origem_task, criado_em)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(&item.id)
+        .bind(project_id)
+        .bind(&item.texto)
+        .bind(&item.origem_task)
+        .bind(item.criado_em)
+        .execute(&self.pool)
+        .await;
+        match res {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+                Err(StoreError::AlreadyExists(item.id.clone()))
+            }
+            Err(e) => Err(map_sqlx(e)),
+        }
+    }
+
+    async fn update_memory_item(&self, project_id: &str, item_id: &str, texto: &str) -> Result<()> {
+        let res =
+            sqlx::query("UPDATE memory_items SET texto = ?1 WHERE id = ?2 AND project_id = ?3")
+                .bind(texto)
+                .bind(item_id)
+                .bind(project_id)
+                .execute(&self.pool)
+                .await
+                .map_err(map_sqlx)?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound(item_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn delete_memory_item(&self, project_id: &str, item_id: &str) -> Result<()> {
+        let res = sqlx::query("DELETE FROM memory_items WHERE id = ?1 AND project_id = ?2")
+            .bind(item_id)
+            .bind(project_id)
+            .execute(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound(item_id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn list_memory_suggestions(&self, project_id: &str) -> Result<Vec<MemorySuggestion>> {
+        let rows = sqlx::query(
+            "SELECT * FROM memory_suggestions WHERE project_id = ?1 ORDER BY criado_em, id",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(memory_suggestion_from_row).collect()
+    }
+
+    async fn read_memory_suggestion(&self, id: &str) -> Result<Option<MemorySuggestion>> {
+        let row = sqlx::query("SELECT * FROM memory_suggestions WHERE id = ?1")
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        match row {
+            Some(r) => Ok(Some(memory_suggestion_from_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn create_memory_suggestion(&self, suggestion: &MemorySuggestion) -> Result<()> {
+        let kind_json = serde_json::to_string(&suggestion.kind)
+            .map_err(|e| StoreError::BadData(e.to_string()))?;
+        let res = sqlx::query(
+            "INSERT INTO memory_suggestions (id, project_id, criado_em, kind_json)
+             VALUES (?1, ?2, ?3, ?4)",
+        )
+        .bind(&suggestion.id)
+        .bind(&suggestion.project_id)
+        .bind(suggestion.criado_em)
+        .bind(kind_json)
+        .execute(&self.pool)
+        .await;
+        match res {
+            Ok(_) => Ok(()),
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+                Err(StoreError::AlreadyExists(suggestion.id.clone()))
+            }
+            Err(e) => Err(map_sqlx(e)),
+        }
+    }
+
+    async fn delete_memory_suggestion(&self, id: &str) -> Result<()> {
+        let res = sqlx::query("DELETE FROM memory_suggestions WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    async fn all_memory_items(&self) -> Result<Vec<(String, MemoryItem)>> {
+        let rows = sqlx::query("SELECT * FROM memory_items ORDER BY criado_em, id")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        rows.iter()
+            .map(|r| {
+                let project_id: String = r.try_get("project_id").map_err(map_sqlx)?;
+                Ok((project_id, memory_item_from_row(r)?))
+            })
+            .collect()
+    }
+
+    async fn all_memory_suggestions(&self) -> Result<Vec<MemorySuggestion>> {
+        let rows = sqlx::query("SELECT * FROM memory_suggestions ORDER BY criado_em, id")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        rows.iter().map(memory_suggestion_from_row).collect()
+    }
 }
 
 #[cfg(test)]
@@ -715,5 +873,59 @@ mod tests {
             repo.read_task("R").await,
             Err(StoreError::NotFound(_))
         ));
+    }
+
+    fn mem_item(id: &str, texto: &str) -> MemoryItem {
+        MemoryItem {
+            id: id.into(),
+            texto: texto.into(),
+            origem_task: None,
+            criado_em: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn memory_item_crud_round_trip() {
+        let (_d, repo) = mk().await;
+        assert!(repo.list_memory("p1").await.unwrap().is_empty());
+        repo.add_memory_item("p1", &mem_item("M-1", "fato"))
+            .await
+            .unwrap();
+        repo.add_memory_item("p2", &mem_item("M-2", "outro"))
+            .await
+            .unwrap();
+        // Scoped per project.
+        assert_eq!(repo.list_memory("p1").await.unwrap().len(), 1);
+        assert_eq!(repo.list_memory("p2").await.unwrap().len(), 1);
+        repo.update_memory_item("p1", "M-1", "novo").await.unwrap();
+        assert_eq!(repo.list_memory("p1").await.unwrap()[0].texto, "novo");
+        // Wrong project can't touch the item.
+        assert!(matches!(
+            repo.update_memory_item("p2", "M-1", "x").await,
+            Err(StoreError::NotFound(_))
+        ));
+        repo.delete_memory_item("p1", "M-1").await.unwrap();
+        assert!(repo.list_memory("p1").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn memory_suggestion_round_trip_preserves_kind() {
+        let (_d, repo) = mk().await;
+        let sug = MemorySuggestion {
+            id: "MS-1".into(),
+            project_id: "p1".into(),
+            criado_em: 7,
+            kind: SuggestionKind::Mesclar {
+                target_ids: vec!["M-a".into(), "M-b".into()],
+                texto_mesclado: "fundido".into(),
+            },
+        };
+        repo.create_memory_suggestion(&sug).await.unwrap();
+        let got = repo.read_memory_suggestion("MS-1").await.unwrap().unwrap();
+        assert_eq!(got.kind, sug.kind);
+        assert_eq!(repo.list_memory_suggestions("p1").await.unwrap().len(), 1);
+        assert_eq!(repo.list_memory_suggestions("p2").await.unwrap().len(), 0);
+        repo.delete_memory_suggestion("MS-1").await.unwrap();
+        assert!(repo.read_memory_suggestion("MS-1").await.unwrap().is_none());
     }
 }

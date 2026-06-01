@@ -22,6 +22,7 @@ import {
   onAgentPresenceRefresh,
 } from "./agent-presence.js";
 import { PROJECT_COLORS } from "./project-colors.js";
+import { renderProjectMemory } from "./project-memory.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -282,8 +283,10 @@ function renderProjectTab() {
     projectTabSelectEl.value = selectedProjectId;
     renderProjectDetail();
   } else {
-    // No project to show: still refresh the (empty) skills table.
+    // No project to show: still refresh the (empty) skills table and
+    // hide the per-project memory section.
     projectSkills.refresh();
+    renderProjectMemory(null);
   }
 }
 
@@ -314,6 +317,7 @@ function renderProjectDetail() {
   }
 
   projectSkills.refresh();
+  renderProjectMemory(p.id);
 }
 
 // The command field only makes sense once an explicit agent kind is

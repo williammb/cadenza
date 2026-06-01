@@ -14,12 +14,13 @@ use anyhow::{Context, Result};
 use cadenza_proto::{
     ops::{
         self, OP_APPEND_LOG, OP_AWAIT_DECISION, OP_BYE, OP_CREATE_IDEIA, OP_CREATE_TASK,
-        OP_CURRENT_TASK, OP_DELETE_IDEIA, OP_DONE, OP_HELLO, OP_LIST_IDEIAS, OP_LIST_PROJECTS,
-        OP_LIST_TASKS, OP_PROPOSE, OP_READ_IDEIA, OP_READ_TASK, OP_SET_IDEIA_STATUS,
-        OP_SET_TASK_WORKTREE, OP_UPDATE_BODY,
+        OP_CURRENT_TASK, OP_DELETE_IDEIA, OP_DONE, OP_HELLO, OP_LIST_IDEIAS, OP_LIST_MEMORY,
+        OP_LIST_PROJECTS, OP_LIST_TASKS, OP_PROPOSE, OP_READ_IDEIA, OP_READ_TASK, OP_REVISE_MEMORY,
+        OP_SET_IDEIA_STATUS, OP_SET_TASK_WORKTREE, OP_SUGGEST_LEARNING, OP_UPDATE_BODY,
     },
     wire::{ErrorBody, Event, Request, Response},
-    Decisao, DecisaoRegistro, Ideia, IdeiaStatus, ProjectInfo, MAX_PROTOCOL, MIN_PROTOCOL,
+    Decisao, DecisaoRegistro, Ideia, IdeiaStatus, MemorySuggestion, ProjectInfo, SuggestionKind,
+    MAX_PROTOCOL, MIN_PROTOCOL,
 };
 use interprocess::local_socket::{tokio::prelude::*, ListenerOptions};
 #[cfg(not(windows))]
@@ -647,6 +648,44 @@ async fn dispatch(
             ));
             to_value(&ops::set_ideia_status::Result { ok: true })
         }
+        OP_LIST_MEMORY => {
+            let args: ops::list_memory::Args =
+                serde_json::from_value(req.args).map_err(bad_args)?;
+            check_id(&args.project_id)?;
+            let items = repo
+                .list_memory(&args.project_id)
+                .await
+                .map_err(|e| internal(&e.to_string()))?;
+            to_value(&items)
+        }
+        OP_SUGGEST_LEARNING => {
+            let args: ops::suggest_learning::Args =
+                serde_json::from_value(req.args).map_err(bad_args)?;
+            let texto = args.texto.trim();
+            if texto.is_empty() {
+                return Err(ErrorBody::new("bad_args", "texto is required"));
+            }
+            let kind = SuggestionKind::Aprendizado {
+                texto: texto.to_string(),
+                origem_task: args.origem_task.filter(|s| !s.trim().is_empty()),
+            };
+            let id = create_memory_suggestion_op(deps, &args.project_id, kind).await?;
+            to_value(&ops::suggest_learning::Result { suggestion_id: id })
+        }
+        OP_REVISE_MEMORY => {
+            let args: ops::revise_memory::Args =
+                serde_json::from_value(req.args).map_err(bad_args)?;
+            // `revise` carries only reeval ops — `Aprendizado` belongs to
+            // `suggest_learning`. Reject it so the two surfaces stay clean.
+            if args.kind.is_learning() {
+                return Err(ErrorBody::new(
+                    "bad_args",
+                    "revise_memory does not accept 'aprendizado'; use suggest_learning",
+                ));
+            }
+            let id = create_memory_suggestion_op(deps, &args.project_id, args.kind).await?;
+            to_value(&ops::revise_memory::Result { suggestion_id: id })
+        }
         OP_BYE => to_value(&ops::bye::Result { ok: true }),
         OP_HELLO => Err(ErrorBody::new(
             "hello_already_done",
@@ -785,6 +824,50 @@ async fn create_ideia_op(
         .await
         .map_err(|e| internal(&e.to_string()))?;
     Ok(ideia)
+}
+
+/// Validar projeto + mintar id/criado_em + persistir a sugestão pendente.
+/// Compartilhado por `suggest_learning` e `revise_memory`. Emite
+/// `EV_MEMORY_CHANGED` para a UI re-puxar a aba de Memória / o review.
+/// Nada vira memória oficial aqui — só fica pendente até a curadoria.
+async fn create_memory_suggestion_op(
+    deps: &ServerDeps,
+    project_id: &str,
+    kind: SuggestionKind,
+) -> Result<String, ErrorBody> {
+    let pid = project_id.trim();
+    if pid.is_empty() {
+        return Err(ErrorBody::new("bad_args", "project_id is required"));
+    }
+    {
+        let cfg = deps
+            .state
+            .config
+            .lock()
+            .map_err(|e| internal(&e.to_string()))?;
+        if !cfg.projects.iter().any(|p| p.id == pid) {
+            return Err(ErrorBody::new(
+                "unknown_project",
+                format!("unknown project_id: {pid}"),
+            ));
+        }
+    }
+    let suggestion = MemorySuggestion {
+        id: format!("MS-{}", uuid::Uuid::new_v4().simple()),
+        project_id: pid.to_string(),
+        criado_em: chrono::Utc::now().timestamp_millis(),
+        kind,
+    };
+    deps.state
+        .repo
+        .create_memory_suggestion(&suggestion)
+        .await
+        .map_err(|e| internal(&e.to_string()))?;
+    let _ = deps.webview_events.try_send((
+        ops::EV_MEMORY_CHANGED.to_string(),
+        serde_json::json!({ "project_id": pid }),
+    ));
+    Ok(suggestion.id)
 }
 
 /// `done` is per-design "request to complete" — agents never put a task

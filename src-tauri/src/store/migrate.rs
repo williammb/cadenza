@@ -119,6 +119,23 @@ pub async fn copy_all(from: &dyn Repository, to: &dyn Repository) -> Result<Migr
         }
     }
 
+    // Memória oficial + sugestões pendentes (T-34). A memória é dado
+    // durável e por-projeto, então a migração entre backends copia tudo.
+    for (project_id, item) in from.all_memory_items().await? {
+        match to.add_memory_item(&project_id, &item).await {
+            Ok(()) => stats.memory_items_copied += 1,
+            Err(StoreError::AlreadyExists(_)) => stats.memory_items_skipped += 1,
+            Err(e) => return Err(e),
+        }
+    }
+    for suggestion in from.all_memory_suggestions().await? {
+        match to.create_memory_suggestion(&suggestion).await {
+            Ok(()) => stats.memory_suggestions_copied += 1,
+            Err(StoreError::AlreadyExists(_)) => stats.memory_suggestions_skipped += 1,
+            Err(e) => return Err(e),
+        }
+    }
+
     Ok(stats)
 }
 
@@ -129,6 +146,10 @@ pub struct MigrationStats {
     pub propostas_copied: usize,
     pub ideias_copied: usize,
     pub ideias_skipped: usize,
+    pub memory_items_copied: usize,
+    pub memory_items_skipped: usize,
+    pub memory_suggestions_copied: usize,
+    pub memory_suggestions_skipped: usize,
 }
 
 /// Run a migration `from → to` if it hasn't been recorded yet.
@@ -220,6 +241,55 @@ mod tests {
         let pending = sqlite.list_pending_propostas().await.unwrap();
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].title, "p1");
+    }
+
+    #[tokio::test]
+    async fn copies_memory_items_and_suggestions() {
+        use cadenza_proto::{MemoryItem, MemorySuggestion, SuggestionKind};
+        let dir = TempDir::new().unwrap();
+        let files = FileRepository::new(dir.path()).unwrap();
+        files
+            .add_memory_item(
+                "proj-a",
+                &MemoryItem {
+                    id: "M-1".into(),
+                    texto: "convenção".into(),
+                    origem_task: Some("T-9".into()),
+                    criado_em: 1,
+                },
+            )
+            .await
+            .unwrap();
+        files
+            .create_memory_suggestion(&MemorySuggestion {
+                id: "MS-1".into(),
+                project_id: "proj-a".into(),
+                criado_em: 2,
+                kind: SuggestionKind::Nova {
+                    texto: "nova".into(),
+                },
+            })
+            .await
+            .unwrap();
+
+        let sqlite = SqliteRepository::open(&dir.path().join("cadenza.db"))
+            .await
+            .unwrap();
+        let stats = copy_all(&files, &sqlite).await.unwrap();
+        assert_eq!(stats.memory_items_copied, 1);
+        assert_eq!(stats.memory_suggestions_copied, 1);
+
+        let items = sqlite.list_memory("proj-a").await.unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].origem_task.as_deref(), Some("T-9"));
+        assert_eq!(
+            sqlite
+                .list_memory_suggestions("proj-a")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]

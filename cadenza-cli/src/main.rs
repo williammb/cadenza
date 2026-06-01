@@ -130,6 +130,11 @@ enum Cmd {
     },
     /// Delete an ideia.
     DeleteIdeia { ideia_id: String },
+    /// Project shared memory (read it, suggest learnings, propose reevals).
+    Memory {
+        #[command(subcommand)]
+        cmd: MemoryCmd,
+    },
     /// Associate a task with a git worktree path and/or branch.
     /// Calling with no options clears the association.
     SetWorktree {
@@ -145,6 +150,54 @@ enum Cmd {
     Diag,
     /// Install / remove the Cadenza skill in supported agents.
     Skill(SkillCmd),
+}
+
+/// `cadenza-cli memory ...` — interagir com a memória compartilhada do
+/// projeto. `list` relê a memória oficial; `suggest` propõe um
+/// aprendizado (pendente até o usuário promovê-lo no review da task);
+/// `revise` propõe uma op de reavaliação (modo memory-reeval). Nenhum
+/// dos dois altera a memória oficial — só enfileira uma sugestão.
+#[derive(Subcommand, Debug)]
+enum MemoryCmd {
+    /// List the official project memory items.
+    List {
+        /// Project ID (default: $TASKAI_PROJECT_ID, fallback $CADENZA_PROJECT_ID).
+        #[arg(long)]
+        project: Option<String>,
+    },
+    /// Suggest a reusable learning. Pending until the human promotes it
+    /// in the task review — nothing enters memory automatically.
+    Suggest {
+        /// The learning text (one durable fact / decision / convention).
+        texto: String,
+        /// Project ID (default: $TASKAI_PROJECT_ID, fallback $CADENZA_PROJECT_ID).
+        #[arg(long)]
+        project: Option<String>,
+        /// Originating task (default: $TASKAI_TASK_ID) so the right task
+        /// review surfaces this learning.
+        #[arg(long)]
+        task: Option<String>,
+    },
+    /// Propose a reevaluation op (used in memory-reeval mode). Pending
+    /// until the human approves it in the Memory tab.
+    Revise {
+        /// remover | reescrever | mesclar | nova | contradicao
+        #[arg(long)]
+        op: String,
+        /// Project ID (default: $TASKAI_PROJECT_ID, fallback $CADENZA_PROJECT_ID).
+        #[arg(long)]
+        project: Option<String>,
+        /// Target item id(s). Repeatable (`--target M-1 --target M-2`).
+        /// Required by remover/reescrever (one) and mesclar/contradicao.
+        #[arg(long = "target")]
+        targets: Vec<String>,
+        /// New / merged / new-item text. Required by reescrever, mesclar, nova.
+        #[arg(long)]
+        texto: Option<String>,
+        /// Explanatory note. Required by contradicao.
+        #[arg(long)]
+        nota: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -280,6 +333,7 @@ async fn run(cli: Cli) -> Result<()> {
             project,
         } => cmd_create_ideia(&mut client, cli.json, titulo, body, project).await?,
         Cmd::DeleteIdeia { ideia_id } => cmd_delete_ideia(&mut client, cli.json, ideia_id).await?,
+        Cmd::Memory { cmd } => cmd_memory(&mut client, cli.json, cmd).await?,
         Cmd::SetWorktree {
             task_id,
             path,
@@ -640,6 +694,135 @@ async fn cmd_delete_ideia(client: &mut Client, json: bool, ideia_id: String) -> 
     Ok(())
 }
 
+async fn cmd_memory(client: &mut Client, json: bool, cmd: MemoryCmd) -> Result<()> {
+    match cmd {
+        MemoryCmd::List { project } => {
+            let project_id = resolve_project(project)?;
+            let items: ops::list_memory::Result = client
+                .request(ops::OP_LIST_MEMORY, ops::list_memory::Args { project_id })
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string(&items)?);
+            } else if items.is_empty() {
+                println!("(memória vazia)");
+            } else {
+                for it in &items {
+                    println!("{}\t{}", it.id, it.texto);
+                }
+            }
+        }
+        MemoryCmd::Suggest {
+            texto,
+            project,
+            task,
+        } => {
+            let project_id = resolve_project(project)?;
+            let origem_task = task
+                .or_else(|| std::env::var("TASKAI_TASK_ID").ok())
+                .filter(|s| !s.trim().is_empty());
+            let result: ops::suggest_learning::Result = client
+                .request(
+                    ops::OP_SUGGEST_LEARNING,
+                    ops::suggest_learning::Args {
+                        project_id,
+                        texto,
+                        origem_task,
+                    },
+                )
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string(&result)?);
+            } else {
+                println!("{}", result.suggestion_id);
+            }
+        }
+        MemoryCmd::Revise {
+            op,
+            project,
+            targets,
+            texto,
+            nota,
+        } => {
+            let project_id = resolve_project(project)?;
+            let kind = build_reeval_kind(&op, targets, texto, nota)?;
+            let result: ops::revise_memory::Result = client
+                .request(
+                    ops::OP_REVISE_MEMORY,
+                    ops::revise_memory::Args { project_id, kind },
+                )
+                .await?;
+            if json {
+                println!("{}", serde_json::to_string(&result)?);
+            } else {
+                println!("{}", result.suggestion_id);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Map `--op` + flags onto a reeval `SuggestionKind`, validating that the
+/// flags required by each op are present. `aprendizado` is rejected here
+/// — that's `memory suggest`, not `revise`.
+fn build_reeval_kind(
+    op: &str,
+    targets: Vec<String>,
+    texto: Option<String>,
+    nota: Option<String>,
+) -> Result<cadenza_proto::SuggestionKind> {
+    use cadenza_proto::SuggestionKind;
+    let one_target = |targets: &[String]| -> Result<String> {
+        match targets {
+            [t] => Ok(t.clone()),
+            _ => Err(anyhow::anyhow!("op '{op}' requires exactly one --target")),
+        }
+    };
+    let need_texto = |texto: Option<String>| -> Result<String> {
+        texto
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("op '{op}' requires --texto"))
+    };
+    match op {
+        "remover" => Ok(SuggestionKind::Remover {
+            target_id: one_target(&targets)?,
+        }),
+        "reescrever" => Ok(SuggestionKind::Reescrever {
+            target_id: one_target(&targets)?,
+            novo_texto: need_texto(texto)?,
+        }),
+        "mesclar" => {
+            if targets.len() < 2 {
+                return Err(anyhow::anyhow!(
+                    "op 'mesclar' requires at least two --target"
+                ));
+            }
+            Ok(SuggestionKind::Mesclar {
+                target_ids: targets,
+                texto_mesclado: need_texto(texto)?,
+            })
+        }
+        "nova" => Ok(SuggestionKind::Nova {
+            texto: need_texto(texto)?,
+        }),
+        "contradicao" => {
+            if targets.len() < 2 {
+                return Err(anyhow::anyhow!(
+                    "op 'contradicao' requires at least two --target"
+                ));
+            }
+            Ok(SuggestionKind::Contradicao {
+                target_ids: targets,
+                nota: nota
+                    .filter(|s| !s.trim().is_empty())
+                    .ok_or_else(|| anyhow::anyhow!("op 'contradicao' requires --nota"))?,
+            })
+        }
+        other => Err(anyhow::anyhow!(
+            "unknown --op '{other}' (use remover|reescrever|mesclar|nova|contradicao)"
+        )),
+    }
+}
+
 async fn cmd_set_worktree(
     client: &mut Client,
     json: bool,
@@ -748,6 +931,43 @@ mod tests {
             }
             other => panic!("expected Cmd::Plan, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reeval_kind_remover_needs_one_target() {
+        use cadenza_proto::SuggestionKind;
+        let ok = build_reeval_kind("remover", vec!["M-1".into()], None, None).unwrap();
+        assert!(matches!(ok, SuggestionKind::Remover { .. }));
+        assert!(build_reeval_kind("remover", vec![], None, None).is_err());
+        assert!(
+            build_reeval_kind("remover", vec!["M-1".into(), "M-2".into()], None, None).is_err()
+        );
+    }
+
+    #[test]
+    fn reeval_kind_reescrever_needs_target_and_texto() {
+        assert!(
+            build_reeval_kind("reescrever", vec!["M-1".into()], Some("novo".into()), None).is_ok()
+        );
+        assert!(build_reeval_kind("reescrever", vec!["M-1".into()], None, None).is_err());
+    }
+
+    #[test]
+    fn reeval_kind_mesclar_needs_two_targets_and_texto() {
+        assert!(build_reeval_kind(
+            "mesclar",
+            vec!["M-1".into(), "M-2".into()],
+            Some("fundido".into()),
+            None
+        )
+        .is_ok());
+        assert!(build_reeval_kind("mesclar", vec!["M-1".into()], Some("x".into()), None).is_err());
+    }
+
+    #[test]
+    fn reeval_kind_rejects_unknown_and_aprendizado() {
+        assert!(build_reeval_kind("aprendizado", vec![], Some("x".into()), None).is_err());
+        assert!(build_reeval_kind("bogus", vec![], None, None).is_err());
     }
 
     /// `plan <id> --replace` with no `--body` → stdin path, replace=true.

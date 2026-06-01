@@ -53,7 +53,7 @@ const CODEX_MARKER_END: &str = "<!-- cadenza:end -->";
 /// prompted to reinstall. Stamped into every install (Codex start marker
 /// `v=`, SKILL.md agents' `CLAUDE_VERSION_MARKER_PREFIX` comment) and
 /// read back by the `status` probes.
-pub const SKILL_VERSION: &str = "3";
+pub const SKILL_VERSION: &str = "4";
 
 /// Invisible marker line inserted after the YAML frontmatter of a
 /// SKILL.md so its version can be read back. HTML comment → the agent

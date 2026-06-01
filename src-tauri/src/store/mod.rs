@@ -19,6 +19,7 @@ use thiserror::Error;
 mod files;
 mod files_inner;
 mod ideias_inner;
+mod memory_inner;
 pub mod migrate;
 mod postgres;
 mod sqlite;
@@ -31,7 +32,8 @@ pub use sqlite::SqliteRepository;
 // Re-exports so callers don't have to know which crate hosts the types.
 #[allow(unused_imports)]
 pub use cadenza_proto::{
-    Decisao, DecisaoRegistro, Estado, Ideia, IdeiaStatus, NewProposta, Proposta, Task,
+    Decisao, DecisaoRegistro, Estado, Ideia, IdeiaStatus, MemoryItem, MemorySuggestion,
+    NewProposta, ProjectMemory, Proposta, SuggestionKind, Task,
 };
 
 /// Unified error covering tasks + triage + transport. Each backend
@@ -129,6 +131,26 @@ pub trait Repository: Send + Sync {
     async fn create_ideia(&self, ideia: &Ideia) -> Result<()>;
     async fn delete_ideia(&self, id: &str) -> Result<()>;
     async fn set_ideia_status(&self, id: &str, status: IdeiaStatus) -> Result<()>;
+
+    // ─── memória compartilhada por projeto (T-34) ──────────────────
+    /// Itens da memória oficial de um projeto. Vazio quando o projeto
+    /// nunca teve memória.
+    async fn list_memory(&self, project_id: &str) -> Result<Vec<MemoryItem>>;
+    async fn add_memory_item(&self, project_id: &str, item: &MemoryItem) -> Result<()>;
+    async fn update_memory_item(&self, project_id: &str, item_id: &str, texto: &str) -> Result<()>;
+    async fn delete_memory_item(&self, project_id: &str, item_id: &str) -> Result<()>;
+
+    /// Sugestões pendentes (aprendizados + ops de reeval) de um projeto.
+    async fn list_memory_suggestions(&self, project_id: &str) -> Result<Vec<MemorySuggestion>>;
+    async fn read_memory_suggestion(&self, id: &str) -> Result<Option<MemorySuggestion>>;
+    async fn create_memory_suggestion(&self, suggestion: &MemorySuggestion) -> Result<()>;
+    async fn delete_memory_suggestion(&self, id: &str) -> Result<()>;
+
+    /// Migration helpers: dump tudo entre projetos para copiar entre
+    /// backends. `(project_id, item)` pares e sugestões (que já carregam
+    /// `project_id`).
+    async fn all_memory_items(&self) -> Result<Vec<(String, MemoryItem)>>;
+    async fn all_memory_suggestions(&self) -> Result<Vec<MemorySuggestion>>;
 }
 
 // ─── error conversions from the legacy sync engines ────────────────
@@ -164,6 +186,18 @@ impl From<ideias_inner::IdeiaError> for StoreError {
         match e {
             Inner::NotFound(id) => StoreError::NotFound(id),
             Inner::AlreadyExists(id) => StoreError::AlreadyExists(id),
+            Inner::Io(e) => StoreError::Io(e),
+            Inner::Json(e) => StoreError::BadData(e.to_string()),
+        }
+    }
+}
+
+impl From<memory_inner::MemoryError> for StoreError {
+    fn from(e: memory_inner::MemoryError) -> Self {
+        use memory_inner::MemoryError as Inner;
+        match e {
+            Inner::ItemNotFound(id) | Inner::SuggestionNotFound(id) => StoreError::NotFound(id),
+            Inner::SuggestionExists(id) | Inner::ItemExists(id) => StoreError::AlreadyExists(id),
             Inner::Io(e) => StoreError::Io(e),
             Inner::Json(e) => StoreError::BadData(e.to_string()),
         }

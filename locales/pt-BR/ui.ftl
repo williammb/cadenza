@@ -28,6 +28,7 @@ topbar-project-aria = Filtrar tasks pelo projeto ativo
 action-save = Salvar
 action-cancel = Cancelar
 action-delete = Excluir
+action-edit = Editar
 action-add = Adicionar
 action-accept = Aceitar
 action-reject = Rejeitar
@@ -100,6 +101,24 @@ settings-pg-saved = Configurações salvas. Reinicie para migrar os dados.
 settings-pg-cleared = Senha removida do keyring.
 settings-pg-fields-required = Preencha host, banco, usuário e senha.
 settings-pg-stale = Os campos mudaram desde o teste. Teste a conexão de novo.
+
+settings-section-memory = Memória do projeto
+settings-memory-hint = Fatos, decisões e convenções que os agentes devem conhecer sobre este projeto. É injetada no agente ao iniciar a task.
+settings-memory-add = Adicionar
+settings-memory-add-placeholder = Novo item de memória…
+settings-memory-empty = Memória vazia.
+settings-memory-reeval = Reavaliar memória
+settings-memory-reeval-aria = Chamar um agente para reavaliar a memória atual
+settings-memory-suggestions = Sugestões de reavaliação
+settings-memory-suggestions-empty = Nenhuma sugestão pendente.
+settings-memory-approve = Aprovar
+settings-memory-reject = Rejeitar
+settings-memory-dismiss = Descartar
+settings-memory-op-remover = Remover
+settings-memory-op-reescrever = Reescrever
+settings-memory-op-mesclar = Mesclar
+settings-memory-op-nova = Novo item
+settings-memory-op-contradicao = Contradição
 
 settings-section-skills = Skills do CLI
 settings-skills-hint = Instala um snippet que ensina o agente (Claude Code, Codex, GitHub Copilot, Antigravity, OpenCode) a usar o cadenza-cli. O snippet vai pro escopo escolhido (projeto atual ou global).
@@ -174,6 +193,12 @@ task-field-worktree-path = Caminho do worktree
 task-worktree-defaults-error = Não foi possível ler o ramo atual: { $error }
 task-worktree-error = Erro no git: { $error }
 
+task-learnings-legend = Aprendizados sugeridos
+task-learnings-hint = O agente propôs estes aprendizados. Escolha quais promover para a memória do projeto — nada entra automaticamente.
+task-learnings-empty = Nenhum aprendizado sugerido.
+task-learnings-promote = Promover
+task-learnings-discard = Descartar
+
 estado-a-fazer = A fazer
 estado-fazendo = Fazendo
 estado-aguardando-revisao = Aguardando revisão
@@ -214,6 +239,7 @@ card-unblocked-title = Desbloqueada
 task-blocker-missing = não encontrada
 
 start-agent-title = Iniciar agente
+start-agent-title-memory = Reavaliar memória
 start-agent-branch-label = Ramo
 start-agent-worktree-label = Worktree
 start-agent-worktree-none = Repositório do projeto (sem worktree)

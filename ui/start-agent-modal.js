@@ -65,7 +65,9 @@ function updateModalTitle() {
   titleEl.textContent =
     currentMode === "plan"
       ? t("start-agent-title-plan") || "Planejar task"
-      : t("start-agent-title") || "Iniciar agente";
+      : currentMode === "memory"
+        ? t("start-agent-title-memory") || "Reavaliar memória"
+        : t("start-agent-title") || "Iniciar agente";
 }
 
 export function setStartAgentRefreshCallback(fn) {
@@ -76,7 +78,13 @@ export async function openStartAgent(targetId, opts = {}) {
   currentTaskId = targetId;
   currentTitulo = opts.titulo ?? null;
   currentMode =
-    opts.mode === "ideia" ? "ideia" : opts.mode === "plan" ? "plan" : "task";
+    opts.mode === "ideia"
+      ? "ideia"
+      : opts.mode === "memory"
+        ? "memory"
+        : opts.mode === "plan"
+          ? "plan"
+          : "task";
   taskBadge.textContent = targetId;
   autoModeEl.checked = false;
   updateModalTitle();
@@ -144,7 +152,7 @@ async function loadWorktreeInfo(targetId) {
   const myGen = ++worktreeInfoGen;
   // Plan mode runs in the same cwd as execution, so the branch/worktree
   // info is still relevant; only ideia decomposition has no association.
-  if (currentMode === "ideia") {
+  if (currentMode === "ideia" || currentMode === "memory") {
     worktreeInfoEl.hidden = true;
     return;
   }
@@ -350,6 +358,12 @@ form.addEventListener("submit", async (e) => {
       currentMode === "ideia"
         ? await invoke("destrinchar_ideia", {
             ideiaId: currentTaskId,
+            agentKind,
+            model,
+          })
+        : currentMode === "memory"
+        ? await invoke("reavaliar_memoria", {
+            projectId: currentTaskId,
             agentKind,
             model,
           })

@@ -5,6 +5,7 @@
 //! agree on, so it is **the source of truth** for the wire format.
 
 pub mod ideia;
+pub mod memory;
 pub mod ops;
 pub mod project;
 pub mod task;
@@ -12,6 +13,7 @@ pub mod triage;
 pub mod wire;
 
 pub use ideia::{Ideia, IdeiaStatus, NewIdeia};
+pub use memory::{MemoryItem, MemorySuggestion, ProjectMemory, SuggestionKind};
 pub use project::ProjectInfo;
 pub use task::{Estado, Task};
 pub use triage::{Decisao, DecisaoRegistro, NewProposta, Proposta};
