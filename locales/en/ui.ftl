@@ -28,6 +28,7 @@ topbar-project-aria = Filter tasks by active project
 action-save = Save
 action-cancel = Cancel
 action-delete = Delete
+action-edit = Edit
 action-add = Add
 action-accept = Accept
 action-reject = Reject
@@ -100,6 +101,24 @@ settings-pg-saved = Settings saved. Restart to migrate the data.
 settings-pg-cleared = Password removed from the keyring.
 settings-pg-fields-required = Fill host, database, user, and password.
 settings-pg-stale = Fields changed since the test. Re-test the connection.
+
+settings-section-memory = Project memory
+settings-memory-hint = Facts, decisions and conventions agents should know about this project. Injected into the agent when a task starts.
+settings-memory-add = Add
+settings-memory-add-placeholder = New memory item…
+settings-memory-empty = Memory is empty.
+settings-memory-reeval = Reevaluate memory
+settings-memory-reeval-aria = Call an agent to reevaluate the current memory
+settings-memory-suggestions = Reevaluation suggestions
+settings-memory-suggestions-empty = No pending suggestions.
+settings-memory-approve = Approve
+settings-memory-reject = Reject
+settings-memory-dismiss = Dismiss
+settings-memory-op-remover = Remove
+settings-memory-op-reescrever = Rewrite
+settings-memory-op-mesclar = Merge
+settings-memory-op-nova = New item
+settings-memory-op-contradicao = Contradiction
 
 settings-section-skills = CLI skills
 settings-skills-hint = Installs a snippet that teaches the agent (Claude Code, Codex, GitHub Copilot, Antigravity, OpenCode) how to use cadenza-cli. The snippet is written to the selected scope (current project or global).
@@ -174,6 +193,12 @@ task-field-worktree-path = Worktree path
 task-worktree-defaults-error = Could not read the current branch: { $error }
 task-worktree-error = Git error: { $error }
 
+task-learnings-legend = Suggested learnings
+task-learnings-hint = The agent proposed these learnings. Choose which to promote into the project memory — nothing is added automatically.
+task-learnings-empty = No suggested learnings.
+task-learnings-promote = Promote
+task-learnings-discard = Discard
+
 estado-a-fazer = To do
 estado-fazendo = Doing
 estado-aguardando-revisao = Awaiting review
@@ -214,6 +239,7 @@ card-unblocked-title = Unblocked
 task-blocker-missing = not found
 
 start-agent-title = Start agent
+start-agent-title-memory = Reevaluate memory
 start-agent-branch-label = Branch
 start-agent-worktree-label = Worktree
 start-agent-worktree-none = Project repository (no worktree)

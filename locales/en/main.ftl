@@ -26,3 +26,12 @@ agent-initial-prompt-ideia = Use the `cadenza` skill to coordinate with Cadenza 
 # plan via `cadenza-cli plan`. The task is still `a_fazer`, so `current`
 # won't return it — the agent reads it with `list --json`.
 agent-planning-prompt = Use the `cadenza` skill to coordinate with Cadenza. You are in PLANNING mode for task { $task_id } ({ $titulo }) — do NOT write or run any code yet. Read the task with `cadenza-cli list --json` and find { $task_id }. Ask me clarifying questions, in batches, until the approach, scope, and acceptance criteria are clear. When we agree, save the refined plan by piping the markdown into stdin: `cadenza-cli plan { $task_id }` (omit `--body` so the plan is read from stdin, avoiding shell quoting issues). Do not mark anything done and do not start the implementation — I will start a separate execution run.
+# Block appended to a fresh execution prompt carrying the project's
+# curated memory (facts/decisions/conventions). Omitted when empty.
+agent-memory-block = Project memory — durable facts, decisions and conventions for this project:
+    { $itens }
+# Prompt injected when the agent starts in memory REEVALUATION mode: it
+# reads the current memory and proposes reviewable suggestions (remove
+# obsolete, merge duplicates, rewrite confusing, flag contradictions,
+# propose new) — applying nothing. The human is the curator.
+agent-initial-prompt-memory-reeval = Use the `cadenza` skill to coordinate with Cadenza. You are in MEMORY REEVALUATION mode for project { $project_id }. Read the current memory with `cadenza-cli memory list --json` and emit review suggestions via `cadenza-cli memory revise --op <remover|reescrever|mesclar|nova|contradicao>` (use `--target`, `--texto`, `--nota` as the op requires). Do NOT change anything directly — suggestions stay pending until the human approves them.

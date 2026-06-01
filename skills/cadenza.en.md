@@ -132,3 +132,56 @@ final task, the originating idea is automatically marked `destrinchada`.
 Aim for 3–8 actionable tasks per idea: each should be small enough to be
 self-contained but big enough to deserve its own card. Don't paste the
 entire idea body into a single task — the point is to slice it.
+
+## Project memory
+
+Each project has an **official memory**: a curated list of facts,
+decisions and conventions that hold for that project. The **human is the
+curator** — nothing you suggest enters memory until they approve it.
+
+- **When a task starts**, the memory is already injected into your initial
+  prompt. To re-read it at any time:
+
+  ```bash
+  cadenza-cli memory list --json
+  ```
+
+- **When you finish a task** (before `done`), if you learned something
+  **genuinely reusable** for future tasks in this project — a convention,
+  an architecture decision, a gotcha — propose it as a learning.
+  Repeatable and **optional**; don't propose trivial learnings:
+
+  ```bash
+  cadenza-cli memory suggest "IPC handlers live in ipc.rs; business logic goes in the modules."
+  ```
+
+  The learning stays **pending** until the human promotes it in the task
+  review. `--task` defaults to `$TASKAI_TASK_ID`; `--project` to
+  `$TASKAI_PROJECT_ID`.
+
+### Memory reevaluation mode
+
+If the env var `CADENZA_MEMORY_REEVAL` is set when you start, the human
+wants you to **reevaluate the project's current memory**. Read it with
+`cadenza-cli memory list --json` and emit review suggestions — **without
+changing anything directly**. Each suggestion stays pending until the
+human approves it in the Memory tab.
+
+```bash
+# remove an obsolete item
+cadenza-cli memory revise --op remover --target M-abc
+
+# rewrite a confusing item
+cadenza-cli memory revise --op reescrever --target M-abc --texto "Clearer text."
+
+# merge duplicates (two or more --target)
+cadenza-cli memory revise --op mesclar --target M-a --target M-b --texto "Consolidated text."
+
+# propose a new item
+cadenza-cli memory revise --op nova --texto "Newly observed convention."
+
+# flag a contradiction (informational; the human resolves it by editing)
+cadenza-cli memory revise --op contradicao --target M-a --target M-b --nota "One says X, the other Y."
+```
+
+After emitting suggestions, stop. The human curates.

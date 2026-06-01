@@ -1076,6 +1076,85 @@ textarea::placeholder {
   margin-top: -0.1rem;
 }
 
+/* =========================== PROJECT MEMORY (T-34) ======================= */
+
+/* Compact buttons for the dense memory/learnings rows. */
+.btn-sm {
+  padding: 0.2rem 0.55rem;
+  font-size: 0.82rem;
+}
+
+.memory-add {
+  display: flex;
+  gap: 0.45rem;
+  align-items: flex-start;
+  margin: 0.5rem 0;
+}
+.memory-add textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  resize: vertical;
+}
+
+.memory-items,
+.memory-suggestions,
+.learnings-list {
+  list-style: none;
+  margin: 0.3rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.memory-item,
+.memory-suggestion,
+.learning-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg-soft, transparent);
+}
+.memory-item.memory-item-editing {
+  flex-direction: column;
+}
+.memory-item.memory-item-editing textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.memory-item-text,
+.memory-suggestion-desc,
+.learning-item-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  word-break: break-word;
+}
+
+.memory-item-origin {
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  opacity: 0.6;
+  font-family: var(--mono, monospace);
+}
+
+.memory-item-actions,
+.memory-suggestion-actions,
+.learning-item-actions {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 0.3rem;
+}
+
+.memory-subhead {
+  margin: 0.8rem 0 0.2rem;
+  font-size: 0.85rem;
+  color: var(--fg-soft, var(--fg));
+}
+
 /* ============================== PROJECT TAB ============================== */
 
 .project-toolbar {

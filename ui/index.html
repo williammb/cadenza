@@ -665,6 +665,47 @@
           </div>
         </section>
 
+        <!-- Memória compartilhada do projeto (T-34). Escopada ao projeto
+             selecionado acima. O usuário é o curador: edita itens, aprova
+             ops de reavaliação e dispara o agente de reeval. -->
+        <section class="modal-section" id="project-memory-section" hidden>
+          <div class="section-head">
+            <h3 data-i18n="settings-section-memory">Memória do projeto</h3>
+            <button
+              type="button"
+              class="btn btn-sm"
+              id="btn-memory-reeval"
+              data-i18n="settings-memory-reeval"
+              data-i18n-title="settings-memory-reeval-aria"
+              data-i18n-aria-label="settings-memory-reeval-aria"
+            >Reavaliar memória</button>
+          </div>
+          <p class="modal-hint" data-i18n="settings-memory-hint">
+            Fatos, decisões e convenções que os agentes devem conhecer sobre este projeto. Injetada no agente ao iniciar a task.
+          </p>
+          <div class="memory-add">
+            <textarea
+              id="memory-new-text"
+              rows="2"
+              data-i18n-placeholder="settings-memory-add-placeholder"
+              placeholder="Novo item de memória…"
+            ></textarea>
+            <button
+              type="button"
+              class="btn btn-sm btn-primary"
+              id="btn-memory-add"
+              data-i18n="settings-memory-add"
+            >Adicionar</button>
+          </div>
+          <ul class="memory-items" id="memory-items-list"></ul>
+          <span class="modal-status" id="memory-items-empty" data-i18n="settings-memory-empty" hidden>Memória vazia.</span>
+
+          <h4 class="memory-subhead" data-i18n="settings-memory-suggestions">Sugestões de reavaliação</h4>
+          <ul class="memory-suggestions" id="memory-suggestions-list"></ul>
+          <span class="modal-status" id="memory-suggestions-empty" data-i18n="settings-memory-suggestions-empty" hidden>Nenhuma sugestão pendente.</span>
+          <div class="modal-status" id="memory-status" aria-live="polite"></div>
+        </section>
+
         <section class="modal-section">
           <div class="section-head">
             <h3 data-i18n="settings-section-skills">Skills do CLI</h3>
@@ -805,6 +846,19 @@
             <input type="text" id="task-worktree-path" autocomplete="off" spellcheck="false" />
           </label>
           <span class="modal-status" id="worktree-status" aria-live="polite"></span>
+        </fieldset>
+
+        <!-- Aprendizados sugeridos pelo agente de execução desta task.
+             Visível só no review (aguardando_revisao). Promover adiciona o
+             item à memória oficial do projeto; descartar remove a sugestão.
+             Independente de concluir a task. Itens renderizados via JS. -->
+        <fieldset class="learnings-section" id="task-learnings-section" hidden>
+          <legend data-i18n="task-learnings-legend">Aprendizados sugeridos</legend>
+          <p class="modal-hint" data-i18n="task-learnings-hint">
+            O agente propôs estes aprendizados. Escolha quais promover para a memória do projeto — nada entra automaticamente.
+          </p>
+          <ul class="learnings-list" id="task-learnings-list"></ul>
+          <span class="modal-status" id="task-learnings-empty" data-i18n="task-learnings-empty" hidden>Nenhum aprendizado sugerido.</span>
         </fieldset>
 
         <footer class="modal-footer">

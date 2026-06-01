@@ -11,7 +11,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{DecisaoRegistro, Ideia, IdeiaStatus, NewProposta, ProjectInfo, Task};
+use crate::{
+    DecisaoRegistro, Ideia, IdeiaStatus, MemoryItem, NewProposta, ProjectInfo, SuggestionKind, Task,
+};
 
 // ───────── op name constants
 
@@ -49,6 +51,16 @@ pub const OP_UPDATE_BODY: &str = "update_body";
 pub const OP_READ_TASK: &str = "read_task";
 pub const OP_LIST_PROJECTS: &str = "list_projects";
 
+// Memória compartilhada por projeto (T-34). Mesmo racional de dispatch
+// por nome de op das adições acima — sem bump de MIN/MAX_PROTOCOL.
+// `OP_LIST_MEMORY` é a releitura da memória oficial pelo agente;
+// `OP_SUGGEST_LEARNING` é o aprendizado proposto pelo agente de execução;
+// `OP_REVISE_MEMORY` é uma operação de reavaliação proposta pelo agente
+// de reeval. Aprendizados/ops só viram memória após curadoria na UI.
+pub const OP_LIST_MEMORY: &str = "list_memory";
+pub const OP_SUGGEST_LEARNING: &str = "suggest_learning";
+pub const OP_REVISE_MEMORY: &str = "revise_memory";
+
 // ───────── event names
 
 pub const EV_PROPOSTA_PENDENTE: &str = "proposta_pendente";
@@ -58,6 +70,10 @@ pub const EV_PROPOSTA_DECIDIDA: &str = "proposta_decidida";
 pub const EV_TASKS_CHANGED: &str = "tasks_changed";
 /// Emitido depois de qualquer create/delete/set_status de ideia via IPC.
 pub const EV_IDEIAS_CHANGED: &str = "ideias_changed";
+/// Emitido depois de qualquer mudança na memória de um projeto ou na
+/// fila de sugestões pendentes (aprendizado ou reeval) via IPC. A UI
+/// escuta para re-puxar a aba de Memória e o review da task.
+pub const EV_MEMORY_CHANGED: &str = "memory_changed";
 
 // ───────── empty args helper
 
@@ -350,6 +366,67 @@ pub mod list_projects {
 
     pub type Args = EmptyArgs;
     pub type Result = Vec<ProjectInfo>;
+}
+
+// ───────── list_memory
+
+pub mod list_memory {
+    use super::MemoryItem;
+    use serde::{Deserialize, Serialize};
+
+    /// O agente lê a memória oficial do projeto em que está rodando. O
+    /// CLI resolve `project_id` de `$TASKAI_PROJECT_ID` quando ausente.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub project_id: String,
+    }
+
+    pub type Result = Vec<MemoryItem>;
+}
+
+// ───────── suggest_learning
+
+pub mod suggest_learning {
+    use serde::{Deserialize, Serialize};
+
+    /// Aprendizado proposto pelo agente de execução ao finalizar. Fica
+    /// pendente até o usuário promovê-lo no review da task. O servidor
+    /// minta `id` e `criado_em`.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub project_id: String,
+        pub texto: String,
+        /// Task de origem — o CLI resolve de `$TASKAI_TASK_ID` quando
+        /// ausente para que o review da task correta exiba o aprendizado.
+        #[serde(default)]
+        pub origem_task: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        pub suggestion_id: String,
+    }
+}
+
+// ───────── revise_memory
+
+pub mod revise_memory {
+    use super::SuggestionKind;
+    use serde::{Deserialize, Serialize};
+
+    /// Operação de reavaliação proposta pelo agente de reeval. `kind`
+    /// deve ser uma variante de reeval (não `Aprendizado`); o servidor
+    /// rejeita `Aprendizado` aqui. Minta `id` e `criado_em`.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub project_id: String,
+        pub kind: SuggestionKind,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        pub suggestion_id: String,
+    }
 }
 
 // ───────── set_ideia_status

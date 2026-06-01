@@ -137,3 +137,56 @@ Mire em 3–8 tasks acionáveis por ideia: cada uma deve ser pequena o
 suficiente para ser autocontida mas grande o suficiente para merecer um
 card próprio. Não cole o corpo inteiro da ideia em uma única task — a
 ideia é fatiar.
+
+## Memória do projeto
+
+Cada projeto tem uma **memória oficial**: uma lista curada de fatos,
+decisões e convenções que valem para aquele projeto. O **usuário é o
+curador** — nada que você sugerir entra na memória sem ele aprovar.
+
+- **No início de uma task**, a memória já vem injetada no seu prompt
+  inicial. Para reler a qualquer momento:
+
+  ```bash
+  cadenza-cli memory list --json
+  ```
+
+- **Ao finalizar uma task** (antes do `done`), se você descobriu algo
+  **genuinamente reaproveitável** para tasks futuras deste projeto — uma
+  convenção, uma decisão de arquitetura, uma armadilha — proponha como
+  aprendizado. Repetível e **opcional**; não force aprendizados triviais:
+
+  ```bash
+  cadenza-cli memory suggest "Os handlers de IPC ficam em ipc.rs; a lógica vai nos módulos."
+  ```
+
+  O aprendizado fica **pendente** até o humano promovê-lo no review da
+  task. `--task` é resolvido de `$TASKAI_TASK_ID`; `--project` de
+  `$TASKAI_PROJECT_ID`.
+
+### Modo reavaliação da memória
+
+Se a variável `CADENZA_MEMORY_REEVAL` estiver setada quando você começar,
+o humano quer que você **reavalie a memória atual** do projeto. Leia-a com
+`cadenza-cli memory list --json` e emita sugestões de revisão — **sem
+alterar nada diretamente**. Cada sugestão fica pendente até o humano
+aprovar na aba de Memória.
+
+```bash
+# remover item obsoleto
+cadenza-cli memory revise --op remover --target M-abc
+
+# reescrever item confuso
+cadenza-cli memory revise --op reescrever --target M-abc --texto "Texto mais claro."
+
+# mesclar duplicatas (dois ou mais --target)
+cadenza-cli memory revise --op mesclar --target M-a --target M-b --texto "Texto consolidado."
+
+# propor item novo
+cadenza-cli memory revise --op nova --texto "Nova convenção observada."
+
+# apontar contradição (informativa; humano resolve editando)
+cadenza-cli memory revise --op contradicao --target M-a --target M-b --nota "Um diz X, o outro Y."
+```
+
+Depois de emitir as sugestões, pare. O humano faz a curadoria.
