@@ -24,6 +24,7 @@ topbar-settings-aria = Open settings
 topbar-theme-aria = Toggle theme (light/dark)
 topbar-project-all = All projects
 topbar-project-aria = Filter tasks by active project
+topbar-models-loaded = Models loaded
 
 action-save = Save
 action-cancel = Cancel

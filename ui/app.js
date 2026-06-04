@@ -452,6 +452,33 @@ function setStatus(msg) {
   if (el) el.textContent = msg ?? "";
 }
 
+function setModelsStatus(msg) {
+  const el = document.getElementById("models-status");
+  if (el) el.textContent = msg ?? "";
+}
+
+async function autoLoadModels() {
+  let cfg;
+  try { cfg = await invoke("get_config"); } catch { return; }
+  const kind = cfg?.agente?.kind;
+  if (!kind) return;
+
+  let cached;
+  try {
+    cached = await invoke("list_agent_models", { agentKind: kind, cachedOnly: true });
+  } catch { return; }
+  if (cached && cached.length > 0) return;
+
+  setModelsStatus(t("settings-models-loading") || "Carregando modelos…");
+  try {
+    await invoke("list_agent_models", { agentKind: kind });
+    setModelsStatus(t("topbar-models-loaded") || "Modelos carregados");
+    setTimeout(() => setModelsStatus(null), 3000);
+  } catch {
+    setModelsStatus(null);
+  }
+}
+
 async function main() {
   // Apply the persisted theme override before anything paints, so we
   // don't flash the OS-default theme for a frame.
@@ -514,6 +541,7 @@ async function main() {
     console.warn("event subscribe failed", e);
   }
   wireUpdateBanner();
+  autoLoadModels();
 }
 
 // Version the user explicitly dismissed. The 24h ticker (and manual

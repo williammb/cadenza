@@ -24,6 +24,7 @@ topbar-settings-aria = Abrir configurações
 topbar-theme-aria = Alternar tema (claro/escuro)
 topbar-project-all = Todos os projetos
 topbar-project-aria = Filtrar tasks pelo projeto ativo
+topbar-models-loaded = Modelos carregados
 
 action-save = Salvar
 action-cancel = Cancelar
