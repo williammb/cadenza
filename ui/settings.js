@@ -504,14 +504,16 @@ function setModelsStatus(msg, kind) {
 // Render one row per agent kind from the *cached* lists only (no probe),
 // so opening Settings is instant.
 async function refreshModelsStatus() {
-  modelsBodyEl.replaceChildren();
-  for (const kind of ["claude_code", "codex", "copilot", "antigravity", "opencode"]) {
-    let entries = [];
-    try {
-      entries = await invoke("list_agent_models", { agentKind: kind, cachedOnly: true });
-    } catch {
-      entries = [];
-    }
+  const kinds = ["claude_code", "codex", "copilot", "antigravity", "opencode"];
+  const lists = await Promise.all(
+    kinds.map((kind) =>
+      invoke("list_agent_models", { agentKind: kind, cachedOnly: true }).catch(() => []),
+    ),
+  );
+
+  const frag = document.createDocumentFragment();
+  kinds.forEach((kind, i) => {
+    const entries = lists[i] || [];
 
     const tr = document.createElement("tr");
 
@@ -538,8 +540,10 @@ async function refreshModelsStatus() {
     tdAction.append(btn);
 
     tr.append(tdAgent, tdCount, tdCurrent, tdAction);
-    modelsBodyEl.append(tr);
-  }
+    frag.append(tr);
+  });
+
+  modelsBodyEl.replaceChildren(frag);
 }
 
 // Run the discovery probe for one agent kind (refresh=true), then
@@ -805,7 +809,6 @@ function createSkillsPanel({ prefix, scope, getProjectPath }) {
   }
 
   async function refresh() {
-    tableBodyEl.replaceChildren();
     let rows;
     try {
       const args = {};
@@ -816,6 +819,7 @@ function createSkillsPanel({ prefix, scope, getProjectPath }) {
       setSkillStatus(t("settings-skills-error", { error: e }), "error");
       return;
     }
+    const frag = document.createDocumentFragment();
     // Each panel owns one scope — show only its rows so the global and
     // project tables don't echo each other.
     for (const r of rows.filter((r) => r.scope === scope)) {
@@ -875,8 +879,9 @@ function createSkillsPanel({ prefix, scope, getProjectPath }) {
       tdRemove.append(rmBtn);
 
       tr.append(tdAgent, tdScope, tdStatus, tdPath, tdAction, tdRemove);
-      tableBodyEl.append(tr);
+      frag.append(tr);
     }
+    tableBodyEl.replaceChildren(frag);
   }
 
   document
