@@ -12,6 +12,12 @@ use portable_pty::{native_pty_system, CommandBuilder, ExitStatus, MasterPty, Pty
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+/// Windows `CREATE_NO_WINDOW` creation flag. Suppresses the console window
+/// that a windowless GUI process would otherwise pop when spawning a console
+/// subprocess (git, opencode) off the PTY path. No-op outside Windows.
+#[cfg(windows)]
+pub(crate) const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
 /// Inputs to `PtyHandle::spawn`.
 pub struct SpawnConfig {
     pub command: String,

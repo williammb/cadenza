@@ -819,6 +819,11 @@ fn collect_opencode_sessions(
 ) -> anyhow::Result<Vec<OpenCodeSessionInfo>> {
     let (resolved, prefix_args) = crate::spawn::resolve_command(command);
     let mut cmd = Command::new(&resolved);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(crate::spawn::CREATE_NO_WINDOW);
+    }
     cmd.args(prefix_args);
     cmd.args(["session", "list", "--format", "json", "--max-count"]);
     cmd.arg(max_count.to_string());

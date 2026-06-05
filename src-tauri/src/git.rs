@@ -10,11 +10,24 @@ use anyhow::{anyhow, bail, Context, Result};
 use std::path::Path;
 use tokio::process::Command;
 
+/// A `git` command with the Windows console window suppressed (see
+/// `spawn::CREATE_NO_WINDOW`). Cadenza is a windowless GUI process, so a plain
+/// `git.exe` spawn would pop a console window for a fraction of a second;
+/// routing every non-interactive git spawn through here avoids that.
+fn git_command() -> Command {
+    // `mut` is only used on Windows, where `creation_flags` borrows mutably.
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut cmd = Command::new("git");
+    #[cfg(windows)]
+    cmd.creation_flags(crate::spawn::CREATE_NO_WINDOW);
+    cmd
+}
+
 /// Run `git -C <dir> <args...>` and return trimmed stdout on success.
 /// A non-zero exit becomes an error carrying git's stderr (or stdout when
 /// stderr is empty), so callers can show the user why git refused.
 async fn run_git(dir: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -52,7 +65,7 @@ pub async fn current_branch(repo: &Path) -> Result<String> {
 /// the ref is absent, so this can't reuse `run_git`'s bail-on-failure.
 pub async fn branch_exists(repo: &Path, branch: &str) -> Result<bool> {
     let refname = format!("refs/heads/{branch}");
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(repo)
         .args(["rev-parse", "--verify", "--quiet", &refname])
@@ -80,7 +93,7 @@ pub async fn list_branches(repo: &Path) -> Result<Vec<String>> {
 /// non-zero without a tracked upstream, so this can't reuse `run_git`.
 async fn upstream_of(repo: &Path, branch: &str) -> Result<Option<String>> {
     let spec = format!("{branch}@{{upstream}}");
-    let output = Command::new("git")
+    let output = git_command()
         .arg("-C")
         .arg(repo)
         .args(["rev-parse", "--abbrev-ref", "--verify", "--quiet", &spec])

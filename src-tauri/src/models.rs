@@ -87,6 +87,11 @@ pub fn discover_models(
 fn capture_opencode_models(binary: &str, refresh: bool) -> Result<String> {
     let (resolved, prefix_args) = crate::spawn::resolve_command(binary);
     let mut cmd = Command::new(&resolved);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(crate::spawn::CREATE_NO_WINDOW);
+    }
     cmd.args(prefix_args);
     cmd.arg("models");
     if refresh {
