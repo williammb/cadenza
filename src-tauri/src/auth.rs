@@ -10,7 +10,7 @@
 
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::RngCore;
+use rand::Rng;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -63,7 +63,7 @@ fn token_path(dir: &Path) -> PathBuf {
 
 fn mint_token() -> String {
     let mut bytes = [0u8; TOKEN_BYTES];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     URL_SAFE_NO_PAD.encode(bytes)
 }
 
