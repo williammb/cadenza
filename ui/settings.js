@@ -195,6 +195,8 @@ function populateForm(cfg) {
   populatePgForm(cfg.postgres);
   pgBlock.hidden = backend !== "postgres";
 
+  populateJiraForm(cfg);
+
   // Reset the project tab selection so a deleted/renamed project from a
   // previous session doesn't linger; renderProjectTab picks a default.
   selectedProjectId = null;
@@ -239,6 +241,28 @@ function pgFormFingerprint(form) {
 function setPgStatus(msg, kind) {
   pgStatusEl.textContent = msg ?? "";
   pgStatusEl.className = "modal-status" + (kind ? ` ${kind}` : "");
+}
+
+// ──────────────────────────────── jira ──────────────────────────────
+//
+// Read-only Jira integration. `base_url`/`email` ride the shared config
+// (persisted by the footer Save / form submit). The API token is
+// write-only: it lives in the OS keyring, is never read back into the
+// DOM, and is pushed to the keyring via set_jira_token on Test/Save.
+
+function populateJiraForm(cfg) {
+  document.getElementById("jira-base-url").value = cfg?.jira?.base_url ?? "";
+  document.getElementById("jira-email").value = cfg?.jira?.email ?? "";
+  // Token always blank — write-only; the secret lives in the keyring,
+  // never in JS state or the DOM. Mirrors populatePgForm's password reset.
+  document.getElementById("jira-token").value = "";
+  setJiraStatus("");
+}
+
+function setJiraStatus(msg, kind) {
+  const el = document.getElementById("jira-status");
+  el.textContent = msg ?? "";
+  el.className = "modal-status" + (kind ? ` ${kind}` : "");
 }
 
 // ────────────────────────────── projeto tab ─────────────────────────
@@ -629,6 +653,17 @@ function readForm() {
   );
   const storageBackend = backendRadio?.value ?? currentConfig.storage_backend ?? "files";
 
+  // Capture the editable Jira config (base_url/email). The token is NOT
+  // read here — it is write-only and goes straight to the keyring.
+  // Only set the block when a base_url is present: the backend validates
+  // base_url for any Some(jira), so sending an empty one makes EVERY save
+  // fail for users who never configured Jira. Empty base_url => null
+  // (config.jira is Option), which skips validation entirely.
+  const jiraBaseUrl = document.getElementById("jira-base-url").value.trim();
+  currentConfig.jira = jiraBaseUrl
+    ? { base_url: jiraBaseUrl, email: document.getElementById("jira-email").value.trim() }
+    : null;
+
   // Spread currentConfig first so fields the form doesn't surface —
   // postgres, active_project_id, agent_models — survive the Save instead
   // of being dropped (save_config overwrites the whole config).
@@ -912,6 +947,51 @@ document.getElementById("btn-pg-clear").addEventListener("click", async () => {
   }
 });
 
+// Jira "Testar conexão". jira_test_connection takes NO args — it reads
+// base_url from the saved config and the token from the keyring. So we
+// must persist the token (set_jira_token) AND the edited config
+// (save_config, which now carries the jira block via readForm) BEFORE
+// invoking it, or it would test stale/missing values.
+document.getElementById("btn-jira-test").addEventListener("click", async () => {
+  const baseUrl = document.getElementById("jira-base-url").value.trim();
+  const token = document.getElementById("jira-token").value;
+  if (!baseUrl || !token) {
+    setJiraStatus(t("settings-jira-fields-required"), "error");
+    return;
+  }
+  setJiraStatus(t("settings-jira-testing"));
+  try {
+    await invoke("set_jira_token", { baseUrl, token });
+    currentConfig = await invoke("save_config", { config: readForm() });
+    document.getElementById("jira-token").value = ""; // clear after persist
+    const res = await invoke("jira_test_connection");
+    setJiraStatus(
+      t("settings-jira-test-ok", {
+        name: res.display_name,
+        account: res.account_id,
+      }),
+      "ok",
+    );
+  } catch (e) {
+    setJiraStatus(t("settings-jira-test-error", { error: e }), "error");
+  }
+});
+
+document.getElementById("btn-jira-clear-token").addEventListener("click", async () => {
+  const baseUrl = document.getElementById("jira-base-url").value.trim();
+  if (!baseUrl) {
+    setJiraStatus(t("settings-jira-fields-required"), "error");
+    return;
+  }
+  try {
+    await invoke("clear_jira_token", { baseUrl });
+    document.getElementById("jira-token").value = "";
+    setJiraStatus(t("settings-jira-token-cleared"), "ok");
+  } catch (e) {
+    setJiraStatus(t("settings-jira-test-error", { error: e }), "error");
+  }
+});
+
 // ─────────────────────── skills (CLI snippet) ────────────────────────
 //
 // The Settings modal lets the user push the cadenza-cli usage snippet
@@ -1082,6 +1162,16 @@ form.addEventListener("submit", async (e) => {
   e.preventDefault();
   const cfg = readForm();
   try {
+    // Push the Jira token to the keyring first (write-only, never in
+    // config) — mirrors the PG "keyring-before-config" ordering so a
+    // crash between the two leaves a usable secret rather than a config
+    // pointing at a missing one.
+    const jiraToken = document.getElementById("jira-token").value;
+    const jiraBaseUrl = document.getElementById("jira-base-url").value.trim();
+    if (jiraToken && jiraBaseUrl) {
+      await invoke("set_jira_token", { baseUrl: jiraBaseUrl, token: jiraToken });
+      document.getElementById("jira-token").value = ""; // clear after persist
+    }
     const saved = await invoke("save_config", { config: cfg });
     currentConfig = saved;
     setStatus(t("settings-saved"), "ok");

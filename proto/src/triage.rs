@@ -26,6 +26,10 @@ pub struct NewProposta {
     pub file: String,
     pub what_failed: String,
     pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jira_site: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jira_issue_id: Option<String>,
 }
 
 /// Persisted proposal (`<proposta_id>.proposta.json`).
@@ -40,6 +44,13 @@ pub struct Proposta {
     pub file: String,
     pub what_failed: String,
     pub action: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jira_site: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jira_issue_id: Option<String>,
+    /// Computed at read time; never persisted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jira_key_display: Option<String>,
     pub created_at_ms: i64,
 }
 
@@ -52,4 +63,29 @@ pub struct DecisaoRegistro {
     pub task_id: Option<String>,
     pub autor: String,
     pub decided_at_ms: i64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn proposta_jira_fields_default_to_none_when_absent() {
+        let p: Proposta = serde_json::from_str(
+            r#"{
+                "proposta_id": "P-1",
+                "idempotency_key": "k",
+                "title": "t",
+                "repro": "r",
+                "file": "f",
+                "what_failed": "w",
+                "action": "a",
+                "created_at_ms": 0
+            }"#,
+        )
+        .unwrap();
+        assert!(p.jira_site.is_none());
+        assert!(p.jira_issue_id.is_none());
+        assert!(p.jira_key_display.is_none());
+    }
 }

@@ -198,6 +198,44 @@ Aim for 3–8 actionable tasks per idea: each should be small enough to be
 self-contained but big enough to deserve its own card. Don't paste the
 entire idea body into a single task — the point is to slice it.
 
+## Decompose a Jira issue
+
+If the env var `CADENZA_JIRA_ISSUE_ID` is set when you start, the human
+wants you to break a Jira issue into subtasks. The issue identity is in
+the environment (`CADENZA_JIRA_KEY`, `CADENZA_JIRA_SITE`,
+`CADENZA_JIRA_ISSUE_ID`) and the `analysis_run_id` is in
+`CADENZA_ANALYSIS_RUN_ID`.
+
+1. **Read the injected issue.** The issue summary and description (as
+   Markdown) are already in your initial prompt. Treat them as the source
+   of truth for scope.
+
+2. **Grill-style interview (Act 1).** Ask **one question at a time**, and
+   for each question **recommend an answer**. Narrow down until you have
+   locked the subtask breakdown before submitting anything. Don't submit
+   a list of subtasks you couldn't defend.
+
+3. **Submit via the run-scoped CLI.** Once the breakdown is locked, write
+   the subtasks to a JSON file
+   (`[{"title": "...", "body": "..."}, ...]`) and run:
+
+   ```bash
+   cadenza-cli jira-materialize \
+     --analysis-run-id "$CADENZA_ANALYSIS_RUN_ID" \
+     --subtasks-file subtasks.json
+   ```
+
+   The capability secret is read automatically from
+   `$CADENZA_RUN_SECRET` (or from STDIN with `--secret-stdin`). **Never
+   put the secret on the command line** — it must never appear in argv.
+   The `jira_site` and `jira_issue_id` are stamped server-side from the
+   secret; you do **not** set them.
+
+4. **Subtask states.** The created subtasks enter the normal board flow
+   and move through the canonical states: `a_fazer`, `fazendo`,
+   `aguardando_revisao`, `feito`. Keep each subtask small enough to
+   deserve its own card.
+
 ## Project memory
 
 Each project has an **official memory**: a curated list of facts,

@@ -17,6 +17,9 @@ mod commands;
 mod config;
 mod git;
 mod ipc;
+pub mod jira;
+mod jira_run;
+mod jira_sidecar;
 mod models;
 mod notify;
 mod observ;
@@ -111,6 +114,14 @@ pub fn run() {
             commands::decidir_proposta,
             commands::propose,
             commands::await_proposta_decisao,
+            // jira (Slice 2): server-stamped materialization
+            commands::jira_materialize,
+            commands::jira_test_connection,
+            commands::jira_fetch_issue,
+            commands::jira_list_assigned,
+            commands::jira_review,
+            commands::jira_import,
+            commands::jira_discard,
             // PTY
             commands::pty_spawn,
             commands::pty_write,
@@ -162,6 +173,8 @@ pub fn run() {
             commands::test_db_connection,
             commands::set_pg_password,
             commands::clear_pg_password,
+            commands::set_jira_token,
+            commands::clear_jira_token,
             commands::restart_app,
             commands::check_update,
             commands::install_update_and_restart,

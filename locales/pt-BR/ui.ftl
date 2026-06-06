@@ -372,3 +372,38 @@ settings-quality-move-up = Mover para cima
 settings-quality-move-down = Mover para baixo
 settings-quality-remove = Remover check
 settings-quality-dup-id = IDs de check devem ser únicos e não vazios.
+
+# ───────────────────────── Configurações → Jira ─────────────────────────
+# Integração somente-leitura com o Jira. base_url/email vivem no config;
+# o token de API fica no keyring do SO (write-only, nunca volta pro DOM).
+settings-tab-jira = Jira
+settings-section-jira = Jira
+settings-jira-base-url = URL base
+settings-jira-email = E-mail
+settings-jira-token = API token
+settings-jira-token-hint = Vai pro keyring do SO. Nunca é gravado em config.json.
+settings-jira-test = Testar conexão
+settings-jira-clear-token = Limpar token
+settings-jira-fields-required = Preencha URL base e token.
+settings-jira-testing = Testando conexão…
+settings-jira-test-ok = Conectado como { $name } ({ $account })
+settings-jira-test-error = Erro: { $error }
+settings-jira-token-cleared = Token removido do keyring.
+
+# ───────────────────────── Importar do Jira ─────────────────────────
+jira-import-open = Importar do Jira
+jira-import-open-aria = Importar issue do Jira
+jira-import-title = Importar issue do Jira
+jira-import-key-label = Chave da issue
+jira-import-load-assigned = Carregar atribuídas a mim
+jira-import-loading = Carregando issues…
+jira-import-partial = Mostrando as primeiras { $count } issues.
+jira-import-analyst = Agente analista
+jira-import-project = Projeto
+jira-import-submit = Importar
+jira-import-importing = Importando…
+jira-import-key-required = Informe a chave da issue.
+jira-import-project-required = Selecione um projeto.
+jira-import-imported = Issue { $key } importada.
+jira-import-existing = { $key } já está em importação. Abrindo o trabalho existente.
+jira-error = Erro: { $error }

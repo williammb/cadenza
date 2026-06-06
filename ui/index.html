@@ -71,6 +71,15 @@
         </button>
         <button
           type="button"
+          class="btn"
+          id="btn-jira-import"
+          data-i18n-aria-label="jira-import-open-aria"
+          aria-label="Importar issue do Jira"
+        >
+          <span data-i18n="jira-import-open">Importar do Jira</span>
+        </button>
+        <button
+          type="button"
           class="btn btn-icon"
           id="btn-terminal-open"
           aria-pressed="false"
@@ -296,6 +305,17 @@
             tabindex="-1"
             data-i18n="settings-tab-projeto"
           >Projeto</button>
+          <button
+            type="button"
+            class="settings-tab"
+            role="tab"
+            id="settings-tab-jira"
+            data-tab="jira"
+            aria-selected="false"
+            aria-controls="settings-panel-jira"
+            tabindex="-1"
+            data-i18n="settings-tab-jira"
+          >Jira</button>
         </nav>
 
         <!-- ───────────────────────────── GERAL ───────────────────────────── -->
@@ -786,6 +806,63 @@
           ></div>
         </section>
         </div>
+
+        <!-- ───────────────────────────── JIRA ───────────────────────────── -->
+        <div
+          class="settings-panel"
+          role="tabpanel"
+          id="settings-panel-jira"
+          data-panel="jira"
+          aria-labelledby="settings-tab-jira"
+          hidden
+        >
+          <section class="modal-section">
+            <h3 data-i18n="settings-section-jira">Jira</h3>
+            <label class="field">
+              <span data-i18n="settings-jira-base-url">URL base</span>
+              <input
+                type="text"
+                id="jira-base-url"
+                placeholder="https://your-org.atlassian.net"
+              />
+            </label>
+            <label class="field">
+              <span data-i18n="settings-jira-email">E-mail</span>
+              <input type="email" id="jira-email" placeholder="you@example.com" />
+            </label>
+            <label class="field">
+              <span data-i18n="settings-jira-token">API token</span>
+              <input
+                type="password"
+                id="jira-token"
+                autocomplete="new-password"
+                placeholder="••••••••"
+              />
+              <small class="pg-password-hint" data-i18n="settings-jira-token-hint">
+                Vai pro keyring do SO. Nunca é gravado em config.json.
+              </small>
+            </label>
+            <div class="pg-actions">
+              <button
+                type="button"
+                class="btn"
+                id="btn-jira-test"
+                data-i18n="settings-jira-test"
+              >Testar conexão</button>
+              <button
+                type="button"
+                class="btn btn-danger btn-small"
+                id="btn-jira-clear-token"
+                data-i18n="settings-jira-clear-token"
+              >Limpar token</button>
+            </div>
+            <div
+              id="jira-status"
+              class="modal-status"
+              aria-live="polite"
+            ></div>
+          </section>
+        </div>
         <footer class="modal-footer">
           <span class="modal-status" id="settings-status" aria-live="polite"></span>
           <button type="button" class="btn" data-action="close-settings" data-i18n="action-cancel">Cancelar</button>
@@ -1155,6 +1232,69 @@
           >Excluir</button>
           <button type="button" class="btn" data-action="close-ideia" data-i18n="action-cancel">Cancelar</button>
           <button type="submit" class="btn btn-primary" data-i18n="action-save">Salvar</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <!-- ============================ JIRA IMPORT MODAL ============================ -->
+    <dialog id="jira-import-modal" class="modal">
+      <form method="dialog" class="modal-form" id="jira-import-form">
+        <header class="modal-header">
+          <h2 data-i18n="jira-import-title">Importar issue do Jira</h2>
+          <button
+            type="button"
+            class="btn btn-icon modal-close"
+            data-action="close-jira-import"
+            data-i18n-aria-label="action-close"
+            aria-label="Fechar"
+          >×</button>
+        </header>
+        <section class="modal-section">
+          <label class="field">
+            <span data-i18n="jira-import-key-label">Chave da issue</span>
+            <input type="text" id="jira-import-key" placeholder="PROJ-123" />
+          </label>
+          <div class="pg-actions">
+            <button
+              type="button"
+              class="btn"
+              id="btn-jira-load-assigned"
+              data-i18n="jira-import-load-assigned"
+            >Carregar atribuídas a mim</button>
+          </div>
+          <div id="jira-assigned-note" class="modal-status warn" hidden></div>
+          <ul id="jira-assigned-list" class="jira-assigned-list"></ul>
+        </section>
+        <section class="modal-section">
+          <label class="field">
+            <span data-i18n="jira-import-analyst">Agente analista</span>
+            <select id="jira-import-analyst">
+              <option value="claude_code" data-i18n="settings-agent-claude">Claude Code</option>
+              <option value="codex" data-i18n="settings-agent-codex">Codex</option>
+              <option value="copilot" data-i18n="settings-agent-copilot">GitHub Copilot</option>
+              <option value="antigravity" data-i18n="settings-agent-antigravity">Antigravity</option>
+              <option value="opencode" data-i18n="settings-agent-opencode">OpenCode</option>
+            </select>
+          </label>
+          <label class="field">
+            <span data-i18n="jira-import-project">Projeto</span>
+            <select id="jira-import-project"></select>
+          </label>
+        </section>
+        <footer class="modal-footer">
+          <span class="modal-status" id="jira-import-status" aria-live="polite"></span>
+          <button
+            type="button"
+            class="btn"
+            data-action="close-jira-import"
+            data-i18n="action-cancel"
+          >Cancelar</button>
+          <button
+            type="button"
+            class="btn btn-primary"
+            id="btn-jira-do-import"
+            data-i18n="jira-import-submit"
+          >Importar</button>
         </footer>
       </form>
     </dialog>

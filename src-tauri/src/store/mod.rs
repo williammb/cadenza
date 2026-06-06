@@ -19,6 +19,8 @@ use thiserror::Error;
 mod files;
 mod files_inner;
 mod ideias_inner;
+mod jira_inner;
+mod jira_review_inner;
 mod memory_inner;
 pub mod migrate;
 mod postgres;
@@ -30,6 +32,10 @@ mod triage_inner;
 // CLI never reads a `ReviewPackage`. Re-export from `crate::review` so
 // the backends + call sites can name them through `store::`.
 pub use crate::review::{PackageStatus, ReviewPackage};
+// Aggregate (issue-owned) review packages (Slice 5). Parallel to
+// `ReviewPackage`; keyed by `(jira_site, jira_issue_id, attempt)`. The status
+// enum is named through `crate::review::issue` where needed.
+pub use crate::review::issue::IssueReviewPackage;
 
 pub use files::FileRepository;
 pub use postgres::{PgConnectionParams, PgRepository, PgSslModeChoice};
@@ -38,8 +44,8 @@ pub use sqlite::SqliteRepository;
 // Re-exports so callers don't have to know which crate hosts the types.
 #[allow(unused_imports)]
 pub use cadenza_proto::{
-    Decisao, DecisaoRegistro, Estado, Ideia, IdeiaStatus, MemoryItem, MemorySuggestion,
-    NewProposta, ProjectMemory, Proposta, SuggestionKind, Task,
+    Decisao, DecisaoRegistro, Estado, Ideia, IdeiaStatus, JiraIssueRecord, MemoryItem,
+    MemorySuggestion, NewProposta, ProjectMemory, Proposta, SuggestionKind, Task,
 };
 
 /// Unified error covering tasks + triage + transport. Each backend
@@ -187,6 +193,29 @@ pub trait Repository: Send + Sync {
     async fn delete_ideia(&self, id: &str) -> Result<()>;
     async fn set_ideia_status(&self, id: &str, status: IdeiaStatus) -> Result<()>;
 
+    // ─── jira issues (cache de identidade) ─────────────────────────
+    // Slice 1 wires only `list_jira_issues` (startup index seeding); the
+    // upsert/read/delete surface is exercised by later slices (HTTP import,
+    // worktree lifecycle) and by the backend tests. Allow until wired.
+    /// Insert or replace a Jira issue record, keyed by (jira_site, jira_issue_id).
+    #[allow(dead_code)]
+    async fn upsert_jira_issue(&self, record: &JiraIssueRecord) -> Result<()>;
+
+    /// Read one record by composite key; Ok(None) if absent.
+    #[allow(dead_code)]
+    async fn read_jira_issue(
+        &self,
+        jira_site: &str,
+        jira_issue_id: &str,
+    ) -> Result<Option<JiraIssueRecord>>;
+
+    /// All records, ordered by (jira_site, jira_issue_id).
+    async fn list_jira_issues(&self) -> Result<Vec<JiraIssueRecord>>;
+
+    /// Delete by composite key; NotFound if absent.
+    #[allow(dead_code)]
+    async fn delete_jira_issue(&self, jira_site: &str, jira_issue_id: &str) -> Result<()>;
+
     // ─── memória compartilhada por projeto (T-34) ──────────────────
     /// Itens da memória oficial de um projeto. Vazio quando o projeto
     /// nunca teve memória.
@@ -285,6 +314,50 @@ pub trait Repository: Send + Sync {
         log_line: Option<&str>,
         target_estado: Option<Estado>,
     ) -> Result<ReviewPackage>;
+
+    // ─── aggregate (issue-owned) review packages (Slice 5) ─────────
+    // These are PARALLEL to the per-task review methods above and keyed by
+    // `(jira_site, jira_issue_id, attempt)`. STATE-NEUTRAL: persisting an
+    // aggregate touches ONLY its own row/sidecar — never a task `.md`/row,
+    // never any estado, never a `done` path.
+
+    /// Persist an aggregate (issue-owned) review package. Idempotent on
+    /// `(jira_site, jira_issue_id, idempotency_key)`: a repeat key returns the
+    /// stored package unchanged. Otherwise allocates `attempt = max + 1`,
+    /// supersedes prior `Pending` aggregates for the same issue, and inserts
+    /// (the package's own carried `status` is written, defaulting to
+    /// `Pending`). Allocation + supersede + insert is ONE atomic unit per
+    /// backend. Never touches any task row or estado.
+    async fn upsert_issue_review_package(
+        &self,
+        pkg: &IssueReviewPackage,
+    ) -> Result<IssueReviewPackage>;
+
+    /// Latest (highest-`attempt`) aggregate review for an issue, or `None`.
+    /// Default impl in terms of [`list_issue_review_packages`]; SQL backends
+    /// override with an indexed `ORDER BY attempt DESC LIMIT 1`. Consumed by
+    /// the `jira_review` command (a separate workflow); allow until wired.
+    #[allow(dead_code)]
+    async fn latest_issue_review_package(
+        &self,
+        jira_site: &str,
+        jira_issue_id: &str,
+    ) -> Result<Option<IssueReviewPackage>> {
+        Ok(self
+            .list_issue_review_packages(jira_site, jira_issue_id)
+            .await?
+            .pop())
+    }
+
+    /// All attempts for an issue, ordered by `attempt` ascending.
+    async fn list_issue_review_packages(
+        &self,
+        jira_site: &str,
+        jira_issue_id: &str,
+    ) -> Result<Vec<IssueReviewPackage>>;
+
+    /// Migration dump, ordered `(jira_site, jira_issue_id, attempt)`.
+    async fn all_issue_review_packages(&self) -> Result<Vec<IssueReviewPackage>>;
 }
 
 // ─── error conversions from the legacy sync engines ────────────────

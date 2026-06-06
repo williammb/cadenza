@@ -42,7 +42,45 @@ impl WireError {
             // (`30 = recurso não encontrado`).
             "task_not_found" | "unknown_project" => 30,
             "decision_timeout" => 21,
-            "proposal_rejected" => 20,
+            // A forged Jira identity on the public propose surface is a
+            // rejected proposal (same family as proposal_rejected).
+            "proposal_rejected" | "jira_identity_forbidden" => 20,
+            // Capability-secret failures (Slice 2) are auth-family, like
+            // auth_failed.
+            "run_secret_invalid" | "run_secret_expired" | "run_secret_revoked" => 11,
+            // Bad decomposition payload is a usage error (exit 2),
+            // consistent with the CLI's other bad-usage exits.
+            "invalid_decomposition" => 2,
+            // Jira data layer (Slice 3). Without these arms the new codes
+            // would fall through to the generic exit 1.
+            "jira_config" => 2,       // bad usage / misconfiguration
+            "jira_auth" => 11,        // auth family (like auth_failed)
+            "jira_not_found" => 30,   // resource not found (like task_not_found)
+            "jira_rate_limited" => 1, // transient; generic failure
+            "jira_cancelled" => 1,
+            "jira_http" | "jira_transport" | "jira_parse" => 1,
+            // Jira shared-worktree lifecycle (Slice 4). Neither is auth(11),
+            // usage(2), not-found(30), rejected-proposal(20), nor
+            // timeout(21): worktree-busy is transient contention (like
+            // `jira_rate_limited`) and worktree-failed is an operational
+            // failure (like `jira_http`/`jira_transport`), so both take the
+            // generic, retryable exit 1.
+            "jira_worktree_busy" => 1,
+            "jira_worktree_failed" => 1,
+            // Jira aggregate review (Slice 5). `jira_worktree_not_ready` is a
+            // transient precondition (the worktree becomes Ready after the
+            // Slice-4 `ensure` runs), like `jira_worktree_busy`;
+            // `jira_review_failed` is an operational diff failure like
+            // `jira_http`. Both take the generic, retryable exit 1.
+            // (`jira_not_found` from a missing record already maps to 30.)
+            "jira_worktree_not_ready" => 1,
+            "jira_review_failed" => 1,
+            // Jira import orchestration + discard (Slice 6a). `jira_import_failed`
+            // is an operational failure (mint/spawn/store) and `jira_worktree_dirty`
+            // is a transient refusal (pass --force) — both take the generic,
+            // retryable exit 1, the same family as `jira_worktree_failed`.
+            "jira_import_failed" => 1,
+            "jira_worktree_dirty" => 1,
             _ => 1,
         }
     }
@@ -225,5 +263,84 @@ async fn open_stream() -> std::io::Result<Stream> {
             .to_fs_name::<GenericFilePath>()
             .map_err(|e| std::io::Error::new(ErrorKind::InvalidInput, e))?;
         Stream::connect(name).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn exit_for(code: &str) -> i32 {
+        WireError(ErrorBody::new(code, "x")).exit_code()
+    }
+
+    #[test]
+    fn exit_code_run_secret_invalid_is_11() {
+        assert_eq!(exit_for("run_secret_invalid"), 11);
+    }
+
+    #[test]
+    fn exit_code_run_secret_expired_is_11() {
+        assert_eq!(exit_for("run_secret_expired"), 11);
+    }
+
+    #[test]
+    fn exit_code_run_secret_revoked_is_11() {
+        assert_eq!(exit_for("run_secret_revoked"), 11);
+    }
+
+    #[test]
+    fn exit_code_invalid_decomposition_is_2() {
+        assert_eq!(exit_for("invalid_decomposition"), 2);
+    }
+
+    #[test]
+    fn exit_code_jira_identity_forbidden_is_20() {
+        assert_eq!(exit_for("jira_identity_forbidden"), 20);
+    }
+
+    #[test]
+    fn exit_code_jira_config_is_2() {
+        assert_eq!(exit_for("jira_config"), 2);
+    }
+
+    #[test]
+    fn exit_code_jira_auth_is_11() {
+        assert_eq!(exit_for("jira_auth"), 11);
+    }
+
+    #[test]
+    fn exit_code_jira_not_found_is_30() {
+        assert_eq!(exit_for("jira_not_found"), 30);
+    }
+
+    #[test]
+    fn exit_code_jira_worktree_busy_is_1() {
+        assert_eq!(exit_for("jira_worktree_busy"), 1);
+    }
+
+    #[test]
+    fn exit_code_jira_worktree_failed_is_1() {
+        assert_eq!(exit_for("jira_worktree_failed"), 1);
+    }
+
+    #[test]
+    fn exit_code_jira_worktree_not_ready_is_1() {
+        assert_eq!(exit_for("jira_worktree_not_ready"), 1);
+    }
+
+    #[test]
+    fn exit_code_jira_review_failed_is_1() {
+        assert_eq!(exit_for("jira_review_failed"), 1);
+    }
+
+    #[test]
+    fn exit_code_jira_import_failed_is_1() {
+        assert_eq!(exit_for("jira_import_failed"), 1);
+    }
+
+    #[test]
+    fn exit_code_jira_worktree_dirty_is_1() {
+        assert_eq!(exit_for("jira_worktree_dirty"), 1);
     }
 }

@@ -16,21 +16,25 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{
-    files_inner::Store as FileStore, ideias_inner::IdeiaStore, memory_inner::MemoryStore,
-    review_inner::Reviews, triage_inner::Triage as FileTriage, validate_id, DecisaoRegistro,
-    Estado, Ideia, IdeiaStatus, MemoryItem, MemorySuggestion, NewProposta, PackageStatus, Proposta,
-    Repository, Result, ReviewPackage, StoreError, Task,
+    files_inner::Store as FileStore, ideias_inner::IdeiaStore, jira_inner::JiraIssueStore,
+    jira_review_inner::JiraReviews, memory_inner::MemoryStore, review_inner::Reviews,
+    triage_inner::Triage as FileTriage, validate_id, DecisaoRegistro, Estado, Ideia, IdeiaStatus,
+    IssueReviewPackage, JiraIssueRecord, MemoryItem, MemorySuggestion, NewProposta, PackageStatus,
+    Proposta, Repository, Result, ReviewPackage, StoreError, Task,
 };
 
 /// Tasks live under `<home>/tasks/`, triage under `<home>/triage/`,
 /// ideias under `<home>/inbox/`, memória sob `<home>/memory/`, review
-/// packages under `<home>/reviews/`.
+/// packages under `<home>/reviews/`, jira issue records under
+/// `<home>/jira/`.
 pub struct FileRepository {
     tasks: Arc<FileStore>,
     triage: Arc<FileTriage>,
     ideias: Arc<IdeiaStore>,
     memory: Arc<MemoryStore>,
     reviews: Arc<Reviews>,
+    jira: Arc<JiraIssueStore>,
+    jira_reviews: Arc<JiraReviews>,
 }
 
 impl FileRepository {
@@ -40,12 +44,18 @@ impl FileRepository {
         let ideias = IdeiaStore::new(home.join("inbox"))?;
         let memory = MemoryStore::new(home.join("memory"))?;
         let reviews = Reviews::new(home.join("reviews"))?;
+        let jira = JiraIssueStore::new(home.join("jira"))?;
+        // Aggregate (issue-owned) reviews live in a SUBDIR so the flat
+        // `reviews/` scans never ingest them.
+        let jira_reviews = JiraReviews::new(home.join("reviews").join("jira"))?;
         Ok(Self {
             tasks: Arc::new(tasks),
             triage: Arc::new(triage),
             ideias: Arc::new(ideias),
             memory: Arc::new(memory),
             reviews: Arc::new(reviews),
+            jira: Arc::new(jira),
+            jira_reviews: Arc::new(jira_reviews),
         })
     }
 }
@@ -135,6 +145,24 @@ impl Repository for FileRepository {
 
     async fn set_ideia_status(&self, id: &str, status: IdeiaStatus) -> Result<()> {
         Ok(self.ideias.set_status(id, status)?)
+    }
+
+    // ─── jira issues ───────────────────────────────────────────────
+
+    async fn upsert_jira_issue(&self, record: &JiraIssueRecord) -> Result<()> {
+        self.jira.upsert(record)
+    }
+
+    async fn read_jira_issue(&self, site: &str, issue_id: &str) -> Result<Option<JiraIssueRecord>> {
+        self.jira.read(site, issue_id)
+    }
+
+    async fn list_jira_issues(&self) -> Result<Vec<JiraIssueRecord>> {
+        self.jira.list()
+    }
+
+    async fn delete_jira_issue(&self, site: &str, issue_id: &str) -> Result<()> {
+        self.jira.delete(site, issue_id)
     }
 
     // ─── memória ───────────────────────────────────────────────────
@@ -252,6 +280,26 @@ impl Repository for FileRepository {
             }
         }
     }
+
+    // ─── aggregate (issue-owned) review packages (Slice 5) ─────────
+    async fn upsert_issue_review_package(
+        &self,
+        pkg: &IssueReviewPackage,
+    ) -> Result<IssueReviewPackage> {
+        Ok(self.jira_reviews.upsert(pkg)?)
+    }
+
+    async fn list_issue_review_packages(
+        &self,
+        jira_site: &str,
+        jira_issue_id: &str,
+    ) -> Result<Vec<IssueReviewPackage>> {
+        Ok(self.jira_reviews.list(jira_site, jira_issue_id)?)
+    }
+
+    async fn all_issue_review_packages(&self) -> Result<Vec<IssueReviewPackage>> {
+        Ok(self.jira_reviews.all()?)
+    }
 }
 
 /// Apply the task `.md` side of a `done` journal: append the log line
@@ -307,6 +355,9 @@ mod tests {
             worktree_path: None,
             branch: None,
             blocked_by: Vec::new(),
+            jira_site: None,
+            jira_issue_id: None,
+            jira_key_display: None,
         }
     }
 
@@ -412,5 +463,106 @@ mod tests {
         assert_eq!(list.len(), 2);
         assert_eq!(list[0].status, PackageStatus::Superseded);
         assert_eq!(list[1].status, PackageStatus::Pending);
+    }
+
+    fn mk_jira(site: &str, id: &str, key: &str) -> JiraIssueRecord {
+        JiraIssueRecord {
+            jira_site: site.into(),
+            jira_issue_id: id.into(),
+            jira_key: key.into(),
+            project_id: None,
+            analysis_run_id: None,
+            secret_hash: None,
+            secret_expiry_ms: None,
+            secret_status: None,
+            raw_adf: None,
+            branch_name: None,
+            worktree_path: None,
+            base_sha: None,
+            worktree_state: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
+    }
+
+    #[tokio::test]
+    async fn file_jira_issue_upsert_read_delete() {
+        let dir = TempDir::new().unwrap();
+        let repo = FileRepository::new(dir.path()).unwrap();
+        repo.upsert_jira_issue(&mk_jira("site", "1", "PROJ-1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.read_jira_issue("site", "1")
+                .await
+                .unwrap()
+                .unwrap()
+                .jira_key,
+            "PROJ-1"
+        );
+        // Upsert overwrites (changed key reflects on read).
+        repo.upsert_jira_issue(&mk_jira("site", "1", "PROJ-2"))
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.read_jira_issue("site", "1")
+                .await
+                .unwrap()
+                .unwrap()
+                .jira_key,
+            "PROJ-2"
+        );
+        assert_eq!(repo.list_jira_issues().await.unwrap().len(), 1);
+        repo.delete_jira_issue("site", "1").await.unwrap();
+        assert!(repo.read_jira_issue("site", "1").await.unwrap().is_none());
+        assert!(matches!(
+            repo.delete_jira_issue("site", "1").await,
+            Err(StoreError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn file_jira_issue_composite_key_with_special_chars() {
+        let dir = TempDir::new().unwrap();
+        let repo = FileRepository::new(dir.path()).unwrap();
+        let site = "https://x.atlassian.net";
+        repo.upsert_jira_issue(&mk_jira(site, "10001", "PROJ-123"))
+            .await
+            .unwrap();
+        let got = repo.read_jira_issue(site, "10001").await.unwrap().unwrap();
+        assert_eq!(got.jira_key, "PROJ-123");
+        // A second pair on the same site must not collide.
+        repo.upsert_jira_issue(&mk_jira(site, "10002", "PROJ-124"))
+            .await
+            .unwrap();
+        assert_eq!(repo.list_jira_issues().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn file_task_roundtrip_carries_jira_identity() {
+        // The file backend's frozen frontmatter cannot hold Jira identity,
+        // so `read_task` returns None for those fields; the durable identity
+        // lives in the `task-jira.json` sidecar (TaskJira), which restores it
+        // via its `enrich` merge.
+        let dir = TempDir::new().unwrap();
+        let repo = FileRepository::new(dir.path()).unwrap();
+        let mut task = mk_task("T-jira");
+        task.estado = Estado::AFazer;
+        task.jira_site = Some("https://x.atlassian.net".into());
+        task.jira_issue_id = Some("10001".into());
+        repo.create_task(&task).await.unwrap();
+
+        // Store-level read drops identity (frozen frontmatter).
+        let raw = repo.read_task("T-jira").await.unwrap();
+        assert!(raw.jira_site.is_none());
+
+        // The sidecar holds it durably and restores it on merge.
+        let sidecar = crate::jira_sidecar::TaskJira::load(dir.path()).unwrap();
+        sidecar
+            .set("T-jira", "https://x.atlassian.net", "10001")
+            .unwrap();
+        let merged = sidecar.enrich(raw);
+        assert_eq!(merged.jira_site.as_deref(), Some("https://x.atlassian.net"));
+        assert_eq!(merged.jira_issue_id.as_deref(), Some("10001"));
     }
 }

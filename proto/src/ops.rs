@@ -68,6 +68,41 @@ pub const OP_REVISE_MEMORY: &str = "revise_memory";
 pub const OP_QUALITY: &str = "quality";
 pub const OP_REVIEW_DECISION: &str = "review_decision";
 
+// Jira (Slice 2): server-stamped materialization of an analysis run into
+// proposals. The run is authorized by a capability secret (verified
+// server-side), and the server — not the caller — stamps the Jira identity
+// onto each created proposal. Same op-name dispatch rationale as the ops
+// above — no MIN/MAX_PROTOCOL bump.
+pub const OP_JIRA_MATERIALIZE: &str = "jira_materialize";
+
+// Jira (Slice 3): pure HTTP/data building blocks. `jira_test_connection`
+// checks credentials, `jira_fetch_issue` fetches one issue, and
+// `jira_list_assigned` lists the caller's open issues. These RETURN data
+// only — no persistence, no run minting. Same op-name dispatch rationale
+// as the ops above — no MIN/MAX_PROTOCOL bump.
+pub const OP_JIRA_TEST_CONNECTION: &str = "jira_test_connection";
+pub const OP_JIRA_FETCH_ISSUE: &str = "jira_fetch_issue";
+pub const OP_JIRA_LIST_ASSIGNED: &str = "jira_list_assigned";
+
+// Jira (Slice 5): build + persist the aggregate (issue-owned) review — the
+// committed branch diff of the shared per-issue worktree. STATE-NEUTRAL: it
+// never moves any subtask through an estado. The returned package type lives
+// in `src-tauri` (like `ReviewPackage`), so the wire `Result` is a
+// `serde_json::Value` passthrough (the package serializes to JSON identically)
+// rather than a duplicated struct. Same op-name dispatch rationale as the ops
+// above — no MIN/MAX_PROTOCOL bump.
+pub const OP_JIRA_REVIEW: &str = "jira_review";
+
+// Jira (Slice 6a): import orchestration + discard lifecycle. `jira_import`
+// resolves+fetches an issue, upserts its record, mints an analysis run, and
+// spawns the analyst agent (the capability secret reaches the analyst via
+// ENV only, never the wire `Result`). `jira_discard` tears an imported issue
+// down: it refuses a dirty worktree unless forced, removes the worktree,
+// revokes the run secret, deletes the record, and forgets subtask sidecars.
+// Same op-name dispatch rationale as the ops above — no MIN/MAX_PROTOCOL bump.
+pub const OP_JIRA_IMPORT: &str = "jira_import";
+pub const OP_JIRA_DISCARD: &str = "jira_discard";
+
 // ───────── event names
 
 pub const EV_PROPOSTA_PENDENTE: &str = "proposta_pendente";
@@ -319,6 +354,198 @@ pub mod review_decision {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Result {
         pub ok: bool,
+    }
+}
+
+// ───────── jira_materialize (Slice 2)
+
+pub mod jira_materialize {
+    use serde::{Deserialize, Serialize};
+
+    /// One subtask of an analysis run. Mapped server-side onto a
+    /// `NewProposta` (`title → title`, `body → repro`).
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Subtask {
+        pub title: String,
+        pub body: String,
+    }
+
+    #[derive(Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub analysis_run_id: String,
+        /// Capability secret authorizing this run. Transits the
+        /// authenticated local socket only; NEVER logged. Sourced from
+        /// `$CADENZA_RUN_SECRET` (or STDIN) by the CLI, never from argv.
+        pub run_secret: String,
+        pub subtasks: Vec<Subtask>,
+    }
+
+    // Manual `Debug` redacts `run_secret` so the capability secret can never
+    // leak via a future `{:?}`/tracing of the args (defense in depth — the
+    // current code already avoids logging args).
+    impl std::fmt::Debug for Args {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.debug_struct("Args")
+                .field("analysis_run_id", &self.analysis_run_id)
+                .field("run_secret", &"<redacted>")
+                .field("subtasks", &self.subtasks)
+                .finish()
+        }
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct MaterializedTask {
+        pub proposta_id: String,
+        pub idempotency_key: String,
+        pub subtask_index: u32,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        pub jira_site: String,
+        pub jira_issue_id: String,
+        /// One per subtask, in submission order (dedup-stable).
+        pub created: Vec<MaterializedTask>,
+    }
+}
+
+// ───────── jira_test_connection / jira_fetch_issue / jira_list_assigned (Slice 3)
+
+pub mod jira_test_connection {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct Args {}
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        pub account_id: String,
+        pub display_name: String,
+    }
+}
+
+pub mod jira_fetch_issue {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub key: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        pub jira_issue_id: String,
+        pub jira_key: String,
+        pub summary: String,
+        pub description_markdown: String,
+        pub raw_adf: serde_json::Value,
+    }
+}
+
+pub mod jira_list_assigned {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct Args {}
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Issue {
+        pub key: String,
+        pub id: String,
+        pub summary: String,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        pub issues: Vec<Issue>,
+        pub partial: bool,
+    }
+}
+
+// ───────── jira_review (Slice 5: aggregate issue-owned review)
+
+pub mod jira_review {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub jira_site: String,
+        pub jira_issue_id: String,
+    }
+
+    /// The built+persisted aggregate review package. Its concrete type
+    /// (`IssueReviewPackage`) lives in `src-tauri`; the wire surface is a
+    /// JSON passthrough so the proto crate does not duplicate the struct.
+    pub type Result = serde_json::Value;
+}
+
+// ───────── jira_import (Slice 6a: import orchestration)
+
+pub mod jira_import {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        /// Jira issue key, e.g. "PROJ-123". Trimmed; empty -> jira_config.
+        pub issue_ref: String,
+        /// Target project to bind. Validated against config.projects.
+        pub project_id: String,
+        /// Analyst agent kind. Wire string parsed into AgenteKind.
+        pub analyst_kind: String,
+    }
+
+    /// Discriminated result: a fresh import (record+run created, analyst
+    /// spawned) vs. an existing active issue reopened without re-fetch/spawn.
+    ///
+    /// NOTE: this carries NO capability secret. The minted secret reaches the
+    /// analyst process via ENV only (`CADENZA_RUN_SECRET`); it never appears on
+    /// the wire `Result`, in argv, or in any log line.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[serde(tag = "outcome", rename_all = "snake_case")]
+    pub enum Result {
+        /// New import: issue fetched, record upserted, run minted, analyst spawned.
+        Imported {
+            jira_site: String,
+            jira_issue_id: String,
+            jira_key: String,
+            summary: String,
+            project_id: String,
+            analysis_run_id: String,
+            session_id: String,
+        },
+        /// Idempotent reopen: record already had active work; nothing re-fetched/spawned.
+        ExistingActive {
+            jira_site: String,
+            jira_issue_id: String,
+            jira_key: String,
+            project_id: Option<String>,
+            analysis_run_id: Option<String>,
+        },
+    }
+}
+
+// ───────── jira_discard (Slice 6a: discard lifecycle)
+
+pub mod jira_discard {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub jira_site: String,
+        pub jira_issue_id: String,
+        /// Override the dirty-worktree refusal. Default false.
+        #[serde(default)]
+        pub force: bool,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        pub jira_site: String,
+        pub jira_issue_id: String,
+        /// True if a git worktree was physically removed.
+        pub worktree_removed: bool,
+        /// Subtask task_worktrees sidecar entries forgotten.
+        pub forgotten_task_worktrees: u32,
     }
 }
 

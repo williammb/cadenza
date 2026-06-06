@@ -144,6 +144,9 @@ impl Triage {
             file: args.file,
             what_failed: args.what_failed,
             action: args.action,
+            jira_site: args.jira_site,
+            jira_issue_id: args.jira_issue_id,
+            jira_key_display: None,
             created_at_ms: now_ms(),
         };
         write_json_atomic(&self.proposta_path(&proposta_id), &proposta)?;
@@ -281,6 +284,8 @@ mod tests {
             file: "src/foo.rs".into(),
             what_failed: "panic".into(),
             action: "fix bounds check".into(),
+            jira_site: None,
+            jira_issue_id: None,
         }
     }
 

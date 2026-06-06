@@ -53,7 +53,7 @@ const CODEX_MARKER_END: &str = "<!-- cadenza:end -->";
 /// prompted to reinstall. Stamped into every install (Codex start marker
 /// `v=`, SKILL.md agents' `CLAUDE_VERSION_MARKER_PREFIX` comment) and
 /// read back by the `status` probes.
-pub const SKILL_VERSION: &str = "4";
+pub const SKILL_VERSION: &str = "5";
 
 /// Invisible marker line inserted after the YAML frontmatter of a
 /// SKILL.md so its version can be read back. HTML comment → the agent
@@ -62,9 +62,9 @@ const CLAUDE_VERSION_MARKER_PREFIX: &str = "<!-- cadenza:skill v=";
 
 const CLAUDE_SKILL_NAME: &str = "cadenza";
 const CLAUDE_SKILL_DESCRIPTION_PT: &str =
-    "Como gerenciar tarefas via o CLI `cadenza` (current, get, projects, log, plan, propose, done).";
+    "Como gerenciar tarefas via o CLI `cadenza` (current, get, projects, log, plan, propose, done) e decompor issues do Jira em subtasks.";
 const CLAUDE_SKILL_DESCRIPTION_EN: &str =
-    "How to manage tasks via the `cadenza` CLI (current, get, projects, log, plan, propose, done).";
+    "How to manage tasks via the `cadenza` CLI (current, get, projects, log, plan, propose, done) and decompose Jira issues into subtasks.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -715,6 +715,36 @@ impl Outcome {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decompor_issue_section_present_pt() {
+        assert!(SKILL_PT_BR.contains("## Decompor uma issue do Jira"));
+        // The trigger env var (referenced in backticks, no `$` prefix).
+        assert!(SKILL_PT_BR.contains("CADENZA_JIRA_ISSUE_ID"));
+    }
+
+    #[test]
+    fn decompor_issue_section_present_en() {
+        assert!(SKILL_EN.contains("## Decompose a Jira issue"));
+        assert!(SKILL_EN.contains("CADENZA_JIRA_ISSUE_ID"));
+    }
+
+    #[test]
+    fn skill_version_bumped() {
+        assert_eq!(SKILL_VERSION, "5");
+    }
+
+    #[test]
+    fn decompor_issue_skill_instructs_secret_via_env_not_argv() {
+        // Both locale bodies must reference the env-sourced secret AND an
+        // explicit "never on the command line" instruction. The substrings are
+        // chosen to live on a single line (the prose wraps the bold phrase).
+        assert!(SKILL_PT_BR.contains("$CADENZA_RUN_SECRET"));
+        assert!(SKILL_PT_BR.contains("na linha de comando"));
+        assert!(SKILL_EN.contains("$CADENZA_RUN_SECRET"));
+        assert!(SKILL_EN.contains("on the command line"));
+        assert!(SKILL_EN.contains("never appear in argv"));
+    }
 
     #[test]
     fn split_finds_existing_block() {

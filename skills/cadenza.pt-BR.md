@@ -204,6 +204,44 @@ suficiente para ser autocontida mas grande o suficiente para merecer um
 card próprio. Não cole o corpo inteiro da ideia em uma única task — a
 ideia é fatiar.
 
+## Decompor uma issue do Jira
+
+Se a variável de ambiente `CADENZA_JIRA_ISSUE_ID` estiver setada quando
+você começar, o humano quer que você quebre uma issue do Jira em
+subtasks. A identidade da issue vem no ambiente
+(`CADENZA_JIRA_KEY`, `CADENZA_JIRA_SITE`, `CADENZA_JIRA_ISSUE_ID`) e o
+`analysis_run_id` está em `CADENZA_ANALYSIS_RUN_ID`.
+
+1. **Leia a issue injetada.** O resumo e a descrição (em Markdown) da
+   issue já vêm no seu prompt inicial. Use-os como fonte de verdade do
+   escopo.
+
+2. **Entreviste em estilo "grill" (Ato 1).** Faça **uma pergunta por
+   vez**, e para cada pergunta **recomende uma resposta**. Vá afunilando
+   até travar a quebra em subtasks antes de submeter qualquer coisa. Não
+   submeta uma lista de subtasks que você não conseguiria defender.
+
+3. **Submeta via CLI com escopo de run.** Quando a quebra estiver
+   travada, escreva as subtasks num arquivo JSON
+   (`[{"title": "...", "body": "..."}, ...]`) e rode:
+
+   ```bash
+   cadenza-cli jira-materialize \
+     --analysis-run-id "$CADENZA_ANALYSIS_RUN_ID" \
+     --subtasks-file subtasks.json
+   ```
+
+   O secret de capacidade é lido automaticamente de
+   `$CADENZA_RUN_SECRET` (ou de STDIN com `--secret-stdin`). **NUNCA
+   passe o secret na linha de comando** — ele nunca deve aparecer em
+   argv. O `jira_site` e o `jira_issue_id` são carimbados pelo servidor a
+   partir do secret; você **não** os informa.
+
+4. **Estados das subtasks.** As subtasks criadas nascem no fluxo normal
+   do quadro e percorrem os estados canônicos: `a_fazer`, `fazendo`,
+   `aguardando_revisao`, `feito`. Cada subtask deve ser pequena o
+   suficiente para virar um card próprio.
+
 ## Memória do projeto
 
 Cada projeto tem uma **memória oficial**: uma lista curada de fatos,

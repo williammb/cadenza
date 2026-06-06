@@ -114,6 +114,27 @@ impl SpawnConfig {
             .push(("CADENZA_PROJECT_ID".into(), project_id.into()));
         self
     }
+
+    /// Analyst-run env (Slice 6a). Injects the capability secret + Jira
+    /// identity so the analyst agent can decompose a Jira issue and submit via
+    /// `jira_materialize`. Like every other env here it is applied AFTER
+    /// `env_clear` in the PTY spawn, so it always wins; the capability secret
+    /// reaches the child via ENV (`CADENZA_RUN_SECRET`) ONLY — never argv,
+    /// never logged. Mirrors `ideia_env`.
+    pub fn jira_analyst_env(
+        self,
+        analysis_run_id: &str,
+        run_secret: &str,
+        jira_site: &str,
+        jira_issue_id: &str,
+        jira_key: &str,
+    ) -> Self {
+        self.env("CADENZA_RUN_SECRET", run_secret)
+            .env("CADENZA_ANALYSIS_RUN_ID", analysis_run_id)
+            .env("CADENZA_JIRA_SITE", jira_site)
+            .env("CADENZA_JIRA_ISSUE_ID", jira_issue_id)
+            .env("CADENZA_JIRA_KEY", jira_key)
+    }
 }
 
 /// Parent-process env vars safe to inherit into spawned agents. Names

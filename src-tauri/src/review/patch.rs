@@ -107,6 +107,66 @@ pub(crate) async fn capture_uncommitted(git: &GitCtx, findings: &[SecretMatch]) 
     }
 }
 
+/// Cap + redact an already-collected unified diff (Slice 5 aggregate review).
+///
+/// Unlike [`capture_uncommitted`], the input text is supplied by the caller
+/// (the committed `base..HEAD` diff), so no git is run here. The same caps
+/// (total ≤ 512 KiB, per-file ≤ 64 KiB, ≤ 200 files, binaries excluded) and
+/// the same added-line secret redaction apply. The aggregate has no secret
+/// findings to anchor against, so callers pass an empty `findings` slice;
+/// `redact_added_lines` is still invoked per file for parity (a no-op with no
+/// flagged lines).
+pub(crate) fn cap_unified_diff(text: &str, findings: &[SecretMatch]) -> CappedPatch {
+    let mut redact: HashMap<&str, Vec<u32>> = HashMap::new();
+    for m in findings {
+        redact.entry(m.file.as_str()).or_default().push(m.line);
+    }
+
+    let mut files: Vec<CappedPatchFile> = Vec::new();
+    let mut total: usize = 0;
+    let mut truncated = false;
+    let mut files_omitted: u32 = 0;
+
+    for (path, raw) in split_unified_per_file(text) {
+        if files.len() >= MAX_FILES {
+            files_omitted = files_omitted.saturating_add(1);
+            continue;
+        }
+        if is_binary_patch(&raw) {
+            continue;
+        }
+        let lines = redact
+            .get(path.as_str())
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        let mut redacted = redact_added_lines(&raw, lines);
+        let mut file_truncated = false;
+        if redacted.len() > PER_FILE_CAP {
+            redacted.truncate(PER_FILE_CAP);
+            redacted.push_str("\n[... file truncated ...]\n");
+            file_truncated = true;
+            truncated = true;
+        }
+        if total.saturating_add(redacted.len()) > TOTAL_CAP {
+            files_omitted = files_omitted.saturating_add(1);
+            truncated = true;
+            continue;
+        }
+        total = total.saturating_add(redacted.len());
+        files.push(CappedPatchFile {
+            path,
+            patch: redacted,
+            truncated: file_truncated,
+        });
+    }
+
+    CappedPatch {
+        files,
+        truncated,
+        files_omitted,
+    }
+}
+
 /// Split a multi-file unified diff into (path, per-file-text) chunks keyed
 /// by the new-side path from each `diff --git a/… b/…` header.
 fn split_unified_per_file(text: &str) -> Vec<(String, String)> {

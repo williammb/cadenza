@@ -21,6 +21,10 @@ notification-action-open = Open window
 # description) and the task id.
 agent-initial-prompt = Use the `cadenza` skill to coordinate with Cadenza through cadenza-cli. Your task is { $task_id } ({ $titulo }). Start by running `cadenza-cli current --json`.
 agent-initial-prompt-ideia = Use the `cadenza` skill to coordinate with Cadenza through cadenza-cli. Break the ideia { $ideia_id } down into actionable tasks. Use `cadenza-cli read-ideia { $ideia_id }` to read the full content.
+# Prompt injected when the analyst is started to decompose a Jira issue. It
+# must NOT contain the capability secret — the agent reads it from
+# $CADENZA_RUN_SECRET (injected via env) and submits via jira-materialize.
+agent-initial-prompt-jira = Use the `cadenza` skill to decompose Jira issue { $jira_key } ({ $summary }) into subtasks. The full issue description was injected into your environment. Read the capability secret from $CADENZA_RUN_SECRET and submit the subtasks via `cadenza-cli jira-materialize --run $CADENZA_ANALYSIS_RUN_ID` — never put the secret on the command line.
 # Prompt injected when the agent is started in PLAN mode: it must NOT
 # implement anything, only interview the human and persist the refined
 # plan via `cadenza-cli plan`. The task is still `a_fazer`, so `current`

@@ -269,6 +269,9 @@ fn read_file(path: &Path) -> Result<Task> {
         worktree_path: None,
         branch: None,
         blocked_by: Vec::new(),
+        jira_site: None,
+        jira_issue_id: None,
+        jira_key_display: None,
     })
 }
 
@@ -319,6 +322,9 @@ mod tests {
             worktree_path: None,
             branch: None,
             blocked_by: Vec::new(),
+            jira_site: None,
+            jira_issue_id: None,
+            jira_key_display: None,
         }
     }
 
