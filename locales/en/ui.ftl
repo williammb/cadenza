@@ -281,3 +281,80 @@ settings-update-checking = Checking…
 settings-update-uptodate = You're up to date.
 settings-update-available = New version available: v{ $version }
 settings-update-error = Update check failed: { $error }
+
+# ─────────────────────── Review (review package) ───────────────────────
+# "Review" tab in the task modal: evidence state, checks, risks,
+# intent-grouped diff and approval actions. Agent/repo-derived text is
+# rendered via textContent (never innerHTML).
+review-tab = Review
+review-empty = No review package for this task.
+review-load-error = Failed to load the review: { $error }
+
+# Evidence state (derived by the app, never agent-declared).
+review-state-contract-unavailable = Contract unavailable
+review-state-contract-changed = Contract changed
+review-state-no-validation = No validation
+review-state-partial = Partial
+review-state-passed = Passed
+review-state-failed = Failed
+
+# Evidence-state overlays.
+review-needs-focused-human-review = Needs focused human review
+review-validation-scope-unknown = Validation scope unknown — cannot confirm which conditional checks were required.
+
+# Agent-reported checks table.
+review-checks-header = Checks
+review-checks-col-id = Check
+review-checks-col-exit = Exit code
+review-checks-col-log = Log excerpt
+review-checks-empty = No checks reported.
+review-log-path = Log file: { $path }
+
+# Heuristic risks over the changed set.
+review-risks-header = Risks
+review-risk-new-dependency = New dependency
+review-risk-migration = Migration
+review-risk-auth = Authentication
+review-risk-public-contract = Public contract
+review-risk-large-file = Large file
+review-risk-possible-secret = Possible secret
+review-secret-finding = Possible secret ({ $kind }) in { $file }:{ $line }
+
+# Intent-grouped diff (lazy-loaded).
+review-load-diff = Load diff
+review-diff-loading = Loading diff…
+review-diff-empty = No committed changes to show.
+review-diff-other = Other
+review-diff-unavailable = Diff unavailable (missing worktree or unresolved base).
+review-diff-truncated = Diff truncated by size limits.
+review-diff-files-omitted = { $count } file(s) omitted by size limits.
+review-worktree-stale = The worktree changed since done — showing the stored uncommitted patch.
+
+# Summary, open questions and counts.
+review-summary-header = Summary
+review-open-questions = Open questions
+review-changed-files = { $added } added, { $modified } modified, { $deleted } deleted
+
+# Reviewer actions.
+review-approve = Approve
+review-request-changes = Request changes
+review-note-placeholder = Note (optional)
+review-decision-error = Failed to record decision: { $error }
+review-decided = Decision recorded.
+
+# ───────────────────── Settings → Quality ─────────────────────
+# Per-project editor of the quality contract: the checks the agent must
+# run and report on `done`.
+settings-quality-title = Quality
+settings-quality-hint = Checks the agent runs and reports on done. "Required" demands the check always; "required if changed" demands it only when the file patterns match.
+settings-quality-add-check = Add check
+settings-quality-empty = No checks defined.
+settings-quality-id = ID
+settings-quality-name = Name
+settings-quality-cmd = Command
+settings-quality-required = Required
+settings-quality-required-if-changed = Required if changed (comma-separated patterns)
+settings-quality-move-up = Move up
+settings-quality-move-down = Move down
+settings-quality-remove = Remove check
+settings-quality-dup-id = Check IDs must be unique and non-empty.

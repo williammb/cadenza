@@ -55,6 +55,14 @@ const learningsListEl = document.getElementById("task-learnings-list");
 const learningsEmptyEl = document.getElementById("task-learnings-empty");
 let learningsLoadGen = 0;
 
+// Revisão section — shown only when the task has a review package
+// (get_review_package returns one, typically estado=aguardando_revisao).
+// All content is built in JS and rendered via textContent/createElement —
+// every string here comes from the agent or the repo and is UNTRUSTED.
+const reviewSection = document.getElementById("task-review-section");
+const reviewBodyEl = document.getElementById("task-review-body");
+let reviewLoadGen = 0;
+
 let mode = "create"; // "create" | "edit"
 let editingId = null;
 let original = null;
@@ -99,6 +107,8 @@ export async function openNewTask(prefill = {}) {
   projectFieldEl.hidden = false;
   worktreeSection.hidden = true; // no task id yet → nothing to attach a worktree to
   learningsSection.hidden = true; // no learnings for a not-yet-created task
+  reviewSection.hidden = true; // no review package for a not-yet-created task
+  reviewBodyEl.replaceChildren();
   attachments.reset();
   setStatus("");
 
@@ -152,8 +162,393 @@ export async function openEditTask(id) {
   await loadBlockerChoices(task.blocked_by ?? []);
   loadWorktreeDefaults(id);
   loadSuggestedLearnings(id, task.estado);
+  loadReview(id, task.estado);
   if (!dialog.open) dialog.showModal();
   tituloEl.focus();
+}
+
+// ─────────────────────────── Revisão tab ───────────────────────────
+//
+// Renders the latest ReviewPackage for the task: evidence-state chip
+// (+ overlays), reported-checks table, risk chips, summary, open
+// questions, a lazily-loaded intent-grouped diff, and reviewer actions
+// (Aprovar / Pedir alterações) when the task is awaiting review and the
+// package is still undecided. Everything is built with createElement +
+// textContent; agent/repo text is run through stripAnsi first.
+
+// Strip ANSI SGR sequences and other control chars so untrusted log
+// excerpts / paths / labels can't smuggle terminal escapes into the DOM.
+// textContent already neutralizes HTML; this keeps the rendered text clean.
+function stripAnsi(s) {
+  return String(s ?? "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-9;]*[A-Za-z]/g, "")
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, "");
+}
+
+// Evidence-state → (label key, chip modifier) map. The modifier drives
+// the chip color via CSS (review-chip--ok / --warn / --bad / --info).
+const EVIDENCE_CHIP = {
+  passed: { key: "review-state-passed", mod: "ok" },
+  failed: { key: "review-state-failed", mod: "bad" },
+  partial: { key: "review-state-partial", mod: "warn" },
+  no_validation: { key: "review-state-no-validation", mod: "info" },
+  contract_changed: { key: "review-state-contract-changed", mod: "warn" },
+  contract_unavailable: { key: "review-state-contract-unavailable", mod: "info" },
+};
+
+const RISK_LABEL = {
+  new_dependency: "review-risk-new-dependency",
+  migration: "review-risk-migration",
+  auth: "review-risk-auth",
+  public_contract: "review-risk-public-contract",
+  large_file: "review-risk-large-file",
+  possible_secret: "review-risk-possible-secret",
+};
+
+function reviewChip(text, mod) {
+  const span = document.createElement("span");
+  span.className = "review-chip" + (mod ? ` review-chip--${mod}` : "");
+  span.textContent = text;
+  return span;
+}
+
+function reviewSubhead(textKey) {
+  const h = document.createElement("h4");
+  h.className = "review-subhead";
+  h.textContent = t(textKey);
+  return h;
+}
+
+async function loadReview(taskId, estado) {
+  const myGen = ++reviewLoadGen;
+  reviewSection.hidden = true;
+  reviewBodyEl.replaceChildren();
+
+  let pkg = null;
+  try {
+    pkg = await invoke("get_review_package", { taskId });
+  } catch {
+    return; // no package / read failed → keep section hidden
+  }
+  if (myGen !== reviewLoadGen) return;
+  if (!pkg) return; // task never `done` with evidence
+
+  reviewSection.hidden = false;
+
+  // ── evidence-state chip + overlays ──
+  const stateRow = document.createElement("div");
+  stateRow.className = "review-state-row";
+  const chipInfo = EVIDENCE_CHIP[pkg.evidence_state] || {
+    key: `review-state-${String(pkg.evidence_state).replaceAll("_", "-")}`,
+    mod: "info",
+  };
+  stateRow.append(reviewChip(t(chipInfo.key), chipInfo.mod));
+  if (pkg.needs_focused_human_review) {
+    stateRow.append(reviewChip(t("review-needs-focused-human-review"), "bad"));
+  }
+  if (pkg.validation_scope_unknown) {
+    stateRow.append(reviewChip(t("review-validation-scope-unknown"), "warn"));
+  }
+  reviewBodyEl.append(stateRow);
+
+  // ── summary ──
+  if (pkg.summary && pkg.summary.trim()) {
+    reviewBodyEl.append(reviewSubhead("review-summary-header"));
+    const p = document.createElement("p");
+    p.className = "review-summary";
+    p.textContent = stripAnsi(pkg.summary);
+    reviewBodyEl.append(p);
+  }
+
+  // ── changed-file counts ──
+  const counts = document.createElement("p");
+  counts.className = "review-counts modal-hint";
+  counts.textContent = t("review-changed-files", {
+    added: pkg.files_added ?? 0,
+    modified: pkg.files_modified ?? 0,
+    deleted: pkg.files_deleted ?? 0,
+  });
+  reviewBodyEl.append(counts);
+
+  // ── checks table ──
+  reviewBodyEl.append(reviewSubhead("review-checks-header"));
+  const checks = pkg.checks ?? [];
+  if (checks.length === 0) {
+    const empty = document.createElement("p");
+    empty.className = "modal-status";
+    empty.textContent = t("review-checks-empty");
+    reviewBodyEl.append(empty);
+  } else {
+    reviewBodyEl.append(makeChecksTable(checks));
+  }
+
+  // ── risk chips + secret findings ──
+  const risks = pkg.risks ?? [];
+  const secrets = pkg.secret_matches ?? [];
+  if (risks.length || secrets.length) {
+    reviewBodyEl.append(reviewSubhead("review-risks-header"));
+    const riskRow = document.createElement("div");
+    riskRow.className = "review-chips";
+    for (const r of risks) {
+      const key = RISK_LABEL[r];
+      riskRow.append(reviewChip(key ? t(key) : stripAnsi(r), "warn"));
+    }
+    reviewBodyEl.append(riskRow);
+    // possible_secret findings: redacted {kind,file,line} only — never a value.
+    for (const s of secrets) {
+      const line = document.createElement("p");
+      line.className = "review-secret modal-hint";
+      line.textContent = t("review-secret-finding", {
+        kind: stripAnsi(s.kind),
+        file: stripAnsi(s.file),
+        line: s.line ?? 0,
+      });
+      reviewBodyEl.append(line);
+    }
+  }
+
+  // ── open questions ──
+  const questions = pkg.open_questions ?? [];
+  if (questions.length) {
+    reviewBodyEl.append(reviewSubhead("review-open-questions"));
+    const ul = document.createElement("ul");
+    ul.className = "review-questions";
+    for (const q of questions) {
+      const li = document.createElement("li");
+      li.textContent = stripAnsi(q);
+      ul.append(li);
+    }
+    reviewBodyEl.append(ul);
+  }
+
+  // ── lazy diff ──
+  const diffWrap = document.createElement("div");
+  diffWrap.className = "review-diff-wrap";
+  const loadDiffBtn = document.createElement("button");
+  loadDiffBtn.type = "button";
+  loadDiffBtn.className = "btn btn-sm";
+  loadDiffBtn.textContent = t("review-load-diff");
+  loadDiffBtn.addEventListener("click", () => loadReviewDiff(taskId, diffWrap, loadDiffBtn));
+  diffWrap.append(loadDiffBtn);
+  reviewBodyEl.append(diffWrap);
+
+  // ── reviewer actions (only awaiting review + undecided) ──
+  const undecided = pkg.status === "pending";
+  if (estado === "aguardando_revisao" && undecided) {
+    reviewBodyEl.append(makeReviewActions(taskId));
+  }
+}
+
+function makeChecksTable(checks) {
+  const table = document.createElement("table");
+  table.className = "review-checks-table";
+  const thead = document.createElement("thead");
+  const htr = document.createElement("tr");
+  for (const key of ["review-checks-col-id", "review-checks-col-exit", "review-checks-col-log"]) {
+    const th = document.createElement("th");
+    th.textContent = t(key);
+    htr.append(th);
+  }
+  thead.append(htr);
+  table.append(thead);
+
+  const tbody = document.createElement("tbody");
+  for (const c of checks) {
+    const tr = document.createElement("tr");
+
+    const tdId = document.createElement("td");
+    tdId.textContent = stripAnsi(c.id);
+    tr.append(tdId);
+
+    const tdExit = document.createElement("td");
+    const exit = c.exit ?? 0;
+    tdExit.textContent = String(exit);
+    tdExit.className = exit === 0 ? "review-exit-ok" : "review-exit-bad";
+    tr.append(tdExit);
+
+    const tdLog = document.createElement("td");
+    const pre = document.createElement("pre");
+    pre.className = "review-log-excerpt";
+    pre.textContent = stripAnsi(c.log_excerpt ?? "");
+    tdLog.append(pre);
+    // log_path is display-only — shown as a label, NEVER fetched.
+    if (c.log_path) {
+      const pathLabel = document.createElement("span");
+      pathLabel.className = "review-log-path modal-hint";
+      pathLabel.textContent = t("review-log-path", { path: stripAnsi(c.log_path) });
+      tdLog.append(pathLabel);
+    }
+    tr.append(tdLog);
+
+    tbody.append(tr);
+  }
+  table.append(tbody);
+  return table;
+}
+
+async function loadReviewDiff(taskId, wrap, btn) {
+  btn.disabled = true;
+  const loading = document.createElement("span");
+  loading.className = "modal-status";
+  loading.textContent = t("review-diff-loading");
+  wrap.append(loading);
+
+  let resp;
+  try {
+    resp = await invoke("get_review_diff", { taskId });
+  } catch (e) {
+    loading.remove();
+    btn.disabled = false;
+    const err = document.createElement("span");
+    err.className = "modal-status error";
+    err.textContent = t("review-load-error", { error: e });
+    wrap.append(err);
+    return;
+  }
+  loading.remove();
+  btn.remove();
+  renderReviewDiff(resp, wrap);
+}
+
+function renderReviewDiff(resp, wrap) {
+  // Stale: the worktree moved since done — show a note and the stored
+  // capped+redacted uncommitted patch instead of the (now divergent)
+  // live committed diff.
+  if (resp.stale) {
+    const note = document.createElement("p");
+    note.className = "modal-status warn";
+    note.textContent = t("review-worktree-stale");
+    wrap.append(note);
+    if (resp.uncommitted && (resp.uncommitted.files ?? []).length) {
+      for (const f of resp.uncommitted.files) {
+        wrap.append(makeDiffFileDetails(f.path, f.patch, f.truncated));
+      }
+      if (resp.uncommitted.files_omitted) {
+        wrap.append(diffMarker(t("review-diff-files-omitted", { count: resp.uncommitted.files_omitted })));
+      }
+    } else {
+      wrap.append(diffMarker(t("review-diff-empty")));
+    }
+    return;
+  }
+
+  if (resp.diff_unavailable) {
+    wrap.append(diffMarker(t("review-diff-unavailable")));
+    return;
+  }
+
+  const groups = resp.groups ?? [];
+  if (groups.length === 0) {
+    wrap.append(diffMarker(t("review-diff-empty")));
+    return;
+  }
+
+  for (const g of groups) {
+    // "Other" is a backend sentinel label; localize it, leave agent
+    // labels as-is (stripped).
+    const label = g.label === "Other" ? t("review-diff-other") : stripAnsi(g.label);
+    const section = document.createElement("details");
+    section.className = "review-diff-group";
+    section.open = true;
+    const summary = document.createElement("summary");
+    summary.textContent = label;
+    section.append(summary);
+    for (const f of g.files ?? []) {
+      section.append(makeDiffFileDetails(f.path, f.patch, f.truncated));
+    }
+    wrap.append(section);
+  }
+
+  if (resp.truncated) {
+    wrap.append(diffMarker(t("review-diff-truncated")));
+  }
+  if (resp.files_omitted) {
+    wrap.append(diffMarker(t("review-diff-files-omitted", { count: resp.files_omitted })));
+  }
+}
+
+function diffMarker(text) {
+  const p = document.createElement("p");
+  p.className = "modal-status";
+  p.textContent = text;
+  return p;
+}
+
+function makeDiffFileDetails(path, patch, truncated) {
+  const details = document.createElement("details");
+  details.className = "review-diff-file";
+  const summary = document.createElement("summary");
+  summary.textContent = stripAnsi(path);
+  details.append(summary);
+  const pre = document.createElement("pre");
+  pre.className = "review-diff-body";
+  pre.textContent = stripAnsi(patch ?? "");
+  details.append(pre);
+  if (truncated) {
+    details.append(diffMarker(t("review-diff-truncated")));
+  }
+  return details;
+}
+
+function makeReviewActions(taskId) {
+  const actions = document.createElement("div");
+  actions.className = "review-actions";
+
+  const note = document.createElement("textarea");
+  note.id = "task-review-note";
+  note.rows = 2;
+  note.className = "review-note";
+  note.placeholder = t("review-note-placeholder");
+  actions.append(note);
+
+  const status = document.createElement("span");
+  status.className = "modal-status";
+
+  const btnRow = document.createElement("div");
+  btnRow.className = "review-action-buttons";
+
+  const requestBtn = document.createElement("button");
+  requestBtn.type = "button";
+  requestBtn.className = "btn btn-danger";
+  requestBtn.textContent = t("review-request-changes");
+
+  const approveBtn = document.createElement("button");
+  approveBtn.type = "button";
+  approveBtn.className = "btn btn-primary";
+  approveBtn.textContent = t("review-approve");
+
+  async function decide(verdict, btn) {
+    requestBtn.disabled = true;
+    approveBtn.disabled = true;
+    status.className = "modal-status";
+    status.textContent = "";
+    try {
+      await invoke("review_decision", {
+        taskId,
+        verdict,
+        note: note.value,
+      });
+      status.className = "modal-status ok";
+      status.textContent = t("review-decided");
+      // Refresh the board and close so the card lands in its new column.
+      closeTaskModal();
+      onClosedRefresh?.();
+    } catch (e) {
+      requestBtn.disabled = false;
+      approveBtn.disabled = false;
+      status.className = "modal-status error";
+      status.textContent = t("review-decision-error", { error: e });
+    }
+  }
+
+  requestBtn.addEventListener("click", () => decide("pedir_alteracoes", requestBtn));
+  approveBtn.addEventListener("click", () => decide("aprovado", approveBtn));
+
+  btnRow.append(requestBtn, approveBtn);
+  actions.append(btnRow, status);
+  return actions;
 }
 
 // Load the learnings the execution agent proposed for this task, shown

@@ -17,17 +17,20 @@ use std::time::Duration;
 
 use super::{
     files_inner::Store as FileStore, ideias_inner::IdeiaStore, memory_inner::MemoryStore,
-    triage_inner::Triage as FileTriage, validate_id, DecisaoRegistro, Estado, Ideia, IdeiaStatus,
-    MemoryItem, MemorySuggestion, NewProposta, Proposta, Repository, Result, StoreError, Task,
+    review_inner::Reviews, triage_inner::Triage as FileTriage, validate_id, DecisaoRegistro,
+    Estado, Ideia, IdeiaStatus, MemoryItem, MemorySuggestion, NewProposta, PackageStatus, Proposta,
+    Repository, Result, ReviewPackage, StoreError, Task,
 };
 
 /// Tasks live under `<home>/tasks/`, triage under `<home>/triage/`,
-/// ideias under `<home>/inbox/`, memória sob `<home>/memory/`.
+/// ideias under `<home>/inbox/`, memória sob `<home>/memory/`, review
+/// packages under `<home>/reviews/`.
 pub struct FileRepository {
     tasks: Arc<FileStore>,
     triage: Arc<FileTriage>,
     ideias: Arc<IdeiaStore>,
     memory: Arc<MemoryStore>,
+    reviews: Arc<Reviews>,
 }
 
 impl FileRepository {
@@ -36,11 +39,13 @@ impl FileRepository {
         let triage = FileTriage::new(home.join("triage"))?;
         let ideias = IdeiaStore::new(home.join("inbox"))?;
         let memory = MemoryStore::new(home.join("memory"))?;
+        let reviews = Reviews::new(home.join("reviews"))?;
         Ok(Self {
             tasks: Arc::new(tasks),
             triage: Arc::new(triage),
             ideias: Arc::new(ideias),
             memory: Arc::new(memory),
+            reviews: Arc::new(reviews),
         })
     }
 }
@@ -181,5 +186,231 @@ impl Repository for FileRepository {
 
     async fn all_memory_suggestions(&self) -> Result<Vec<MemorySuggestion>> {
         Ok(self.memory.all_suggestions()?)
+    }
+
+    // ─── review packages ───────────────────────────────────────────
+
+    async fn list_review_packages(&self, task_id: &str) -> Result<Vec<ReviewPackage>> {
+        validate_id(task_id)?;
+        Ok(self.reviews.list(task_id)?)
+    }
+
+    async fn upsert_review_package(&self, pkg: &ReviewPackage) -> Result<ReviewPackage> {
+        validate_id(&pkg.task_id)?;
+        Ok(self.reviews.upsert(pkg)?)
+    }
+
+    async fn mark_packages_superseded(&self, task_id: &str, except_attempt: u32) -> Result<()> {
+        validate_id(task_id)?;
+        Ok(self.reviews.mark_superseded(task_id, except_attempt)?)
+    }
+
+    async fn set_package_decision(
+        &self,
+        task_id: &str,
+        attempt: u32,
+        status: PackageStatus,
+    ) -> Result<()> {
+        validate_id(task_id)?;
+        Ok(self.reviews.set_status(task_id, attempt, status)?)
+    }
+
+    async fn delete_review_packages(&self, task_id: &str) -> Result<()> {
+        validate_id(task_id)?;
+        Ok(self.reviews.delete_all(task_id)?)
+    }
+
+    async fn all_review_packages(&self) -> Result<Vec<ReviewPackage>> {
+        Ok(self.reviews.all()?)
+    }
+
+    /// Atomic `done` via the write-ahead journal (PLAN §C.9). The package
+    /// upsert + log append + estado flip are committed together; a crash
+    /// anywhere is replayed at startup. The `task_ops` closure runs the
+    /// `.md` side effects (log dedup + estado) so the `Reviews` engine
+    /// stays focused on its sidecars.
+    async fn done_with_review_package(
+        &self,
+        pkg: &ReviewPackage,
+        log_line: Option<&str>,
+        target_estado: Option<Estado>,
+    ) -> Result<ReviewPackage> {
+        validate_id(&pkg.task_id)?;
+        let target_estado_str = target_estado.map(|e| e.as_str().to_string());
+        match self
+            .reviews
+            .prepare_done(pkg, log_line.map(str::to_string), target_estado_str)?
+        {
+            // Key already seen ⇒ no-op returning the stored package.
+            Err(existing) => Ok(existing),
+            Ok(journal) => {
+                let tasks = self.tasks.clone();
+                let stored = self
+                    .reviews
+                    .commit_done(&journal, move |record| apply_task_ops(&tasks, record))?;
+                Ok(stored)
+            }
+        }
+    }
+}
+
+/// Apply the task `.md` side of a `done` journal: append the log line
+/// (skipped when the body already ends with that exact line, so a replay or
+/// retry can't double it) then set the target estado. Idempotent — both
+/// steps are safe to re-run. Translated into the `review_inner` error type so
+/// it can fail the journal commit and leave the WAL for the next boot.
+fn apply_task_ops(
+    tasks: &FileStore,
+    record: &super::review_inner::DoneJournal,
+) -> std::result::Result<(), super::review_inner::ReviewError> {
+    use super::review_inner::ReviewError;
+    if let Some(line) = &record.log_line {
+        let task = tasks
+            .read_task(&record.task_id)
+            .map_err(|e| ReviewError::Other(anyhow::anyhow!(e.to_string())))?;
+        if !body_ends_with_line(&task.body, line) {
+            tasks
+                .append_log(&record.task_id, line)
+                .map_err(|e| ReviewError::Other(anyhow::anyhow!(e.to_string())))?;
+        }
+    }
+    if let Some(estado) = &record.target_estado {
+        let parsed = Estado::parse(estado)
+            .ok_or_else(|| ReviewError::BadData(format!("bad target estado: {estado}")))?;
+        tasks
+            .set_estado(&record.task_id, parsed)
+            .map_err(|e| ReviewError::Other(anyhow::anyhow!(e.to_string())))?;
+    }
+    Ok(())
+}
+
+/// True when `body`'s last non-empty line is exactly `line` (ignoring a
+/// trailing newline). Used to dedup the `[done request]` append so the
+/// legacy behavior (append once) is preserved across journal replays.
+fn body_ends_with_line(body: &str, line: &str) -> bool {
+    body.lines().last().map(str::trim_end) == Some(line.trim_end())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::review::{EvidenceState, PackageStatus, RISK_HEURISTIC_VERSION};
+    use tempfile::TempDir;
+
+    fn mk_task(id: &str) -> Task {
+        Task {
+            id: id.into(),
+            titulo: format!("{id} title"),
+            estado: Estado::Fazendo,
+            responsavel: "humano".into(),
+            body: format!("# {id}\n\ninitial body\n"),
+            worktree_path: None,
+            branch: None,
+            blocked_by: Vec::new(),
+        }
+    }
+
+    fn mk_pkg(task_id: &str, key: &str) -> ReviewPackage {
+        ReviewPackage {
+            task_id: task_id.into(),
+            attempt: 0,
+            idempotency_key: key.into(),
+            status: PackageStatus::Pending,
+            checks: vec![],
+            groups: vec![],
+            open_questions: vec![],
+            summary: "did it".into(),
+            changed_files: vec![],
+            files_added: 0,
+            files_modified: 0,
+            files_deleted: 0,
+            risks: vec![],
+            secret_matches: vec![],
+            evidence_state: EvidenceState::NoValidation,
+            needs_focused_human_review: false,
+            validation_scope_unknown: false,
+            base_sha: None,
+            head_sha: None,
+            worktree_fingerprint: None,
+            contract_version: None,
+            reported_contract_version: None,
+            risk_heuristic_version: RISK_HEURISTIC_VERSION,
+            created_at_ms: 1,
+            collection_duration_ms: 0,
+            collection_errors: vec![],
+            truncated: false,
+            uncommitted_patch: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn done_with_review_package_is_idempotent_and_dedups_log() {
+        let dir = TempDir::new().unwrap();
+        let repo = FileRepository::new(dir.path()).unwrap();
+        repo.create_task(&mk_task("T-1")).await.unwrap();
+
+        let line = "[done request] finished";
+        let first = repo
+            .done_with_review_package(
+                &mk_pkg("T-1", "k1"),
+                Some(line),
+                Some(Estado::AguardandoRevisao),
+            )
+            .await
+            .unwrap();
+        assert_eq!(first.attempt, 1);
+
+        let task = repo.read_task("T-1").await.unwrap();
+        assert_eq!(task.estado, Estado::AguardandoRevisao);
+        let count_first = task.body.matches(line).count();
+        assert_eq!(count_first, 1, "log line appended exactly once");
+
+        // Re-run with the SAME key ⇒ no-op returning the stored package, no
+        // second log line, one package only.
+        let second = repo
+            .done_with_review_package(
+                &mk_pkg("T-1", "k1"),
+                Some(line),
+                Some(Estado::AguardandoRevisao),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.attempt, first.attempt);
+        let task2 = repo.read_task("T-1").await.unwrap();
+        assert_eq!(
+            task2.body.matches(line).count(),
+            1,
+            "idempotent re-run must not append a second [done request] line"
+        );
+        assert_eq!(repo.list_review_packages("T-1").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn second_done_supersedes_first_and_appends_once() {
+        let dir = TempDir::new().unwrap();
+        let repo = FileRepository::new(dir.path()).unwrap();
+        repo.create_task(&mk_task("T-2")).await.unwrap();
+
+        repo.done_with_review_package(
+            &mk_pkg("T-2", "k1"),
+            Some("[done request] a"),
+            Some(Estado::AguardandoRevisao),
+        )
+        .await
+        .unwrap();
+        let second = repo
+            .done_with_review_package(
+                &mk_pkg("T-2", "k2"),
+                Some("[done request] b"),
+                Some(Estado::AguardandoRevisao),
+            )
+            .await
+            .unwrap();
+        assert_eq!(second.attempt, 2);
+
+        let list = repo.list_review_packages("T-2").await.unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].status, PackageStatus::Superseded);
+        assert_eq!(list[1].status, PackageStatus::Pending);
     }
 }

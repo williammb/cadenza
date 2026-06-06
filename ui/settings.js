@@ -84,6 +84,13 @@ const btnProjectRemove = document.getElementById("btn-project-remove");
 const btnProjectEditBrowse = document.getElementById("btn-project-edit-browse");
 const projectColorSwatchesEl = document.getElementById("project-color-swatches");
 
+// Qualidade (per-project quality contract) elements.
+const qualitySection = document.getElementById("project-quality-section");
+const qualityListEl = document.getElementById("project-quality-list");
+const qualityEmptyEl = document.getElementById("project-quality-empty");
+const qualityStatusEl = document.getElementById("project-quality-status");
+const btnQualityAdd = document.getElementById("btn-quality-add");
+
 let currentConfig = blankConfig();
 // Which project the Projeto tab is showing. Tracked separately from
 // config.active_project_id (which is the board filter) — the tab just
@@ -284,9 +291,10 @@ function renderProjectTab() {
     renderProjectDetail();
   } else {
     // No project to show: still refresh the (empty) skills table and
-    // hide the per-project memory section.
+    // hide the per-project memory + quality sections.
     projectSkills.refresh();
     renderProjectMemory(null);
+    qualitySection.hidden = true;
   }
 }
 
@@ -318,7 +326,170 @@ function renderProjectDetail() {
 
   projectSkills.refresh();
   renderProjectMemory(p.id);
+  renderQualityChecks();
 }
+
+// ──────────────────────────── qualidade ─────────────────────────────
+//
+// Per-project quality contract editor (config.rs Project.quality). The
+// rows write straight into `project.quality.checks` in `currentConfig`;
+// the footer Save persists the whole config via save_config (the same
+// path the rest of the Projeto tab uses). The app re-validates ids on
+// save. Each check is {id, name, cmd, required, required_if_changed[]}.
+
+function qualityChecks(p) {
+  // Normalize the shape so older projects without a quality profile edit
+  // cleanly. We only materialize `quality` on first edit (see ensure*).
+  return p?.quality?.checks ?? [];
+}
+
+function ensureQuality(p) {
+  if (!p.quality) p.quality = { checks: [] };
+  if (!Array.isArray(p.quality.checks)) p.quality.checks = [];
+  return p.quality;
+}
+
+function setQualityStatus(msg, kind) {
+  qualityStatusEl.textContent = msg ?? "";
+  qualityStatusEl.className = "modal-status" + (kind ? ` ${kind}` : "");
+}
+
+function renderQualityChecks() {
+  const p = currentProject();
+  qualitySection.hidden = !p;
+  if (!p) return;
+  setQualityStatus("");
+  qualityListEl.replaceChildren();
+  const checks = qualityChecks(p);
+  qualityEmptyEl.hidden = checks.length > 0;
+  checks.forEach((check, idx) => {
+    qualityListEl.append(makeQualityRow(p, check, idx, checks.length));
+  });
+}
+
+function makeQualityRow(p, check, idx, total) {
+  const li = document.createElement("li");
+  li.className = "quality-check";
+
+  const grid = document.createElement("div");
+  grid.className = "quality-check-grid";
+
+  grid.append(
+    qualityField("settings-quality-id", "text", check.id ?? "", (v) => {
+      check.id = v.trim();
+      validateQualityIds(p);
+    }),
+    qualityField("settings-quality-name", "text", check.name ?? "", (v) => {
+      check.name = v;
+    }),
+    qualityField("settings-quality-cmd", "text", check.cmd ?? "", (v) => {
+      check.cmd = v;
+    }),
+    qualityField(
+      "settings-quality-required-if-changed",
+      "text",
+      (check.required_if_changed ?? []).join(", "),
+      (v) => {
+        check.required_if_changed = v
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+      },
+    ),
+  );
+
+  // Required checkbox.
+  const reqLabel = document.createElement("label");
+  reqLabel.className = "field field-checkbox quality-required";
+  const reqInput = document.createElement("input");
+  reqInput.type = "checkbox";
+  reqInput.checked = !!check.required;
+  reqInput.addEventListener("change", () => {
+    check.required = reqInput.checked;
+  });
+  const reqSpan = document.createElement("span");
+  reqSpan.textContent = t("settings-quality-required");
+  reqLabel.append(reqInput, reqSpan);
+  grid.append(reqLabel);
+
+  li.append(grid);
+
+  // Row actions: reorder + remove.
+  const actions = document.createElement("div");
+  actions.className = "quality-check-actions";
+
+  const up = iconButton("ic-refresh", t("settings-quality-move-up"));
+  up.classList.add("quality-move-up");
+  up.disabled = idx === 0;
+  up.addEventListener("click", () => moveQualityCheck(p, idx, idx - 1));
+
+  const down = iconButton("ic-refresh", t("settings-quality-move-down"));
+  down.classList.add("quality-move-down");
+  down.disabled = idx === total - 1;
+  down.addEventListener("click", () => moveQualityCheck(p, idx, idx + 1));
+
+  const remove = iconButton("ic-trash", t("settings-quality-remove"));
+  remove.addEventListener("click", () => {
+    ensureQuality(p).checks.splice(idx, 1);
+    renderQualityChecks();
+  });
+
+  actions.append(up, down, remove);
+  li.append(actions);
+  return li;
+}
+
+function qualityField(labelKey, type, value, onInput) {
+  const label = document.createElement("label");
+  label.className = "field quality-field";
+  const span = document.createElement("span");
+  span.textContent = t(labelKey);
+  const input = document.createElement("input");
+  input.type = type;
+  input.value = value;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.addEventListener("input", () => onInput(input.value));
+  label.append(span, input);
+  return label;
+}
+
+function moveQualityCheck(p, from, to) {
+  const checks = ensureQuality(p).checks;
+  if (to < 0 || to >= checks.length) return;
+  const [moved] = checks.splice(from, 1);
+  checks.splice(to, 0, moved);
+  renderQualityChecks();
+}
+
+// Client-side guard: surface duplicate/empty ids so the user fixes them
+// before Save (the app re-validates and rejects on save anyway).
+function validateQualityIds(p) {
+  const ids = qualityChecks(p).map((c) => (c.id ?? "").trim());
+  const seen = new Set();
+  let bad = false;
+  for (const id of ids) {
+    if (!id || seen.has(id)) {
+      bad = true;
+      break;
+    }
+    seen.add(id);
+  }
+  setQualityStatus(bad ? t("settings-quality-dup-id") : "", bad ? "error" : undefined);
+}
+
+btnQualityAdd.addEventListener("click", () => {
+  const p = currentProject();
+  if (!p) return;
+  ensureQuality(p).checks.push({
+    id: "",
+    name: "",
+    cmd: "",
+    required: false,
+    required_if_changed: [],
+  });
+  renderQualityChecks();
+});
 
 // The command field only makes sense once an explicit agent kind is
 // chosen — "(herda global)" means "no override", so hide it.

@@ -33,8 +33,9 @@ doesn't exist). Fall back to `cadenza-cli current --json` only when
 3. **When you hit a derived problem** (parallel bug, blocking refactor,
    new scope): `cadenza-cli propose ...` — this command **blocks** and
    waits for a human decision. Do not invent your own fix.
-4. **When done:** `cadenza-cli done "$TASKAI_TASK_ID" "<summary>"` — you
-   **never** move a task to "done" yourself; this requests it from the human.
+4. **When done:** gather validation evidence and call `cadenza-cli done`
+   (see "Finishing with evidence" below) — you **never** move a task to
+   "done" yourself; this requests it from the human.
 
 ## Planning a task (plan mode)
 
@@ -65,6 +66,65 @@ cadenza-cli get "$TASKAI_TASK_ID" --json
    omit `--body` to pipe the plan from stdin.
 4. Do **not** call `done` and do **not** start coding. The human starts a
    separate execution run that will read your saved plan.
+
+## Finishing with evidence
+
+When you finish, "it's done" isn't enough — you assemble an **evidence
+package** that Cadenza independently verifies and shows to the human
+reviewer. The flow:
+
+1. **Read the project's quality contract** — the checks you must run:
+
+   ```bash
+   cadenza-cli quality --json
+   ```
+
+   Returns `{ contract_version, checks: [{id, name, cmd, required,
+   required_if_changed}] }`. `--task` and `--project` are resolved from
+   the environment; pass them only if needed. An empty list means the
+   project has no contract (proceed with no checks).
+
+2. **Run each check** exactly as its `cmd` says, capturing the
+   **command, the exit code, and a short log excerpt** (the relevant last
+   lines — errors, test summary).
+
+3. **Assemble an `evidence.json`** with the results, within the caps:
+
+   ```json
+   {
+     "contract_version": "sha256:…",
+     "checks": [{"id": "clippy", "exit": 0, "log_excerpt": "…(last lines)…"}],
+     "groups": [{"label": "feat: review package", "files": ["src-tauri/src/review.rs"]}],
+     "open_questions": ["…questions for the reviewer…"]
+   }
+   ```
+
+   - Use the exact `contract_version` that `quality` returned.
+   - Each check's `id` and `exit` are required; `log_excerpt` is the log
+     snippet.
+   - `groups` (optional) maps files → an intent label, so the diff is
+     grouped by intent.
+   - `open_questions` (optional) flags doubts to the reviewer.
+   - **Caps:** ≤ 64 checks, ≤ 64 groups, `log_excerpt` ≤ 8 KiB per
+     check, whole file ≤ 256 KiB. Exceeding any = exit 2, nothing changes.
+
+4. **Request completion, attaching the evidence:**
+
+   ```bash
+   cadenza-cli done "$TASKAI_TASK_ID" \
+     --summary "endpoint validated; clippy and tests passing" \
+     --evidence evidence.json
+   ```
+
+   The idempotency key is auto-generated (or pass `--idempotency-key
+   <k>`); it is echoed to stderr, so re-running with the same key is a
+   safe no-op. `--summary` is equivalent to the positional summary.
+   Without `--evidence`, `done` still works (it becomes a `no_validation`
+   package).
+
+5. **`done` always succeeds** — it is not a gate. Cadenza independently
+   derives the diff, the risks, and an **evidence state** from what you
+   reported and shows them to the human reviewer, who decides.
 
 ## Rules
 
@@ -107,8 +167,13 @@ cadenza-cli propose \
   --what-failed "missing input validation" \
   --action "wrap with the same Validator pipeline used in the parent task"
 
-# Request completion (human decides whether it really goes to "done")
-cadenza-cli done "$TASKAI_TASK_ID" "endpoint validated and covered by two new tests"
+# Read the quality contract (checks to run before done)
+cadenza-cli quality --json
+
+# Request completion with evidence (human decides whether it goes to "done")
+cadenza-cli done "$TASKAI_TASK_ID" \
+  --summary "endpoint validated and covered by two new tests" \
+  --evidence evidence.json
 ```
 
 ## Decomposing an idea (Inbox)
