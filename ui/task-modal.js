@@ -33,6 +33,14 @@ const deleteBtn = document.getElementById("btn-delete-task");
 const startBtn = document.getElementById("btn-start-task");
 const statusEl = document.getElementById("task-status");
 
+// Tabbed sections inside #task-form. Scoped to `form` so the settings-modal
+// tabs (.settings-tab) are never picked up. The Worktree tab is usable only
+// when editing an existing task; the Revisão tab only when a review package
+// and/or suggested learnings exist.
+const taskTabsNav = form.querySelector(".task-tabs");
+const taskTabButtons = [...form.querySelectorAll(".task-tab")];
+const taskPanels = [...form.querySelectorAll(".task-panel")];
+
 // Worktree / branch section — edit mode only. Declarative: the user sets
 // origin → destination + whether to use a worktree; the actual git (pull,
 // branch create/switch, worktree create) runs at "Iniciar", server-side in
@@ -70,6 +78,18 @@ let onClosedRefresh = null;
 let selectedBlockers = new Set();
 let blockerLoadGen = 0;
 
+// Tab state. `activeTab` mirrors the shown panel; `userPickedTab` flips true
+// once the user clicks/keys a tab so the auto-switch-to-Revisão default never
+// yanks focus away from a tab they chose. `openGen` is a per-open generation
+// token: every open bumps it so a post-await review/learnings loader from a
+// previously-open task can't flip flags for the task now showing.
+let activeTab = "detalhes";
+let userPickedTab = false;
+let openGen = 0;
+let reviewAvailable = false;
+let learningsAvailable = false;
+let reviewLoadDone = false;
+
 // Image attachments: paste / drop / file button + Edit/Preview toggle.
 // For a new task there's no id yet, so images are buffered and flushed to
 // disk right after create mints the id.
@@ -92,7 +112,107 @@ export function setRefreshCallback(fn) {
   onClosedRefresh = fn;
 }
 
+// ──────────────────────────────── tabs ──────────────────────────────
+//
+// Real ARIA tabs (role="tab"/"tabpanel"). `activateTab` mirrors the
+// settings-modal pattern, scoped to the task tab/panel arrays.
+
+function activateTab(name) {
+  for (const b of taskTabButtons) {
+    const active = b.dataset.tab === name;
+    b.classList.toggle("is-active", active);
+    b.setAttribute("aria-selected", active ? "true" : "false");
+    b.tabIndex = active ? 0 : -1;
+  }
+  for (const p of taskPanels) {
+    p.hidden = p.dataset.panel !== name;
+  }
+  activeTab = name;
+}
+
+// Single source of truth for tab visibility + the active-tab correction.
+// Driven by the availability flags: detalhes always available; worktree only
+// when editing an existing task; revisao only when a review package and/or
+// suggested learnings loaded. Hides unavailable tab BUTTONS, auto-switches to
+// Revisão on the initial load of a review task (before any user interaction),
+// and falls back to the first available tab if the active one disappears.
+function syncTaskTabs() {
+  const avail = {
+    detalhes: true,
+    worktree: mode === "edit",
+    revisao: reviewAvailable || learningsAvailable,
+  };
+  for (const b of taskTabButtons) {
+    b.hidden = !avail[b.dataset.tab];
+  }
+  // Auto-switch to Revisão on initial load of a review task, only if the
+  // user hasn't navigated yet and the review loader has settled.
+  if (
+    avail.revisao &&
+    !userPickedTab &&
+    reviewLoadDone &&
+    original?.estado === "aguardando_revisao"
+  ) {
+    activateTab("revisao");
+    return;
+  }
+  // If the active tab became unavailable, fall back to the first available.
+  if (!avail[activeTab]) {
+    const first = taskTabButtons.find((b) => avail[b.dataset.tab]);
+    activateTab(first ? first.dataset.tab : "detalhes");
+  }
+}
+
+for (const b of taskTabButtons) {
+  b.addEventListener("click", () => {
+    userPickedTab = true;
+    activateTab(b.dataset.tab);
+  });
+}
+
+// Roving arrow-key focus across the tablist (Left/Right wrap, Home/End),
+// mirroring ARIA tab semantics. Skips hidden tab buttons.
+taskTabsNav?.addEventListener("keydown", (e) => {
+  const keys = ["ArrowLeft", "ArrowRight", "Home", "End"];
+  if (!keys.includes(e.key)) return;
+  const visible = taskTabButtons.filter((b) => !b.hidden);
+  if (visible.length === 0) return;
+  const current = document.activeElement;
+  const at = visible.indexOf(current);
+  let next;
+  if (e.key === "Home") {
+    next = 0;
+  } else if (e.key === "End") {
+    next = visible.length - 1;
+  } else {
+    const from = at === -1 ? 0 : at;
+    const delta = e.key === "ArrowRight" ? 1 : -1;
+    next = (from + delta + visible.length) % visible.length;
+  }
+  const target = visible[next];
+  if (!target) return;
+  e.preventDefault();
+  userPickedTab = true;
+  activateTab(target.dataset.tab);
+  target.focus();
+});
+
+// Reset all per-open tab state and bump the open generation, returning the new
+// token so the caller can guard its own post-await work. Both openNewTask and
+// openEditTask start here so the reset can't drift between them.
+function resetTabState() {
+  const myOpen = ++openGen;
+  userPickedTab = false;
+  reviewAvailable = false;
+  learningsAvailable = false;
+  reviewLoadDone = false;
+  activateTab("detalhes");
+  return myOpen;
+}
+
 export async function openNewTask(prefill = {}) {
+  const myOpen = resetTabState();
+  void myOpen; // no post-await loaders here; Revisão stays hidden by design
   mode = "create";
   editingId = null;
   original = null;
@@ -111,6 +231,8 @@ export async function openNewTask(prefill = {}) {
   reviewBodyEl.replaceChildren();
   attachments.reset();
   setStatus("");
+  // Hide the worktree/revisao tabs (create mode → only Detalhes).
+  syncTaskTabs();
 
   // Populate the project selector.
   let projects = [];
@@ -137,6 +259,9 @@ export async function openNewTask(prefill = {}) {
 }
 
 export async function openEditTask(id) {
+  // Reset tab state before any await so a stale loader from a previously-open
+  // task can't flip flags for this one (each loader captures `openGen`).
+  const myOpen = resetTabState();
   mode = "edit";
   editingId = id;
   setStatus("");
@@ -147,6 +272,7 @@ export async function openEditTask(id) {
     setStatus(t("task-error", { error: e }), "error");
     return;
   }
+  if (myOpen !== openGen) return; // a newer open superseded this one
   original = task;
   titleEl.textContent = t("task-modal-title-edit");
   idBadge.textContent = task.id;
@@ -159,6 +285,9 @@ export async function openEditTask(id) {
   projectFieldEl.hidden = true;
   worktreeSection.hidden = false;
   attachments.reset();
+  // Show the Worktree tab now (edit mode); the Revisão tab is revealed later
+  // by loadReview/loadSuggestedLearnings once their flags settle.
+  syncTaskTabs();
   await loadBlockerChoices(task.blocked_by ?? []);
   loadWorktreeDefaults(id);
   loadSuggestedLearnings(id, task.estado);
@@ -223,6 +352,7 @@ function reviewSubhead(textKey) {
 
 async function loadReview(taskId, estado) {
   const myGen = ++reviewLoadGen;
+  const myOpen = openGen; // capture the current open generation
   reviewSection.hidden = true;
   reviewBodyEl.replaceChildren();
 
@@ -230,10 +360,22 @@ async function loadReview(taskId, estado) {
   try {
     pkg = await invoke("get_review_package", { taskId });
   } catch {
-    return; // no package / read failed → keep section hidden
+    // no package / read failed → keep section hidden, Revisão tab unavailable
+    if (myGen === reviewLoadGen && myOpen === openGen) {
+      reviewAvailable = false;
+      reviewLoadDone = true;
+      syncTaskTabs();
+    }
+    return;
   }
-  if (myGen !== reviewLoadGen) return;
-  if (!pkg) return; // task never `done` with evidence
+  if (myGen !== reviewLoadGen || myOpen !== openGen) return;
+  if (!pkg) {
+    // task never `done` with evidence
+    reviewAvailable = false;
+    reviewLoadDone = true;
+    syncTaskTabs();
+    return;
+  }
 
   reviewSection.hidden = false;
 
@@ -339,6 +481,10 @@ async function loadReview(taskId, estado) {
   if (estado === "aguardando_revisao" && undecided) {
     reviewBodyEl.append(makeReviewActions(taskId));
   }
+
+  reviewAvailable = true;
+  reviewLoadDone = true;
+  syncTaskTabs();
 }
 
 function makeChecksTable(checks) {
@@ -556,34 +702,53 @@ function makeReviewActions(taskId) {
 // discarded; neither touches the task's own state.
 async function loadSuggestedLearnings(taskId, estado) {
   const myGen = ++learningsLoadGen;
+  const myOpen = openGen; // capture the current open generation
   learningsSection.hidden = true;
   learningsListEl.replaceChildren();
-  if (estado !== "aguardando_revisao") return;
+  // Each terminal path sets `learningsAvailable` then re-syncs the tabs, under
+  // both the learnings-load and open generation guards.
+  const settle = (available) => {
+    if (myGen !== learningsLoadGen || myOpen !== openGen) return;
+    learningsAvailable = available;
+    syncTaskTabs();
+  };
+  if (estado !== "aguardando_revisao") {
+    settle(false);
+    return;
+  }
   let projectId = null;
   let suggestions = [];
   try {
     const mapping = await invoke("list_task_projects");
     projectId = mapping?.[taskId] || null;
-    if (!projectId) return;
+    if (!projectId) {
+      settle(false);
+      return;
+    }
     suggestions = await invoke("list_memory_suggestions", { projectId });
   } catch {
+    settle(false);
     return;
   }
-  if (myGen !== learningsLoadGen) return;
+  if (myGen !== learningsLoadGen || myOpen !== openGen) return;
   // Only this task's learnings — filter to aprendizado suggestions whose
   // origin is this task.
   const learnings = (suggestions ?? []).filter(
     (s) => s.kind?.tipo === "aprendizado" && s.kind.origem_task === taskId,
   );
-  if (learnings.length === 0) return; // keep the section hidden when none
+  if (learnings.length === 0) {
+    settle(false); // keep the section hidden when none
+    return;
+  }
   learningsSection.hidden = false;
   learningsEmptyEl.hidden = true;
   for (const s of learnings) {
-    learningsListEl.append(makeLearningRow(s));
+    learningsListEl.append(makeLearningRow(s, myOpen));
   }
+  settle(true);
 }
 
-function makeLearningRow(s) {
+function makeLearningRow(s, rowOpen) {
   const li = document.createElement("li");
   li.className = "learning-item";
 
@@ -599,26 +764,33 @@ function makeLearningRow(s) {
   promote.type = "button";
   promote.className = "btn btn-sm btn-primary";
   promote.textContent = t("task-learnings-promote") || "Promover";
-  promote.addEventListener("click", () => resolveLearning(s.id, true, li));
+  promote.addEventListener("click", () => resolveLearning(s.id, true, li, rowOpen));
 
   const discard = document.createElement("button");
   discard.type = "button";
   discard.className = "btn btn-sm";
   discard.textContent = t("task-learnings-discard") || "Descartar";
-  discard.addEventListener("click", () => resolveLearning(s.id, false, li));
+  discard.addEventListener("click", () => resolveLearning(s.id, false, li, rowOpen));
 
   actions.append(promote, discard);
   li.append(actions);
   return li;
 }
 
-async function resolveLearning(suggestionId, aprovar, li) {
+async function resolveLearning(suggestionId, aprovar, li, rowOpen) {
   try {
     await invoke("resolve_memory_suggestion", { suggestionId, aprovar });
+    // A newer task may have opened in this modal while the resolve was in
+    // flight (rowOpen captured when the row was built). If so, the DOM/flags
+    // now belong to that task — don't touch them.
+    if (rowOpen !== openGen) return;
     li.remove();
     if (!learningsListEl.children.length) {
-      // Nothing left — hide the section so the review reads as cleared.
+      // Nothing left — hide the section so the review reads as cleared, and
+      // drop the Revisão tab if review is also unavailable.
       learningsSection.hidden = true;
+      learningsAvailable = false;
+      syncTaskTabs();
     }
   } catch (e) {
     setStatus(typeof e === "string" ? e : t("task-error", { error: e }), "error");

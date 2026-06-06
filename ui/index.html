@@ -72,6 +72,23 @@
         <button
           type="button"
           class="btn btn-icon"
+          id="btn-terminal-open"
+          aria-pressed="false"
+          data-i18n-aria-label="terminal-open-aria"
+          data-i18n-title="terminal-open-aria"
+          aria-label="Mostrar ou ocultar o terminal"
+          title="Mostrar ou ocultar o terminal"
+        >
+          <svg class="ic" viewBox="0 0 24 24" width="16" height="16" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round"
+               stroke-linejoin="round" aria-hidden="true">
+            <polyline points="4 17 10 11 4 5"></polyline>
+            <line x1="12" y1="19" x2="20" y2="19"></line>
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="btn btn-icon"
           id="btn-theme"
           data-i18n-aria-label="topbar-theme-aria"
           data-i18n-title="topbar-theme-aria"
@@ -805,94 +822,140 @@
           >×</button>
         </header>
 
-        <label class="field">
-          <span data-i18n="task-field-titulo">Título</span>
-          <input type="text" id="task-titulo" required />
-        </label>
+        <div class="task-pinned">
+          <label class="field">
+            <span data-i18n="task-field-titulo">Título</span>
+            <input type="text" id="task-titulo" required />
+          </label>
 
-        <label class="field" id="task-project-field">
-          <span data-i18n="task-field-project">Projeto</span>
-          <select id="task-project"></select>
-        </label>
+          <label class="field" id="task-project-field">
+            <span data-i18n="task-field-project">Projeto</span>
+            <select id="task-project"></select>
+          </label>
 
-        <label class="field">
-          <span data-i18n="task-field-estado">Estado</span>
-          <select id="task-estado">
-            <option value="a_fazer" data-i18n="estado-a-fazer">A fazer</option>
-            <option value="fazendo" data-i18n="estado-fazendo">Fazendo</option>
-            <option value="aguardando_revisao" data-i18n="estado-aguardando-revisao">Aguardando revisão</option>
-            <option value="feito" data-i18n="estado-feito">Feito</option>
-          </select>
-        </label>
-
-        <fieldset class="blockers-section" id="task-blockers-section">
-          <legend data-i18n="task-blockers-legend">Bloqueada por</legend>
-          <div class="blockers-list" id="task-blockers-list"></div>
-          <span class="modal-status" id="task-blockers-empty" data-i18n="task-blockers-empty">Nenhuma task disponÃ­vel</span>
-        </fieldset>
-
-        <div class="field">
-          <div class="field-label-row">
-            <span data-i18n="task-field-body">Descrição</span>
-            <div class="attach-toolbar">
-              <div class="attach-toggle" role="group">
-                <button type="button" class="btn btn-toggle is-active" id="task-body-edit" data-i18n="attachment-edit">Editar</button>
-                <button type="button" class="btn btn-toggle" id="task-body-preview-btn" data-i18n="attachment-preview">Visualizar</button>
-              </div>
-              <button type="button" class="btn btn-attach" id="task-attach-btn" data-i18n="attachment-button">Anexar imagem</button>
-            </div>
-          </div>
-          <textarea id="task-body" rows="6"></textarea>
-          <div class="markdown-preview" id="task-body-preview-pane" hidden></div>
-          <input type="file" id="task-attach-input" accept="image/*" multiple hidden />
+          <label class="field">
+            <span data-i18n="task-field-estado">Estado</span>
+            <select id="task-estado">
+              <option value="a_fazer" data-i18n="estado-a-fazer">A fazer</option>
+              <option value="fazendo" data-i18n="estado-fazendo">Fazendo</option>
+              <option value="aguardando_revisao" data-i18n="estado-aguardando-revisao">Aguardando revisão</option>
+              <option value="feito" data-i18n="estado-feito">Feito</option>
+            </select>
+          </label>
         </div>
 
-        <fieldset class="worktree-section" id="task-worktree-section" hidden>
-          <legend data-i18n="task-worktree-legend">Worktree / Ramo</legend>
-          <!-- Shared list of the repo's local branches; both pickers are
-               editable so a new destination name can be typed to create it. -->
-          <datalist id="task-branch-list"></datalist>
-          <label class="field">
-            <span data-i18n="task-field-origin-branch">Ramo de origem</span>
-            <input type="text" id="task-origin-branch" list="task-branch-list" autocomplete="off" spellcheck="false" />
-          </label>
-          <label class="field">
-            <span data-i18n="task-field-branch">Ramo de destino</span>
-            <input type="text" id="task-branch" list="task-branch-list" autocomplete="off" spellcheck="false" />
-          </label>
-          <label class="field field-checkbox">
-            <input type="checkbox" id="task-use-worktree" />
-            <span data-i18n="task-worktree-use">Usar worktree</span>
-          </label>
-          <label class="field" id="task-worktree-path-field">
-            <span data-i18n="task-field-worktree-path">Caminho do worktree</span>
-            <input type="text" id="task-worktree-path" autocomplete="off" spellcheck="false" />
-          </label>
-          <span class="modal-status" id="worktree-status" aria-live="polite"></span>
-        </fieldset>
+        <nav class="task-tabs" role="tablist" aria-label="Seções da task">
+          <button
+            type="button"
+            class="task-tab is-active"
+            role="tab"
+            id="task-tab-detalhes"
+            data-tab="detalhes"
+            aria-selected="true"
+            aria-controls="task-panel-detalhes"
+            data-i18n="task-tab-detalhes"
+          >Detalhes</button>
+          <button
+            type="button"
+            class="task-tab"
+            role="tab"
+            id="task-tab-worktree"
+            data-tab="worktree"
+            aria-selected="false"
+            aria-controls="task-panel-worktree"
+            tabindex="-1"
+            data-i18n="task-tab-worktree"
+          >Worktree</button>
+          <button
+            type="button"
+            class="task-tab"
+            role="tab"
+            id="task-tab-revisao"
+            data-tab="revisao"
+            aria-selected="false"
+            aria-controls="task-panel-revisao"
+            tabindex="-1"
+            data-i18n="review-tab"
+          >Revisão</button>
+        </nav>
 
-        <!-- Aprendizados sugeridos pelo agente de execução desta task.
-             Visível só no review (aguardando_revisao). Promover adiciona o
-             item à memória oficial do projeto; descartar remove a sugestão.
-             Independente de concluir a task. Itens renderizados via JS. -->
-        <fieldset class="learnings-section" id="task-learnings-section" hidden>
-          <legend data-i18n="task-learnings-legend">Aprendizados sugeridos</legend>
-          <p class="modal-hint" data-i18n="task-learnings-hint">
-            O agente propôs estes aprendizados. Escolha quais promover para a memória do projeto — nada entra automaticamente.
-          </p>
-          <ul class="learnings-list" id="task-learnings-list"></ul>
-          <span class="modal-status" id="task-learnings-empty" data-i18n="task-learnings-empty" hidden>Nenhum aprendizado sugerido.</span>
-        </fieldset>
+        <div class="task-panel" role="tabpanel" id="task-panel-detalhes"
+             data-panel="detalhes" aria-labelledby="task-tab-detalhes">
+          <fieldset class="blockers-section" id="task-blockers-section">
+            <legend data-i18n="task-blockers-legend">Bloqueada por</legend>
+            <div class="blockers-list" id="task-blockers-list"></div>
+            <span class="modal-status" id="task-blockers-empty" data-i18n="task-blockers-empty">Nenhuma task disponÃ­vel</span>
+          </fieldset>
 
-        <!-- Aba "Revisão" — visível só quando a task tem um pacote de
-             revisão (get_review_package). Estado de evidência, checks,
-             riscos, diff por intenção (carregado sob demanda) e ações de
-             aprovação. Todo texto vindo do agente/repo é renderizado via
-             textContent; o conteúdo é montado em JS (loadReview). -->
-        <fieldset class="review-section" id="task-review-section" hidden>
-          <legend data-i18n="review-tab">Revisão</legend>
-          <div id="task-review-body" class="review-body"></div>
-        </fieldset>
+          <div class="field">
+            <div class="field-label-row">
+              <span data-i18n="task-field-body">Descrição</span>
+              <div class="attach-toolbar">
+                <div class="attach-toggle" role="group">
+                  <button type="button" class="btn btn-toggle is-active" id="task-body-edit" data-i18n="attachment-edit">Editar</button>
+                  <button type="button" class="btn btn-toggle" id="task-body-preview-btn" data-i18n="attachment-preview">Visualizar</button>
+                </div>
+                <button type="button" class="btn btn-attach" id="task-attach-btn" data-i18n="attachment-button">Anexar imagem</button>
+              </div>
+            </div>
+            <textarea id="task-body" rows="6"></textarea>
+            <div class="markdown-preview" id="task-body-preview-pane" hidden></div>
+            <input type="file" id="task-attach-input" accept="image/*" multiple hidden />
+          </div>
+        </div>
+
+        <div class="task-panel" role="tabpanel" id="task-panel-worktree"
+             data-panel="worktree" aria-labelledby="task-tab-worktree" hidden>
+          <fieldset class="worktree-section" id="task-worktree-section" hidden>
+            <legend data-i18n="task-worktree-legend">Worktree / Ramo</legend>
+            <!-- Shared list of the repo's local branches; both pickers are
+                 editable so a new destination name can be typed to create it. -->
+            <datalist id="task-branch-list"></datalist>
+            <label class="field">
+              <span data-i18n="task-field-origin-branch">Ramo de origem</span>
+              <input type="text" id="task-origin-branch" list="task-branch-list" autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="field">
+              <span data-i18n="task-field-branch">Ramo de destino</span>
+              <input type="text" id="task-branch" list="task-branch-list" autocomplete="off" spellcheck="false" />
+            </label>
+            <label class="field field-checkbox">
+              <input type="checkbox" id="task-use-worktree" />
+              <span data-i18n="task-worktree-use">Usar worktree</span>
+            </label>
+            <label class="field" id="task-worktree-path-field">
+              <span data-i18n="task-field-worktree-path">Caminho do worktree</span>
+              <input type="text" id="task-worktree-path" autocomplete="off" spellcheck="false" />
+            </label>
+            <span class="modal-status" id="worktree-status" aria-live="polite"></span>
+          </fieldset>
+        </div>
+
+        <div class="task-panel" role="tabpanel" id="task-panel-revisao"
+             data-panel="revisao" aria-labelledby="task-tab-revisao" hidden>
+          <!-- Aprendizados sugeridos pelo agente de execução desta task.
+               Visível só no review (aguardando_revisao). Promover adiciona o
+               item à memória oficial do projeto; descartar remove a sugestão.
+               Independente de concluir a task. Itens renderizados via JS. -->
+          <fieldset class="learnings-section" id="task-learnings-section" hidden>
+            <legend data-i18n="task-learnings-legend">Aprendizados sugeridos</legend>
+            <p class="modal-hint" data-i18n="task-learnings-hint">
+              O agente propôs estes aprendizados. Escolha quais promover para a memória do projeto — nada entra automaticamente.
+            </p>
+            <ul class="learnings-list" id="task-learnings-list"></ul>
+            <span class="modal-status" id="task-learnings-empty" data-i18n="task-learnings-empty" hidden>Nenhum aprendizado sugerido.</span>
+          </fieldset>
+
+          <!-- Aba "Revisão" — visível só quando a task tem um pacote de
+               revisão (get_review_package). Estado de evidência, checks,
+               riscos, diff por intenção (carregado sob demanda) e ações de
+               aprovação. Todo texto vindo do agente/repo é renderizado via
+               textContent; o conteúdo é montado em JS (loadReview). -->
+          <fieldset class="review-section" id="task-review-section" hidden>
+            <legend data-i18n="review-tab">Revisão</legend>
+            <div id="task-review-body" class="review-body"></div>
+          </fieldset>
+        </div>
 
         <footer class="modal-footer">
           <span class="modal-status" id="task-status" aria-live="polite"></span>
@@ -1115,7 +1178,7 @@
           </svg>
           <span data-i18n="terminal-title">Terminal</span>
         </div>
-        <div class="terminal-tabs" id="terminal-tabs"></div>
+        <div class="terminal-tabs" id="terminal-tabs" role="toolbar"></div>
         <div class="terminal-actions">
           <button
             type="button"
@@ -1133,9 +1196,20 @@
       </header>
       <div class="terminal-body">
         <div id="terminal-empty" class="modal-empty" data-i18n="terminal-empty">
-          (nenhuma sessão ativa)
+          Arraste uma aba aqui para abrir o terminal
         </div>
         <div id="terminal-host" class="terminal-host" hidden></div>
+        <!-- Explicit "drop to add a pane" strip. Hidden until a session tab is
+             being dragged and the grid is tiled-but-not-full; terminal.js
+             toggles `hidden` on dragstart/dragend. -->
+        <div id="terminal-add-zone" class="terminal-add-zone" hidden>
+          <span data-i18n="terminal-add-zone">Soltar para adicionar painel</span>
+        </div>
+        <div
+          id="terminal-grid-live"
+          class="visually-hidden"
+          aria-live="polite"
+        ></div>
       </div>
     </aside>
 
