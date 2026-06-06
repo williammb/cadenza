@@ -2993,7 +2993,19 @@ pub async fn start_task_agent(
     // 1. Task must exist and not be `feito`. The transition to `fazendo`
     //    (if not already there) happens AFTER a successful spawn — see
     //    step 5b — so a failed start doesn't leave the kanban moved.
-    let task = state.repo.read_task(&task_id).await.map_err(to_str_err)?;
+    //
+    // Enrich the raw row: on the file backend the Jira identity
+    // (`jira_site`/`jira_issue_id`) lives in the `task-jira.json` sidecar, not
+    // on the task row, so a raw `read_task` reports `None` for both. The
+    // one-executor-per-issue guard and the shared-worktree ensure below both
+    // key off that identity, so without enrichment they would silently no-op
+    // on the file backend (letting two execute agents share one issue
+    // worktree). SQL backends carry the columns on the row, so `enrich_task`
+    // is a no-op there.
+    let task = enrich_task(
+        &state,
+        state.repo.read_task(&task_id).await.map_err(to_str_err)?,
+    );
     if task.estado == Estado::Feito {
         return Err(format!(
             "task '{}' is in state '{}', can't start an agent on a completed task",
@@ -3087,6 +3099,39 @@ pub async fn start_task_agent(
                 active.insert(key.clone(), crate::jira::worktree::ExecutorSlot::Reserving);
             }
             executor_reservation = Some(ExecutorReservation::new(Arc::clone(state.inner()), key));
+        }
+    }
+
+    // 2c. Ensure the issue's shared worktree exists before preparing the
+    //     workspace. The accept path creates it best-effort (a failure there
+    //     only logs and lets task creation proceed), so the worktree may be
+    //     missing — or its record left `Failed`/`Creating` — by the time an
+    //     agent starts. `ensure_issue_worktree` is idempotent: it recovers a
+    //     half-created worktree, recreates a failed one, and re-associates the
+    //     task (writing the `task-worktrees.json` sidecar that
+    //     `prepare_task_workspace` reads). This is the "retried at agent
+    //     start" the accept path defers to. Unlike accept, a failure HERE is
+    //     fatal: running the agent in the bare project repo instead of the
+    //     isolated worktree would silently break per-issue isolation, so we
+    //     surface the error and let the reservation's Drop release the slot.
+    if mode == TaskAgentMode::Execute {
+        if let (Some(site), Some(issue)) = (&task.jira_site, &task.jira_issue_id) {
+            // Prefer the record's canonical display key for the branch name,
+            // matching the accept path; fall back to the task title.
+            let summary = match state.repo.read_jira_issue(site, issue).await {
+                Ok(Some(rec)) => rec.jira_key,
+                _ => task_titulo.clone(),
+            };
+            crate::jira::worktree::ensure_issue_worktree(
+                &state,
+                site,
+                issue,
+                &project_id,
+                &task_id,
+                &summary,
+            )
+            .await
+            .map_err(to_str_err)?;
         }
     }
 
@@ -4470,6 +4515,62 @@ mod tests {
         assert!(!body.contains("**Arquivo:**"));
         // The substantive sections still render.
         assert!(body.contains("## Como reproduzir"));
+    }
+
+    #[tokio::test]
+    async fn file_backend_task_jira_identity_only_via_enrichment() {
+        // Regression (P1): start_task_agent's one-executor-per-issue guard and
+        // shared-worktree ensure both key off task.jira_site/jira_issue_id. On
+        // the file backend that identity lives in the task-jira.json sidecar,
+        // NOT on the (frozen-frontmatter) task row, so a raw read_task reports
+        // None for both — the guard would silently no-op and let two execute
+        // agents share one issue's worktree. start_task_agent must enrich the
+        // row before the guard; this locks that mechanism in.
+        use super::{enrich_task, AppState, Config, FileRepository, Repository};
+        use std::sync::Arc;
+        use tempfile::TempDir;
+
+        let home = TempDir::new().unwrap();
+        let repo = Arc::new(FileRepository::new(home.path()).unwrap());
+        let state = AppState::for_test(home.path(), repo.clone(), Config::default()).unwrap();
+
+        let task = Task {
+            id: "T-1".to_string(),
+            titulo: "Jira subtask".to_string(),
+            estado: Estado::AFazer,
+            responsavel: "humano".to_string(),
+            body: String::new(),
+            worktree_path: None,
+            branch: None,
+            blocked_by: Vec::new(),
+            jira_site: Some("https://x.atlassian.net".to_string()),
+            jira_issue_id: Some("10001".to_string()),
+            jira_key_display: None,
+        };
+        repo.create_task(&task).await.unwrap();
+        // Persist the identity the way create_task_from_proposta does on the
+        // file backend (sidecar, since the row has no Jira columns).
+        state
+            .task_jira
+            .set("T-1", "https://x.atlassian.net", "10001")
+            .unwrap();
+
+        // Raw read: the file backend drops the Jira identity — this is exactly
+        // what start_task_agent used to feed the guard, so it no-op'd.
+        let raw = repo.read_task("T-1").await.unwrap();
+        assert!(
+            raw.jira_site.is_none() && raw.jira_issue_id.is_none(),
+            "file backend unexpectedly carries Jira identity on the task row"
+        );
+
+        // Enriched read (what start_task_agent now does): identity restored, so
+        // the executor guard and worktree-ensure actually fire.
+        let enriched = enrich_task(&state, raw);
+        assert_eq!(
+            enriched.jira_site.as_deref(),
+            Some("https://x.atlassian.net")
+        );
+        assert_eq!(enriched.jira_issue_id.as_deref(), Some("10001"));
     }
 
     #[test]
