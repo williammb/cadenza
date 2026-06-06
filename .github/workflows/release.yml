@@ -9,13 +9,18 @@ on:
 permissions:
   contents: write
 
-# A pushed `v*` tag builds and publishes Windows and macOS — the platforms
-# Cadenza ships today (see docs/RELEASING.md). Linux is still gated behind
-# manual `workflow_dispatch` until its AppImage is actually distributed.
-# The publishing jobs run sequentially (Windows → macOS) so each tauri-action
-# merges its platform entry into the shared `latest.json` instead of racing
-# on it. Linux, when it ships, drops its `workflow_dispatch`-only guard and
-# rejoins the chain.
+# Harden cargo's crates.io downloads against transient network flakes — the
+# v0.3.1 macOS build died on `[16] Error in the HTTP2 framing layer` while
+# fetching a dependency, not on any code problem. Disabling HTTP/2
+# multiplexing and bumping the retry count makes the fetch resilient to it.
+env:
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+
+# A pushed `v*` tag builds and publishes Windows, macOS, and Linux — every
+# platform Cadenza ships (see docs/RELEASING.md). The publishing jobs run
+# sequentially (Windows → macOS → Linux) so each tauri-action merges its
+# platform entry into the shared `latest.json` instead of racing on it.
 jobs:
   build-windows:
     name: Build (Windows · NSIS)
@@ -89,12 +94,31 @@ jobs:
   build-linux:
     name: Build (Linux · AppImage)
     runs-on: ubuntu-22.04
-    needs: build-windows
-    # Manual-only until Linux bundles ship; skipped on `v*` tag releases.
-    if: github.event_name == 'workflow_dispatch'
+    # Last link in the chain: Windows → macOS → Linux. Depending on macOS
+    # serialises the publish so this job merges its entry into the shared
+    # latest.json after the others, never concurrently with them.
+    needs: build-macos
+    # Runs on `v*` tag releases and on manual dispatch.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
 
     steps:
       - uses: actions/checkout@v6
+
+      # Stamp the release version from the tag before building (same as the
+      # Windows/macOS jobs). Without this the AppImage would ship the `0.0.0`
+      # placeholder. Skipped on workflow_dispatch (smoke-test builds `0.0.0`).
+      - name: Set version from tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Tag '$GITHUB_REF_NAME' is not a valid semver version (vX.Y.Z)"
+            exit 1
+          fi
+          echo "Building $VERSION from tag $GITHUB_REF_NAME"
+          perl -0pi -e 's/^version = .*$/version = "'"$VERSION"'"/m' Cargo.toml
+          perl -pi -e 's/"version": "[^"]*"/"version": "'"$VERSION"'"/' src-tauri/tauri.conf.json
 
       - name: Install system dependencies
         run: |
@@ -136,8 +160,8 @@ jobs:
   build-macos:
     name: Build (macOS · DMG · universal)
     runs-on: macos-latest
-    # Chain after Windows (not Linux, which is skipped on tags) so the two
-    # shipping platforms publish sequentially into the shared latest.json.
+    # Middle link in the chain: Windows → macOS → Linux. Serialising the
+    # publishing jobs keeps each tauri-action from racing on latest.json.
     needs: build-windows
     # Runs on `v*` tag releases and on manual dispatch.
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
