@@ -25,6 +25,7 @@ import {
   setStartAgentRefreshCallback,
 } from "./start-agent-modal.js";
 import { PROJECT_COLORS } from "./project-colors.js";
+import { toggleDrawer, onDrawerStateChange } from "./terminal.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -436,6 +437,16 @@ function wireTopbar() {
   document
     .getElementById("btn-theme")
     .addEventListener("click", () => toggleTheme());
+
+  // Topbar terminal toggle. The drawer's own chevron and terminal.js's
+  // closeSession empty-branch also flip the drawer, so the button's
+  // pressed state is driven by the onDrawerStateChange hook (the single
+  // writer of aria-pressed) rather than mutated inline here.
+  const terminalBtn = document.getElementById("btn-terminal-open");
+  terminalBtn.addEventListener("click", () => toggleDrawer());
+  onDrawerStateChange((open) => {
+    terminalBtn.setAttribute("aria-pressed", open ? "true" : "false");
+  });
 
   const newIdeiaBtn = document.getElementById("btn-new-ideia");
   if (newIdeiaBtn) {
