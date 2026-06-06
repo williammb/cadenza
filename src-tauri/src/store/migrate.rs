@@ -177,47 +177,25 @@ pub async fn copy_all(from: &dyn Repository, to: &dyn Repository) -> Result<Migr
     // row). STATE-NEUTRAL: no estado side-effects. No decision re-apply —
     // Slice 5 has no decision path.
     //
-    // The `jira_issues` cache table is deliberately NOT migrated (Slice 1), so
-    // on a SQL destination the aggregate's FK to `jira_issues` may be orphaned.
-    // Rather than abort the whole backend switch, an aggregate whose parent is
-    // absent is skipped and counted as `..._orphaned` (file backend has no FK,
-    // so it always copies). All OTHER errors still propagate.
+    // `jira_review_packages` has NO foreign key to `jira_issues` (the cache
+    // table is deliberately not migrated; jira_key_display falls back to
+    // (site, issue_id)), so aggregates always copy regardless of whether a
+    // parent row exists on the destination.
     for pkg in from.all_issue_review_packages().await? {
         let already = to
             .list_issue_review_packages(&pkg.jira_site, &pkg.jira_issue_id)
             .await?
             .into_iter()
             .any(|p| p.idempotency_key == pkg.idempotency_key);
-        match to.upsert_issue_review_package(&pkg).await {
-            Ok(_) => {
-                if already {
-                    stats.issue_review_packages_skipped += 1;
-                } else {
-                    stats.issue_review_packages_copied += 1;
-                }
-            }
-            Err(e) if is_foreign_key_error(&e) => {
-                tracing::warn!(
-                    site = %pkg.jira_site,
-                    issue = %pkg.jira_issue_id,
-                    "skipping aggregate review with no migrated jira_issues parent"
-                );
-                stats.issue_review_packages_orphaned += 1;
-            }
-            Err(e) => return Err(e),
+        to.upsert_issue_review_package(&pkg).await?;
+        if already {
+            stats.issue_review_packages_skipped += 1;
+        } else {
+            stats.issue_review_packages_copied += 1;
         }
     }
 
     Ok(stats)
-}
-
-/// Whether a store error is a destination foreign-key violation (the
-/// aggregate's `jira_issues` parent was not migrated). The SQL backends map a
-/// FK failure to `StoreError::Other` carrying sqlx's "FOREIGN KEY constraint
-/// failed" / "violates foreign key constraint" text.
-fn is_foreign_key_error(e: &StoreError) -> bool {
-    let s = e.to_string().to_ascii_lowercase();
-    s.contains("foreign key")
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -235,9 +213,6 @@ pub struct MigrationStats {
     pub review_packages_skipped: usize,
     pub issue_review_packages_copied: usize,
     pub issue_review_packages_skipped: usize,
-    /// Aggregates whose `jira_issues` parent was not migrated (Slice 1 does not
-    /// migrate that cache table) — skipped rather than aborting the switch.
-    pub issue_review_packages_orphaned: usize,
 }
 
 /// Run a migration `from → to` if it hasn't been recorded yet.

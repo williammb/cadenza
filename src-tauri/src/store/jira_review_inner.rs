@@ -106,7 +106,7 @@ impl JiraReviews {
 
     /// Allocate (or short-circuit on an existing key) under the lock.
     fn allocate(&self, pkg: &IssueReviewPackage) -> Result<Allocation> {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
         let key = (
             pkg.jira_site.clone(),
             pkg.jira_issue_id.clone(),
@@ -125,6 +125,12 @@ impl JiraReviews {
         let ikey = (pkg.jira_site.clone(), pkg.jira_issue_id.clone());
         let max = state.max_attempt.get(&ikey).copied().unwrap_or(0);
         let attempt = max + 1;
+        // Reserve the attempt under the lock: the sidecar write + index_insert
+        // happen AFTER the lock is released, so without this a concurrent
+        // upsert for the same issue would read the same `max` and allocate the
+        // same attempt, overwriting this one's sidecar. A reserved-but-unwritten
+        // attempt (write failure) just leaves a harmless numbering gap.
+        state.max_attempt.insert(ikey, attempt);
         let supersede: Vec<u32> = (1..attempt)
             .filter(|n| {
                 self.package_path(&pkg.jira_site, &pkg.jira_issue_id, *n)

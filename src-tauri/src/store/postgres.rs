@@ -185,9 +185,9 @@ fn proposta_from_row(row: &sqlx::postgres::PgRow) -> Result<Proposta> {
         file: row.try_get("file").map_err(map_sqlx)?,
         what_failed: row.try_get("what_failed").map_err(map_sqlx)?,
         action: row.try_get("action").map_err(map_sqlx)?,
-        // Jira identity is not persisted on the propostas table in Slice 1.
-        jira_site: None,
-        jira_issue_id: None,
+        jira_site: row.try_get("jira_site").map_err(map_sqlx)?,
+        jira_issue_id: row.try_get("jira_issue_id").map_err(map_sqlx)?,
+        // Display key is enriched on read from the JiraIssueRecord, not stored.
         jira_key_display: None,
         created_at_ms: row.try_get("created_at_ms").map_err(map_sqlx)?,
     })
@@ -481,8 +481,8 @@ impl Repository for PgRepository {
         let res = sqlx::query(
             "INSERT INTO propostas (
                 proposta_id, idempotency_key, parent, title, repro, file,
-                what_failed, action, created_at_ms
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                what_failed, action, created_at_ms, jira_site, jira_issue_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
         )
         .bind(&proposta.proposta_id)
         .bind(&proposta.idempotency_key)
@@ -493,6 +493,8 @@ impl Repository for PgRepository {
         .bind(&proposta.what_failed)
         .bind(&proposta.action)
         .bind(proposta.created_at_ms)
+        .bind(&proposta.jira_site)
+        .bind(&proposta.jira_issue_id)
         .execute(&self.pool)
         .await;
 

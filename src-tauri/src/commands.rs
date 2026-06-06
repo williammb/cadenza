@@ -1565,7 +1565,7 @@ impl std::fmt::Display for MaterializeError {
 /// Verifies the capability secret, validates the decomposition, then creates
 /// one proposal per subtask with the Jira identity stamped SERVER-SIDE from
 /// the verified run (never from the wire args) and a deterministic,
-/// app-owned idempotency key `"jira:<site>:<issue>:<index>"`. Re-running while the
+/// app-owned idempotency key `"jira:<site>:<issue>:<run_id>:<index>"`. Re-running while the
 /// secret is still active is idempotent (same keys ⇒ `propose` dedup). On
 /// success the secret is revoked (best-effort; revoke failure is logged in
 /// English, not fatal — the tasks already exist).
@@ -1584,9 +1584,13 @@ pub(crate) async fn jira_materialize_core(
     // 3. Create one proposal per subtask, identity stamped from `verified`.
     let mut created = Vec::with_capacity(args.subtasks.len());
     for (index, subtask) in args.subtasks.iter().enumerate() {
+        // Scope the key to the analysis run, not just (site, issue, index):
+        // re-running the SAME run dedups (same run_id + index), but a NEW run
+        // for the same issue (e.g. after discard + re-import + re-analysis)
+        // mints fresh proposals instead of colliding with the prior run's.
         let idempotency_key = format!(
-            "jira:{}:{}:{}",
-            verified.jira_site, verified.jira_issue_id, index
+            "jira:{}:{}:{}:{}",
+            verified.jira_site, verified.jira_issue_id, args.analysis_run_id, index
         );
         let np = NewProposta {
             idempotency_key: idempotency_key.clone(),
@@ -2092,7 +2096,15 @@ pub(crate) async fn jira_import_core(
                 )));
             }
 
-            let synthetic_task_id = format!("JIRA-{}-{}", jira_site, fetched.jira_issue_id);
+            // jira_site is a full origin ("https://acme.atlassian.net"); strip
+            // the scheme and sanitize so the synthetic id (exported as
+            // TASKAI_TASK_ID) is safe to use verbatim in paths/argv.
+            let host = jira_site.rsplit("://").next().unwrap_or(jira_site.as_str());
+            let site_token: String = host
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                .collect();
+            let synthetic_task_id = format!("JIRA-{}-{}", site_token, fetched.jira_issue_id);
             let prompt = render_initial_jira_prompt(
                 &state.i18n,
                 &fetched.jira_key,

@@ -655,10 +655,14 @@ function readForm() {
 
   // Capture the editable Jira config (base_url/email). The token is NOT
   // read here — it is write-only and goes straight to the keyring.
-  currentConfig.jira = {
-    base_url: document.getElementById("jira-base-url").value.trim(),
-    email: document.getElementById("jira-email").value.trim(),
-  };
+  // Only set the block when a base_url is present: the backend validates
+  // base_url for any Some(jira), so sending an empty one makes EVERY save
+  // fail for users who never configured Jira. Empty base_url => null
+  // (config.jira is Option), which skips validation entirely.
+  const jiraBaseUrl = document.getElementById("jira-base-url").value.trim();
+  currentConfig.jira = jiraBaseUrl
+    ? { base_url: jiraBaseUrl, email: document.getElementById("jira-email").value.trim() }
+    : null;
 
   // Spread currentConfig first so fields the form doesn't surface —
   // postgres, active_project_id, agent_models — survive the Save instead

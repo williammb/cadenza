@@ -2013,25 +2013,30 @@ mod tests {
         let (deps, _dir, _rx) = mk_deps(None);
         let (run_id, secret) = mk_run(&deps).await;
         let args = ops::jira_materialize::Args {
-            analysis_run_id: run_id,
+            analysis_run_id: run_id.clone(),
             run_secret: secret,
             subtasks: vec![subtask("A", "ba"), subtask("B", "bb")],
         };
         let result = jira_materialize_core(&deps.state, &args).await.unwrap();
-        assert_eq!(result.created[0].idempotency_key, "jira:site:100:0");
-        assert_eq!(result.created[1].idempotency_key, "jira:site:100:1");
+        // Keys are scoped to the analysis run, so a later run for the same
+        // issue cannot collide with this run's proposals.
+        assert_eq!(
+            result.created[0].idempotency_key,
+            format!("jira:site:100:{run_id}:0")
+        );
+        assert_eq!(
+            result.created[1].idempotency_key,
+            format!("jira:site:100:{run_id}:1")
+        );
     }
 
     #[tokio::test]
-    async fn materialize_is_idempotent_on_rerun_while_active() {
+    async fn materialize_new_run_creates_fresh_proposals() {
+        // Re-importing + re-analyzing the same issue (a NEW analysis run) must
+        // produce FRESH proposals, not silently dedup to the prior run's —
+        // the keys are scoped to analysis_run_id. (A discarded/rejected first
+        // decomposition must not block a second one.)
         let (deps, _dir, _rx) = mk_deps(None);
-        // Seed + mint, but do NOT revoke between runs: call core's propose
-        // path twice with the same keys by re-materializing before revoke.
-        // To keep the secret active across two runs, mint once and run twice
-        // by re-activating after the first run's revoke is suppressed: we
-        // instead run materialize twice within one mint by checking
-        // proposta_ids are stable (propose dedup) — first run revokes, so we
-        // re-mint pointing at the SAME issue to reuse the deterministic keys.
         seed_jira_record(&deps, "site", "100", "PROJ-1").await;
         let (run_id1, secret1) = create_analysis_run(&deps.state, "site", "100", Some("P-1"))
             .await
@@ -2043,8 +2048,7 @@ mod tests {
         };
         let r1 = jira_materialize_core(&deps.state, &args1).await.unwrap();
 
-        // Re-mint a fresh secret for the same issue; the deterministic keys
-        // (jira:site:100:<index>) dedup against the existing propostas.
+        // A second run for the same issue (e.g. after discard + re-import).
         let (run_id2, secret2) = create_analysis_run(&deps.state, "site", "100", Some("P-1"))
             .await
             .unwrap();
@@ -2057,7 +2061,10 @@ mod tests {
 
         let ids1: Vec<_> = r1.created.iter().map(|m| &m.proposta_id).collect();
         let ids2: Vec<_> = r2.created.iter().map(|m| &m.proposta_id).collect();
-        assert_eq!(ids1, ids2, "re-run must dedup to the same proposta ids");
+        assert_ne!(
+            ids1, ids2,
+            "a new analysis run must mint fresh proposals, not reuse the prior run's"
+        );
     }
 
     #[tokio::test]
