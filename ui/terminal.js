@@ -232,6 +232,11 @@ function placeSession(sessionId) {
 /// (placeSession) and the drop-replace path (handlePaneDrop).
 function openFitAttach(entry, sessionId) {
   requestAnimationFrame(() => {
+    // The session may have been closed between scheduling this frame and now
+    // (closeSession disposes the term + removes the host but keeps the captured
+    // `entry` reference); bail rather than open a disposed terminal. Mirrors the
+    // writeClosed guard in enqueueTerminalBytes/drainTerminalWrites.
+    if (entry.writeClosed) return;
     if (!entry.opened) {
       entry.term.open(entry.hostEl);
       entry.opened = true;
@@ -436,7 +441,7 @@ function renderToolbar() {
 
     const idSpan = document.createElement("span");
     idSpan.className = "terminal-tab-id";
-    idSpan.textContent = meta.taskId ? meta.taskId : shortSessionId(sessionId);
+    idSpan.textContent = label;
     tab.append(idSpan);
     if (meta.title) {
       const titleSpan = document.createElement("span");

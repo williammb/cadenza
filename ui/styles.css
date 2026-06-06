@@ -1571,11 +1571,6 @@ textarea::placeholder {
   border-color: var(--card-border-strong);
   color: var(--fg);
 }
-.terminal-tab.active {
-  background: var(--accent-soft);
-  color: var(--fg);
-  border-color: var(--accent);
-}
 .terminal-tab-id {
   font-family: var(--font-mono);
   font-size: 0.7rem;

@@ -197,13 +197,21 @@ taskTabsNav?.addEventListener("keydown", (e) => {
   target.focus();
 });
 
-export async function openNewTask(prefill = {}) {
+// Reset all per-open tab state and bump the open generation, returning the new
+// token so the caller can guard its own post-await work. Both openNewTask and
+// openEditTask start here so the reset can't drift between them.
+function resetTabState() {
   const myOpen = ++openGen;
   userPickedTab = false;
   reviewAvailable = false;
   learningsAvailable = false;
   reviewLoadDone = false;
   activateTab("detalhes");
+  return myOpen;
+}
+
+export async function openNewTask(prefill = {}) {
+  const myOpen = resetTabState();
   void myOpen; // no post-await loaders here; Revisão stays hidden by design
   mode = "create";
   editingId = null;
@@ -253,12 +261,7 @@ export async function openNewTask(prefill = {}) {
 export async function openEditTask(id) {
   // Reset tab state before any await so a stale loader from a previously-open
   // task can't flip flags for this one (each loader captures `openGen`).
-  const myOpen = ++openGen;
-  userPickedTab = false;
-  reviewAvailable = false;
-  learningsAvailable = false;
-  reviewLoadDone = false;
-  activateTab("detalhes");
+  const myOpen = resetTabState();
   mode = "edit";
   editingId = id;
   setStatus("");
