@@ -4,9 +4,8 @@
 
 Pushing a tag of the form `vX.Y.Z` triggers the release workflow
 (`.github/workflows/release.yml`), which builds the signed Windows
-installer and publishes it as a GitHub Release draft. Linux AppImage and
-macOS DMG jobs are manual-only until those bundles are validated for
-public distribution.
+installer, macOS DMG, and Linux AppImage and publishes them as a single
+GitHub Release draft.
 
 ```
 git tag v0.3.0 && git push origin v0.3.0
@@ -67,14 +66,15 @@ it means users can no longer receive signed updates for existing installs.
 | Job            | Runner           | Bundle    | Signing | Trigger |
 |----------------|------------------|-----------|---------|---------|
 | `build-windows`| `windows-latest` | NSIS      | ed25519 | `v*` tag push (and `workflow_dispatch` smoke-test) |
-| `build-linux`  | `ubuntu-22.04`   | AppImage  | ed25519 | `workflow_dispatch` only |
-| `build-macos`  | `macos-latest`   | DMG       | ed25519 | `workflow_dispatch` only |
+| `build-macos`  | `macos-latest`   | DMG       | ed25519 | `v*` tag push (and `workflow_dispatch` smoke-test) |
+| `build-linux`  | `ubuntu-22.04`   | AppImage  | ed25519 | `v*` tag push (and `workflow_dispatch` smoke-test) |
 
-A pushed `v*` tag builds and publishes **Windows only** — the one platform
-Cadenza ships today. Linux/macOS are gated behind manual `workflow_dispatch`
-so routine releases don't pay ~30 min × 3 sequential jobs for bundles that
-aren't distributed yet. When those bundles ship, remove the
-`if: github.event_name == 'workflow_dispatch'` guard on their jobs.
+A pushed `v*` tag builds and publishes **all three platforms**. The jobs run
+sequentially (Windows → macOS → Linux) via `needs:` so each `tauri-action`
+merges its per-platform entry into the shared `latest.json` instead of racing
+on it. Cargo's crates.io downloads run with `CARGO_HTTP_MULTIPLEXING=false`
+and `CARGO_NET_RETRY=10` (workflow-level `env:`) to ride out the transient
+`HTTP2 framing layer` fetch flakes that have aborted release builds before.
 
 Each job:
 1. Builds `cadenza-cli` via `beforeBuildCommand` (lands in `target/release/`)
@@ -198,8 +198,8 @@ previous version themselves. User data in `~/.cadenza/` survives.
   `.dmg`, reinstall.
 - **Linux** — Replace the AppImage with the previous version's binary.
 
-> AppImage and DMG bundles are not produced yet;
-> Windows is the only platform with a published artifact today.
+> All three bundles (Windows NSIS, macOS DMG, Linux AppImage) are
+> produced and published per tagged release.
 
 ### Rehearsing the procedure
 

@@ -21,8 +21,8 @@ management. The committed project contains:
 
 The workspace manifests carry a `0.0.0` placeholder; each release's version
 comes from its `vX.Y.Z` git tag, stamped by CI (see `docs/RELEASING.md`).
-Windows NSIS packaging is implemented.
-Linux AppImage and macOS DMG packaging are planned but not published yet.
+Windows NSIS, macOS DMG, and Linux AppImage packaging are all implemented
+and published per tagged release.
 
 ## Main Commands
 
