@@ -173,6 +173,8 @@ pub fn run() {
             commands::test_db_connection,
             commands::set_pg_password,
             commands::clear_pg_password,
+            commands::set_jira_token,
+            commands::clear_jira_token,
             commands::restart_app,
             commands::check_update,
             commands::install_update_and_restart,

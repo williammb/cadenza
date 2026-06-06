@@ -26,6 +26,10 @@ import {
 } from "./start-agent-modal.js";
 import { PROJECT_COLORS } from "./project-colors.js";
 import { toggleDrawer, onDrawerStateChange } from "./terminal.js";
+import {
+  openJiraImport,
+  setJiraImportRefreshCallback,
+} from "./jira-import.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -432,6 +436,9 @@ function wireTopbar() {
     .getElementById("btn-new-task")
     .addEventListener("click", () => openNewTask({ projectId: cachedActiveProject }));
   document
+    .getElementById("btn-jira-import")
+    .addEventListener("click", () => openJiraImport({ projectId: cachedActiveProject }));
+  document
     .getElementById("btn-settings")
     .addEventListener("click", () => openSettings());
   document
@@ -526,6 +533,7 @@ async function main() {
   setIdeiaRefreshCallback(renderBoard);
   setStartAgentRefreshCallback(renderBoard);
   setSettingsRefreshCallback(renderBoard);
+  setJiraImportRefreshCallback(renderBoard);
   invoke("app_version")
     .then((v) => {
       const el = document.getElementById("app-version");

@@ -2841,6 +2841,21 @@ pub fn clear_pg_password(
     secrets::delete_password(&account).map_err(to_str_err)
 }
 
+/// Persist the Jira API token to the OS keyring, keyed on the site
+/// `base_url`. The token never touches `config.json`. Idempotent —
+/// overwrites an existing entry.
+#[tauri::command]
+pub fn set_jira_token(base_url: String, token: String) -> Result<(), String> {
+    secrets::set_jira_token(&base_url, &token).map_err(to_str_err)
+}
+
+/// Remove the Jira API token from the keyring. Returns Ok even if the
+/// entry didn't exist (idempotent — matches `delete_password`).
+#[tauri::command]
+pub fn clear_jira_token(base_url: String) -> Result<(), String> {
+    secrets::delete_jira_token(&base_url).map_err(to_str_err)
+}
+
 /// Persist a full Config replacement to `~/.cadenza/config.json` and
 /// hot-swap the in-memory copy. The UI's Settings modal sends the whole
 /// document — there's no patch surface — so this is a simple overwrite.

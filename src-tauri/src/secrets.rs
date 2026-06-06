@@ -65,11 +65,9 @@ pub fn jira_account_for(base_url: &str) -> String {
     format!("jira:{base_url}")
 }
 
-// `set`/`delete` are the write side of the Jira token. The HTTP client only
-// reads (`get_jira_token`); the Tauri `set_jira_token`/`clear_jira_token`
-// commands that call these are deferred to the UI slice. Allow dead_code so
-// the building blocks ship now under clippy -D warnings without a stub command.
-#[allow(dead_code)]
+// `set`/`delete` are the write side of the Jira token, called by the Tauri
+// `set_jira_token`/`clear_jira_token` commands. The HTTP client only reads
+// (`get_jira_token`).
 pub fn set_jira_token(base_url: &str, token: &str) -> Result<()> {
     set_password(&jira_account_for(base_url), token)
 }
@@ -78,7 +76,6 @@ pub fn get_jira_token(base_url: &str) -> Result<String> {
     get_password(&jira_account_for(base_url))
 }
 
-#[allow(dead_code)]
 pub fn delete_jira_token(base_url: &str) -> Result<()> {
     delete_password(&jira_account_for(base_url))
 }
