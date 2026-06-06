@@ -666,6 +666,28 @@
           </div>
         </section>
 
+        <!-- Qualidade — contrato de qualidade por projeto (Project.quality).
+             Lista de checks {id,name,cmd,required,required_if_changed[]} com
+             adicionar/remover/reordenar. Persistido pelo Save do modal via
+             save_config. As linhas são montadas em JS (renderQualityChecks). -->
+        <section class="modal-section" id="project-quality-section" hidden>
+          <div class="section-head">
+            <h3 data-i18n="settings-quality-title">Qualidade</h3>
+            <button
+              type="button"
+              class="btn btn-sm btn-primary"
+              id="btn-quality-add"
+              data-i18n="settings-quality-add-check"
+            >Adicionar check</button>
+          </div>
+          <p class="modal-hint" data-i18n="settings-quality-hint">
+            Checks que o agente roda e reporta ao concluir.
+          </p>
+          <ul class="quality-checks" id="project-quality-list"></ul>
+          <span class="modal-status" id="project-quality-empty" data-i18n="settings-quality-empty" hidden>Nenhum check definido.</span>
+          <div class="modal-status" id="project-quality-status" aria-live="polite"></div>
+        </section>
+
         <!-- Memória compartilhada do projeto (T-34). Escopada ao projeto
              selecionado acima. O usuário é o curador: edita itens, aprova
              ops de reavaliação e dispara o agente de reeval. -->
@@ -860,6 +882,16 @@
           </p>
           <ul class="learnings-list" id="task-learnings-list"></ul>
           <span class="modal-status" id="task-learnings-empty" data-i18n="task-learnings-empty" hidden>Nenhum aprendizado sugerido.</span>
+        </fieldset>
+
+        <!-- Aba "Revisão" — visível só quando a task tem um pacote de
+             revisão (get_review_package). Estado de evidência, checks,
+             riscos, diff por intenção (carregado sob demanda) e ações de
+             aprovação. Todo texto vindo do agente/repo é renderizado via
+             textContent; o conteúdo é montado em JS (loadReview). -->
+        <fieldset class="review-section" id="task-review-section" hidden>
+          <legend data-i18n="review-tab">Revisão</legend>
+          <div id="task-review-body" class="review-body"></div>
         </fieldset>
 
         <footer class="modal-footer">

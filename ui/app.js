@@ -44,6 +44,9 @@ let _guidedToFirstProject = false;
 // task_id → task-run record from list_task_runs. Used to mark cards
 // that have a saved conversation so the user knows "click ▶ = resume".
 let cachedTaskRuns = {};
+// task_id → latest evidence_state, from a single list_review_states call
+// (no N+1). Feeds the small evidence dot on cards awaiting review.
+let cachedReviewStates = {};
 // Estado the currently dragged card started in. Set on dragstart, read
 // on drop to tell a within-column reorder from a cross-column move (so
 // we only call set_estado when the column actually changed).
@@ -55,13 +58,15 @@ async function renderBoard() {
   let mapping = {};
   let cfg = null;
   let runs = {};
+  let reviewStates = {};
   try {
-    [tasks, ideias, mapping, cfg, runs] = await Promise.all([
+    [tasks, ideias, mapping, cfg, runs, reviewStates] = await Promise.all([
       invoke("list_tasks", { estado: null }),
       invoke("list_ideias").catch(() => []),
       invoke("list_task_projects"),
       invoke("get_config"),
       invoke("list_task_runs").catch(() => ({})),
+      invoke("list_review_states").catch(() => ({})),
     ]);
   } catch (e) {
     setStatus(`error: ${e}`);
@@ -69,6 +74,7 @@ async function renderBoard() {
   }
   cachedTaskProjects = mapping ?? {};
   cachedTaskRuns = runs ?? {};
+  cachedReviewStates = reviewStates ?? {};
   cachedTasksById = Object.fromEntries((tasks ?? []).map((task) => [task.id, task]));
   cachedActiveProject = cfg?.active_project_id ?? null;
   const colorMap = {};
@@ -164,6 +170,12 @@ function estadoLabel(estado) {
   return t(`estado-${String(estado).replaceAll("_", "-")}`) || estado;
 }
 
+// Localized label for an evidence_state (review package). Mirrors the
+// snake_case wire variants of EvidenceState in src-tauri/src/review/mod.rs.
+function evidenceStateLabel(state) {
+  return t(`review-state-${String(state).replaceAll("_", "-")}`) || state;
+}
+
 function makeCard(task) {
   const card = document.createElement("div");
   card.className = "card";
@@ -252,6 +264,18 @@ function makeCard(task) {
       ? blockers.pending.join("; ")
       : t("card-unblocked-title") || "Unblocked";
     card.append(blockerBadge);
+  }
+
+  // Evidence dot — a small colored dot reflecting the latest review
+  // package's evidence_state, fed by the batched list_review_states call
+  // (no per-card fetch). Shown only for tasks awaiting review.
+  const evidenceState = cachedReviewStates[task.id];
+  if (evidenceState && task.estado === "aguardando_revisao") {
+    const dot = document.createElement("span");
+    dot.className = `card-evidence card-evidence--${evidenceState}`;
+    dot.title = evidenceStateLabel(evidenceState);
+    dot.setAttribute("aria-label", evidenceStateLabel(evidenceState));
+    card.append(dot);
   }
 
   // Branch badge — shown when the task is associated with a git branch

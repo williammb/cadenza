@@ -23,7 +23,7 @@ use uuid::Uuid;
 
 use super::{
     DecisaoRegistro, Estado, Ideia, IdeiaStatus, MemoryItem, MemorySuggestion, NewProposta,
-    Proposta, Repository, Result, StoreError, SuggestionKind, Task,
+    PackageStatus, Proposta, Repository, Result, ReviewPackage, StoreError, SuggestionKind, Task,
 };
 
 /// Embedded migrations from `src-tauri/migrations/`. Runs every startup
@@ -171,6 +171,44 @@ fn memory_suggestion_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<MemorySug
         criado_em: row.try_get("criado_em").map_err(map_sqlx)?,
         kind,
     })
+}
+
+/// Canonical snake_case string for a package's lifecycle status — the value
+/// stored in the `status` column (matches the CHECK in 004_reviews.sql and
+/// the `serde(rename_all = "snake_case")` wire form).
+fn package_status_as_str(s: PackageStatus) -> &'static str {
+    match s {
+        PackageStatus::Pending => "pending",
+        PackageStatus::Superseded => "superseded",
+        PackageStatus::Aprovado => "aprovado",
+        PackageStatus::AlteracoesSolicitadas => "alteracoes_solicitadas",
+    }
+}
+
+fn package_status_parse(s: &str) -> Result<PackageStatus> {
+    match s {
+        "pending" => Ok(PackageStatus::Pending),
+        "superseded" => Ok(PackageStatus::Superseded),
+        "aprovado" => Ok(PackageStatus::Aprovado),
+        "alteracoes_solicitadas" => Ok(PackageStatus::AlteracoesSolicitadas),
+        other => Err(StoreError::BadData(format!(
+            "unknown package status: {other}"
+        ))),
+    }
+}
+
+/// Reconstruct the package from its JSON `payload`, then overlay the
+/// authoritative column values (`status` is the queryable source of truth
+/// for lifecycle, so a supersede UPDATE doesn't require rewriting the blob).
+fn review_package_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<ReviewPackage> {
+    let payload: String = row.try_get("payload").map_err(map_sqlx)?;
+    let mut pkg: ReviewPackage = serde_json::from_str(&payload)
+        .map_err(|e| StoreError::BadData(format!("bad review package payload: {e}")))?;
+    let status: String = row.try_get("status").map_err(map_sqlx)?;
+    pkg.status = package_status_parse(&status)?;
+    let attempt: i64 = row.try_get("attempt").map_err(map_sqlx)?;
+    pkg.attempt = attempt as u32;
+    Ok(pkg)
 }
 
 #[async_trait]
@@ -669,6 +707,266 @@ impl Repository for SqliteRepository {
             .map_err(map_sqlx)?;
         rows.iter().map(memory_suggestion_from_row).collect()
     }
+
+    // ─── review packages ───────────────────────────────────────────
+
+    async fn list_review_packages(&self, task_id: &str) -> Result<Vec<ReviewPackage>> {
+        let rows = sqlx::query("SELECT * FROM review_packages WHERE task_id = ?1 ORDER BY attempt")
+            .bind(task_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        rows.iter().map(review_package_from_row).collect()
+    }
+
+    async fn latest_review_package(&self, task_id: &str) -> Result<Option<ReviewPackage>> {
+        let row = sqlx::query(
+            "SELECT * FROM review_packages WHERE task_id = ?1 ORDER BY attempt DESC LIMIT 1",
+        )
+        .bind(task_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => Ok(Some(review_package_from_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Single transaction: dedup-check → MAX(attempt)+1 → supersede priors →
+    /// insert. Re-running the same `(task_id, idempotency_key)` returns the
+    /// stored row unchanged (no-op); a concurrent racer that won the UNIQUE
+    /// constraint is re-read.
+    async fn upsert_review_package(&self, pkg: &ReviewPackage) -> Result<ReviewPackage> {
+        super::validate_idempotency_key(&pkg.idempotency_key)?;
+        let now = now_ms();
+        let mut tx = self.pool.begin().await.map_err(map_sqlx)?;
+
+        if let Some(row) =
+            sqlx::query("SELECT * FROM review_packages WHERE task_id = ?1 AND idempotency_key = ?2")
+                .bind(&pkg.task_id)
+                .bind(&pkg.idempotency_key)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(map_sqlx)?
+        {
+            tx.commit().await.map_err(map_sqlx)?;
+            return review_package_from_row(&row);
+        }
+
+        let next: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(attempt), 0) + 1 FROM review_packages WHERE task_id = ?1",
+        )
+        .bind(&pkg.task_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        // Supersede every prior Pending attempt.
+        sqlx::query(
+            "UPDATE review_packages SET status = 'superseded'
+             WHERE task_id = ?1 AND status = 'pending'",
+        )
+        .bind(&pkg.task_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        let mut stored = pkg.clone();
+        stored.attempt = next as u32;
+        stored.status = PackageStatus::Pending;
+        let payload =
+            serde_json::to_string(&stored).map_err(|e| StoreError::BadData(e.to_string()))?;
+
+        let res = sqlx::query(
+            "INSERT INTO review_packages
+                (task_id, attempt, idempotency_key, status, payload, created_at_ms)
+             VALUES (?1, ?2, ?3, 'pending', ?4, ?5)",
+        )
+        .bind(&stored.task_id)
+        .bind(next)
+        .bind(&stored.idempotency_key)
+        .bind(&payload)
+        .bind(now)
+        .execute(&mut *tx)
+        .await;
+
+        match res {
+            Ok(_) => {
+                tx.commit().await.map_err(map_sqlx)?;
+                Ok(stored)
+            }
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+                tx.rollback().await.ok();
+                let row = sqlx::query(
+                    "SELECT * FROM review_packages WHERE task_id = ?1 AND idempotency_key = ?2",
+                )
+                .bind(&pkg.task_id)
+                .bind(&pkg.idempotency_key)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(map_sqlx)?;
+                review_package_from_row(&row)
+            }
+            Err(e) => {
+                tx.rollback().await.ok();
+                Err(map_sqlx(e))
+            }
+        }
+    }
+
+    async fn mark_packages_superseded(&self, task_id: &str, except_attempt: u32) -> Result<()> {
+        sqlx::query(
+            "UPDATE review_packages SET status = 'superseded'
+             WHERE task_id = ?1 AND attempt <> ?2 AND status = 'pending'",
+        )
+        .bind(task_id)
+        .bind(except_attempt as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn set_package_decision(
+        &self,
+        task_id: &str,
+        attempt: u32,
+        status: PackageStatus,
+    ) -> Result<()> {
+        let res = sqlx::query(
+            "UPDATE review_packages SET status = ?1 WHERE task_id = ?2 AND attempt = ?3",
+        )
+        .bind(package_status_as_str(status))
+        .bind(task_id)
+        .bind(attempt as i64)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound(format!("{task_id}.a{attempt}")));
+        }
+        Ok(())
+    }
+
+    async fn delete_review_packages(&self, task_id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM review_packages WHERE task_id = ?1")
+            .bind(task_id)
+            .execute(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn all_review_packages(&self) -> Result<Vec<ReviewPackage>> {
+        let rows = sqlx::query("SELECT * FROM review_packages ORDER BY task_id, attempt")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        rows.iter().map(review_package_from_row).collect()
+    }
+
+    /// Single transaction (PLAN §C.9): dedup-check the package key →
+    /// allocate `attempt` → supersede priors → insert → append the log line
+    /// (deduped against the body's last line) → flip estado. Re-running the
+    /// same key short-circuits to the stored package with no `.md` mutation.
+    async fn done_with_review_package(
+        &self,
+        pkg: &ReviewPackage,
+        log_line: Option<&str>,
+        target_estado: Option<Estado>,
+    ) -> Result<ReviewPackage> {
+        super::validate_idempotency_key(&pkg.idempotency_key)?;
+        let now = now_ms();
+        let mut tx = self.pool.begin().await.map_err(map_sqlx)?;
+
+        // Idempotent no-op: the key already produced a package.
+        if let Some(row) =
+            sqlx::query("SELECT * FROM review_packages WHERE task_id = ?1 AND idempotency_key = ?2")
+                .bind(&pkg.task_id)
+                .bind(&pkg.idempotency_key)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(map_sqlx)?
+        {
+            tx.commit().await.map_err(map_sqlx)?;
+            return review_package_from_row(&row);
+        }
+
+        let next: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(attempt), 0) + 1 FROM review_packages WHERE task_id = ?1",
+        )
+        .bind(&pkg.task_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        sqlx::query(
+            "UPDATE review_packages SET status = 'superseded'
+             WHERE task_id = ?1 AND status = 'pending'",
+        )
+        .bind(&pkg.task_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        let mut stored = pkg.clone();
+        stored.attempt = next as u32;
+        stored.status = PackageStatus::Pending;
+        let payload =
+            serde_json::to_string(&stored).map_err(|e| StoreError::BadData(e.to_string()))?;
+
+        sqlx::query(
+            "INSERT INTO review_packages
+                (task_id, attempt, idempotency_key, status, payload, created_at_ms)
+             VALUES (?1, ?2, ?3, 'pending', ?4, ?5)",
+        )
+        .bind(&stored.task_id)
+        .bind(next)
+        .bind(&stored.idempotency_key)
+        .bind(&payload)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        // Read the task body once for the log dedup + the NotFound guard.
+        let body_row = sqlx::query("SELECT body FROM tasks WHERE id = ?1")
+            .bind(&stored.task_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_sqlx)?
+            .ok_or_else(|| StoreError::NotFound(stored.task_id.clone()))?;
+        let mut body: String = body_row.try_get("body").map_err(map_sqlx)?;
+
+        if let Some(line) = log_line {
+            if !body_ends_with_line(&body, line) {
+                body.push_str(line);
+                if !line.ends_with('\n') {
+                    body.push('\n');
+                }
+            }
+        }
+        let estado = target_estado.unwrap_or(Estado::AguardandoRevisao);
+        sqlx::query("UPDATE tasks SET body = ?1, estado = ?2, updated_at_ms = ?3 WHERE id = ?4")
+            .bind(&body)
+            .bind(estado.as_str())
+            .bind(now)
+            .bind(&stored.task_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_sqlx)?;
+
+        tx.commit().await.map_err(map_sqlx)?;
+        Ok(stored)
+    }
+}
+
+/// True when `body`'s last non-empty line equals `line` (trailing newline
+/// ignored). Shared dedup for the atomic `done` log append so a retry can't
+/// stack a second `[done request]` line.
+fn body_ends_with_line(body: &str, line: &str) -> bool {
+    body.lines().last().map(str::trim_end) == Some(line.trim_end())
 }
 
 #[cfg(test)]

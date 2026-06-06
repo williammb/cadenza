@@ -22,8 +22,14 @@ mod ideias_inner;
 mod memory_inner;
 pub mod migrate;
 mod postgres;
+mod review_inner;
 mod sqlite;
 mod triage_inner;
+
+// Review-package types live in the app crate (not `cadenza_proto`): the
+// CLI never reads a `ReviewPackage`. Re-export from `crate::review` so
+// the backends + call sites can name them through `store::`.
+pub use crate::review::{PackageStatus, ReviewPackage};
 
 pub use files::FileRepository;
 pub use postgres::{PgConnectionParams, PgRepository, PgSslModeChoice};
@@ -93,6 +99,55 @@ pub fn validate_id(id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Reject idempotency keys that are unsafe to embed in a path component or
+/// that exceed the wire contract (PLAN §B.6, §C.9). Even though the raw key
+/// is never used as a filename on the file backend (it is hashed first), it
+/// is validated up front on every backend for parity — exactly like
+/// [`validate_id`].
+///
+/// Rules: non-empty, ≤ 128 bytes, charset restricted to `[A-Za-z0-9._-]`
+/// (no path separators, control chars, NUL, or `..`), and Windows-reserved
+/// device stems (`CON`, `PRN`, `AUX`, `NUL`, `COM1..9`, `LPT1..9`) rejected
+/// case-insensitively. Violations map to [`StoreError::BadData`], which the
+/// wire handler surfaces as CLI exit 2 (`bad_args`).
+pub fn validate_idempotency_key(key: &str) -> Result<()> {
+    if key.is_empty() {
+        return Err(StoreError::BadData(
+            "idempotency_key must not be empty".into(),
+        ));
+    }
+    if key.len() > 128 {
+        return Err(StoreError::BadData(format!(
+            "idempotency_key too long: {} bytes",
+            key.len()
+        )));
+    }
+    if !key
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    {
+        return Err(StoreError::BadData(format!(
+            "idempotency_key has invalid characters: {key}"
+        )));
+    }
+    if key == ".." || key == "." {
+        return Err(StoreError::BadData(format!(
+            "idempotency_key has invalid value: {key}"
+        )));
+    }
+    let upper = key.to_ascii_uppercase();
+    let reserved = matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || ((upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.len() == 4
+            && matches!(upper.as_bytes()[3], b'1'..=b'9'));
+    if reserved {
+        return Err(StoreError::BadData(format!(
+            "idempotency_key is a reserved device name: {key}"
+        )));
+    }
+    Ok(())
+}
+
 /// Backend-agnostic data layer. `Send + Sync` so it can sit inside
 /// `Arc<dyn Repository>` in the Tauri state.
 #[async_trait]
@@ -151,6 +206,85 @@ pub trait Repository: Send + Sync {
     /// `project_id`).
     async fn all_memory_items(&self) -> Result<Vec<(String, MemoryItem)>>;
     async fn all_memory_suggestions(&self) -> Result<Vec<MemorySuggestion>>;
+
+    // ─── review packages (PLAN §C.9, §F.17, §F.18) ─────────────────
+    /// Every package for a task, ordered by `attempt` ascending. Empty
+    /// when the task never had a `done` attempt; the latest is the last
+    /// element.
+    async fn list_review_packages(&self, task_id: &str) -> Result<Vec<ReviewPackage>>;
+
+    /// Latest (highest-`attempt`) package for a task, or `None`. Default
+    /// impl in terms of [`list_review_packages`]; the SQL backends
+    /// override it with an indexed `ORDER BY attempt DESC LIMIT 1`.
+    ///
+    /// Consumed by the `done` / `review_decision` orchestration and the
+    /// `get_review_package` command (separate workflows); allow until wired.
+    #[allow(dead_code)]
+    async fn latest_review_package(&self, task_id: &str) -> Result<Option<ReviewPackage>> {
+        Ok(self.list_review_packages(task_id).await?.pop())
+    }
+
+    /// Idempotent upsert keyed on `(task_id, idempotency_key)`:
+    /// - If a package with this key already exists, the stored package is
+    ///   returned UNCHANGED (no-op) — the resumability contract (PLAN §C.9).
+    /// - Otherwise `attempt = max(existing attempts) + 1` is allocated by
+    ///   the backend (the `attempt` field of `pkg` is ignored), all prior
+    ///   attempts of the task are marked `Superseded`, and the new package
+    ///   is inserted. Attempt allocation + supersede + insert is ONE atomic
+    ///   unit per backend (single tx for SQL; journal for files).
+    async fn upsert_review_package(&self, pkg: &ReviewPackage) -> Result<ReviewPackage>;
+
+    /// Mark every attempt of a task except `except_attempt` as
+    /// [`PackageStatus::Superseded`]. Idempotent and best-effort: attempts
+    /// already decided are left untouched only by the upsert path; this
+    /// bulk call always wins, so callers pass the just-inserted attempt to
+    /// preserve it. Used by the `done` orchestration after an upsert
+    /// (separate workflow); allow until wired.
+    #[allow(dead_code)]
+    async fn mark_packages_superseded(&self, task_id: &str, except_attempt: u32) -> Result<()>;
+
+    /// Record a reviewer decision (`status`) on one `(task_id, attempt)`
+    /// package (PLAN §F.18). [`StoreError::NotFound`] when absent.
+    async fn set_package_decision(
+        &self,
+        task_id: &str,
+        attempt: u32,
+        status: PackageStatus,
+    ) -> Result<()>;
+
+    /// Drop every package for a task — the `delete_task` cascade
+    /// (PLAN §F.17). Idempotent: a task with zero packages is `Ok(())`.
+    /// On the file backend this also removes any dangling `done-*.journal`
+    /// belonging to the task.
+    async fn delete_review_packages(&self, task_id: &str) -> Result<()>;
+
+    /// Migration dump: every package across all tasks, ordered by
+    /// `(task_id, attempt)` so the destination re-derives the same attempt
+    /// sequence (PLAN §F.17 `copy_all`).
+    async fn all_review_packages(&self) -> Result<Vec<ReviewPackage>>;
+
+    /// Atomic `done` (PLAN §C.9): fold the package upsert (attempt
+    /// allocation + supersede priors), the `[done request]` log append, and
+    /// the estado flip into ONE crash-safe unit. The bare
+    /// [`upsert_review_package`](Repository::upsert_review_package) is
+    /// sidecar-only and does NOT touch the task `.md`/row; this method is the
+    /// one the wire `done` handler calls so the three writes never split.
+    ///
+    /// - File backend: the write-ahead journal (`prepare_done` →
+    ///   `commit_done`) — a crash mid-`done` is replayed at startup.
+    /// - SQL backends: a single transaction.
+    ///
+    /// `log_line`, when `Some`, is appended verbatim to the task body (with
+    /// dedup against an identical trailing line so a journal/transaction
+    /// replay can't double it). `target_estado`, when `Some`, sets the task
+    /// estado. Re-running the same `(task_id, idempotency_key)` is a no-op
+    /// that returns the stored package without re-appending/re-flipping.
+    async fn done_with_review_package(
+        &self,
+        pkg: &ReviewPackage,
+        log_line: Option<&str>,
+        target_estado: Option<Estado>,
+    ) -> Result<ReviewPackage>;
 }
 
 // ─── error conversions from the legacy sync engines ────────────────
@@ -188,6 +322,19 @@ impl From<ideias_inner::IdeiaError> for StoreError {
             Inner::AlreadyExists(id) => StoreError::AlreadyExists(id),
             Inner::Io(e) => StoreError::Io(e),
             Inner::Json(e) => StoreError::BadData(e.to_string()),
+        }
+    }
+}
+
+impl From<review_inner::ReviewError> for StoreError {
+    fn from(e: review_inner::ReviewError) -> Self {
+        use review_inner::ReviewError as Inner;
+        match e {
+            Inner::NotFound(id) => StoreError::NotFound(id),
+            Inner::BadData(s) => StoreError::BadData(s),
+            Inner::Io(e) => StoreError::Io(e),
+            Inner::Json(e) => StoreError::BadData(e.to_string()),
+            Inner::Other(e) => StoreError::Other(e.to_string()),
         }
     }
 }

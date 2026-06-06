@@ -13,7 +13,7 @@ use std::fs;
 use std::path::Path;
 use tracing::info;
 
-use super::{Repository, Result, StoreError};
+use super::{PackageStatus, Repository, Result, StoreError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -136,6 +136,34 @@ pub async fn copy_all(from: &dyn Repository, to: &dyn Repository) -> Result<Migr
         }
     }
 
+    // Review packages (PLAN §F.17). Copied in (task_id, attempt) order so
+    // the destination re-derives the same 1..N attempt sequence; the
+    // idempotency_key makes a re-run after a partial migration a no-op (the
+    // destination upsert returns the stored row). `status` is recomputed at
+    // the destination by the supersede-priors step, so a terminal decision
+    // (aprovado / alteracoes_solicitadas) is re-applied explicitly to avoid
+    // silently dropping an approval across a backend switch.
+    for pkg in from.all_review_packages().await? {
+        let already = to
+            .list_review_packages(&pkg.task_id)
+            .await?
+            .into_iter()
+            .any(|p| p.idempotency_key == pkg.idempotency_key);
+        let copied = to.upsert_review_package(&pkg).await?;
+        if already {
+            stats.review_packages_skipped += 1;
+        } else {
+            stats.review_packages_copied += 1;
+            if matches!(
+                pkg.status,
+                PackageStatus::Aprovado | PackageStatus::AlteracoesSolicitadas
+            ) {
+                to.set_package_decision(&pkg.task_id, copied.attempt, pkg.status)
+                    .await?;
+            }
+        }
+    }
+
     Ok(stats)
 }
 
@@ -150,6 +178,8 @@ pub struct MigrationStats {
     pub memory_items_skipped: usize,
     pub memory_suggestions_copied: usize,
     pub memory_suggestions_skipped: usize,
+    pub review_packages_copied: usize,
+    pub review_packages_skipped: usize,
 }
 
 /// Run a migration `from → to` if it hasn't been recorded yet.
@@ -290,6 +320,75 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn copies_review_packages_files_to_sqlite() {
+        use crate::review::{EvidenceState, PackageStatus, ReviewPackage, RISK_HEURISTIC_VERSION};
+        let dir = TempDir::new().unwrap();
+        let files = FileRepository::new(dir.path()).unwrap();
+        // The FK on the SQLite table requires the task to exist first.
+        files.create_task(&t("T-1", Estado::Fazendo)).await.unwrap();
+
+        let mk = |key: &str| ReviewPackage {
+            task_id: "T-1".into(),
+            attempt: 0,
+            idempotency_key: key.into(),
+            status: PackageStatus::Pending,
+            checks: vec![],
+            groups: vec![],
+            open_questions: vec![],
+            summary: "s".into(),
+            changed_files: vec![],
+            files_added: 0,
+            files_modified: 0,
+            files_deleted: 0,
+            risks: vec![],
+            secret_matches: vec![],
+            evidence_state: EvidenceState::NoValidation,
+            needs_focused_human_review: false,
+            validation_scope_unknown: false,
+            base_sha: None,
+            head_sha: None,
+            worktree_fingerprint: None,
+            contract_version: None,
+            reported_contract_version: None,
+            risk_heuristic_version: RISK_HEURISTIC_VERSION,
+            created_at_ms: 1,
+            collection_duration_ms: 0,
+            collection_errors: vec![],
+            truncated: false,
+            uncommitted_patch: None,
+        };
+        files.upsert_review_package(&mk("k1")).await.unwrap();
+        files.upsert_review_package(&mk("k2")).await.unwrap();
+        // Approve the latest so the decision is carried across the copy.
+        files
+            .set_package_decision("T-1", 2, PackageStatus::Aprovado)
+            .await
+            .unwrap();
+
+        let sqlite = SqliteRepository::open(&dir.path().join("cadenza.db"))
+            .await
+            .unwrap();
+        let stats = copy_all(&files, &sqlite).await.unwrap();
+        assert_eq!(stats.review_packages_copied, 2);
+
+        let listed = sqlite.list_review_packages("T-1").await.unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].attempt, 1);
+        assert_eq!(listed[0].status, PackageStatus::Superseded);
+        assert_eq!(listed[1].attempt, 2);
+        assert_eq!(listed[1].status, PackageStatus::Aprovado);
+
+        // Re-run after the data is across: keys already present -> skipped.
+        let again = copy_all(&files, &sqlite).await.unwrap();
+        assert_eq!(again.review_packages_copied, 0);
+        assert_eq!(again.review_packages_skipped, 2);
+
+        // delete_task cascade removes the packages.
+        sqlite.delete_review_packages("T-1").await.unwrap();
+        assert!(sqlite.list_review_packages("T-1").await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -1999,6 +1999,217 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 
+/* ─────────────── Revisão (review package) ─────────────── */
+
+.review-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.review-subhead {
+  margin: 0.6rem 0 0.1rem;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.review-state-row,
+.review-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+}
+.review-chip {
+  font-family: var(--font-feature);
+  font-size: 0.7rem;
+  line-height: 1;
+  padding: 0.25rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--card-border-strong);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.review-chip--ok {
+  background: var(--ok-soft);
+  color: var(--ok);
+}
+.review-chip--bad {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.review-chip--warn {
+  background: var(--warn-bg);
+  color: var(--warn-fg);
+}
+.review-chip--info {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.review-summary {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.review-counts,
+.review-secret {
+  margin: 0;
+}
+
+.review-checks-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+.review-checks-table th,
+.review-checks-table td {
+  text-align: left;
+  padding: 0.3rem 0.4rem;
+  border-bottom: 1px solid var(--hairline);
+  vertical-align: top;
+}
+.review-checks-table th {
+  font-weight: 600;
+  color: var(--muted);
+}
+.review-exit-ok {
+  color: var(--ok);
+  font-family: var(--mono, monospace);
+}
+.review-exit-bad {
+  color: var(--danger);
+  font-family: var(--mono, monospace);
+}
+.review-log-excerpt,
+.review-diff-body {
+  margin: 0;
+  max-height: 14rem;
+  overflow: auto;
+  white-space: pre;
+  font-family: var(--mono, monospace);
+  font-size: 0.74rem;
+  background: var(--bg-soft, transparent);
+  padding: 0.35rem 0.45rem;
+  border-radius: 6px;
+}
+.review-log-path {
+  display: block;
+  margin-top: 0.2rem;
+  word-break: break-all;
+}
+
+.review-questions {
+  margin: 0.2rem 0;
+  padding-left: 1.2rem;
+}
+.review-questions li {
+  word-break: break-word;
+}
+
+.review-diff-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.review-diff-group > summary,
+.review-diff-file > summary {
+  cursor: pointer;
+  font-family: var(--font-feature);
+  padding: 0.25rem 0;
+}
+.review-diff-group {
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  padding: 0.35rem 0.5rem;
+}
+.review-diff-file {
+  margin: 0.25rem 0 0.25rem 0.5rem;
+}
+.review-diff-file > summary {
+  font-size: 0.78rem;
+  word-break: break-all;
+}
+
+.review-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-top: 0.6rem;
+  border-top: 1px solid var(--hairline);
+  padding-top: 0.6rem;
+}
+.review-note {
+  width: 100%;
+  resize: vertical;
+}
+.review-action-buttons {
+  display: flex;
+  gap: 0.45rem;
+  justify-content: flex-end;
+}
+
+/* Board card: small evidence dot (review package state). */
+.card-evidence {
+  align-self: flex-start;
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--card-border-strong);
+  background: var(--accent);
+}
+.card-evidence--passed {
+  background: var(--ok);
+}
+.card-evidence--failed {
+  background: var(--danger);
+}
+.card-evidence--partial,
+.card-evidence--contract_changed {
+  background: var(--warn-fg);
+}
+.card-evidence--no_validation,
+.card-evidence--contract_unavailable {
+  background: var(--muted);
+}
+
+/* ─────────────── Configurações → Qualidade ─────────────── */
+
+.quality-checks {
+  list-style: none;
+  margin: 0.3rem 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.quality-check {
+  display: flex;
+  gap: 0.5rem;
+  align-items: flex-start;
+  padding: 0.5rem;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--bg-soft, transparent);
+}
+.quality-check-grid {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.4rem;
+}
+.quality-field {
+  min-width: 0;
+}
+.quality-required {
+  grid-column: 1 / -1;
+}
+.quality-check-actions {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
 /* ─────────────── Reduce motion ─────────────── */
 
 @media (prefers-reduced-motion: reduce) {

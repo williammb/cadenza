@@ -61,6 +61,13 @@ pub const OP_LIST_MEMORY: &str = "list_memory";
 pub const OP_SUGGEST_LEARNING: &str = "suggest_learning";
 pub const OP_REVISE_MEMORY: &str = "revise_memory";
 
+// Review package (PLAN §B/§E). `quality` returns the per-project contract;
+// `review_decision` is the human approve/request-changes op. Evidence on
+// `done` reuses OP_DONE with extended args (see done mod). These ops gate on
+// MAX_PROTOCOL = 3 (see lib.rs); negotiation per PLAN §B.6.
+pub const OP_QUALITY: &str = "quality";
+pub const OP_REVIEW_DECISION: &str = "review_decision";
+
 // ───────── event names
 
 pub const EV_PROPOSTA_PENDENTE: &str = "proposta_pendente";
@@ -180,10 +187,133 @@ pub mod await_decision {
 pub mod done {
     use serde::{Deserialize, Serialize};
 
+    /// `done` args. Backward compatible: `task_id` + `summary` stay
+    /// positional/required, so an old CLI sending `{task_id, summary}`
+    /// still deserializes into this struct (new fields are
+    /// `#[serde(default)]` ⇒ `None`/absent) and a v3 app produces a
+    /// `no_validation` package. The evidence payload lives in `proto`
+    /// because it crosses the socket (CLI → app).
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Args {
         pub task_id: String,
+        /// Human summary — positional, unchanged. Backward compatible with
+        /// the pre-evidence `{task_id, summary}` shape.
         pub summary: String,
+        /// Optional validation evidence (PLAN §B.6). Absent ⇒ no_validation.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub evidence: Option<Evidence>,
+        /// Client-generated key forming the done-attempt identity (PLAN §C.9),
+        /// mirroring `propose`'s `idempotency_key`. Wire arg, NOT inside
+        /// `evidence`. Validated app-side (bounded len, restricted charset).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub idempotency_key: Option<String>,
+    }
+
+    /// Agent-reported evidence (PLAN §B.6 evidence.json schema). Caps are
+    /// enforced in the CLI AND re-enforced app-side (PLAN §B.7, §C.10):
+    /// ≤ 64 checks, ≤ 64 groups, label/path/question ≤ 1 KiB,
+    /// log_excerpt ≤ 8 KiB, whole file ≤ 256 KiB.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct Evidence {
+        /// Contract hash the agent validated against ("sha256:…"); compared
+        /// to the live contract for drift (→ contract_changed, PLAN §C.11.d).
+        #[serde(default)]
+        pub contract_version: Option<String>,
+        #[serde(default)]
+        pub checks: Vec<EvidenceCheck>,
+        #[serde(default)]
+        pub groups: Vec<EvidenceGroup>,
+        #[serde(default)]
+        pub open_questions: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct EvidenceCheck {
+        pub id: String,
+        pub exit: i32,
+        #[serde(default)]
+        pub log_excerpt: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub log_path: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct EvidenceGroup {
+        pub label: String,
+        #[serde(default)]
+        pub files: Vec<String>,
+    }
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        pub ok: bool,
+    }
+}
+
+// ───────── quality (PLAN §B.5)
+
+pub mod quality {
+    use serde::{Deserialize, Serialize};
+
+    /// Resolve order app-side: explicit `project` → `TASKAI_PROJECT_ID` /
+    /// `TASKAI_TASK_ID` env → app `active_project_id` (PLAN §B.5). The CLI
+    /// passes whatever it resolved locally; the app does the final resolution.
+    #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+    pub struct Args {
+        #[serde(default)]
+        pub task: Option<String>,
+        #[serde(default)]
+        pub project: Option<String>,
+    }
+
+    /// On resolution failure the app returns an explicit
+    /// `ErrorBody::new("unknown_project", …)` (CLI exit 30). An **empty
+    /// `checks` list** is reserved for "resolved project has no profile"
+    /// (→ `no_validation`); do not conflate the two.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Result {
+        /// Current contract hash ("sha256:…"). Echoed back by the agent in
+        /// `done` evidence so drift surfaces as `contract_changed`.
+        pub contract_version: String,
+        pub checks: Vec<Check>,
+    }
+
+    /// Wire view of a `QualityCheck` (the app's config struct stays in
+    /// src-tauri; this mirrors only the fields the agent needs). Same
+    /// app-vs-wire split as `ProjectInfo` vs `Project`.
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Check {
+        pub id: String,
+        pub name: String,
+        pub cmd: String,
+        #[serde(default)]
+        pub required: bool,
+        #[serde(default)]
+        pub required_if_changed: Vec<String>,
+    }
+}
+
+// ───────── review_decision (PLAN §E.16)
+
+pub mod review_decision {
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Clone, Serialize, Deserialize)]
+    pub struct Args {
+        pub task_id: String,
+        pub verdict: Verdict,
+        /// Note appended to the `[revisão] …` log line for both outcomes.
+        #[serde(default)]
+        pub note: Option<String>,
+    }
+
+    /// Reviewer outcome. `aprovado` → feito; `pedir_alteracoes` → fazendo
+    /// (PLAN §E.16). PT canonical on the wire, matching `Decisao`/`Estado`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+    #[serde(rename_all = "snake_case")]
+    pub enum Verdict {
+        Aprovado,
+        PedirAlteracoes,
     }
 
     #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -444,5 +574,80 @@ pub mod set_ideia_status {
     #[derive(Debug, Clone, Serialize, Deserialize)]
     pub struct Result {
         pub ok: bool,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn done_args_deserializes_legacy_summary_only() {
+        let v: done::Args = serde_json::from_str(r#"{"task_id":"T-1","summary":"hi"}"#).unwrap();
+        assert_eq!(v.task_id, "T-1");
+        assert_eq!(v.summary, "hi");
+        assert!(v.evidence.is_none());
+        assert!(v.idempotency_key.is_none());
+    }
+
+    #[test]
+    fn done_args_with_evidence_roundtrips() {
+        let args = done::Args {
+            task_id: "T-1".into(),
+            summary: "done".into(),
+            evidence: Some(done::Evidence {
+                contract_version: Some("sha256:00".into()),
+                checks: vec![done::EvidenceCheck {
+                    id: "clippy".into(),
+                    exit: 0,
+                    log_excerpt: "ok".into(),
+                    log_path: None,
+                }],
+                groups: vec![done::EvidenceGroup {
+                    label: "core".into(),
+                    files: vec!["src/lib.rs".into()],
+                }],
+                open_questions: vec!["why?".into()],
+            }),
+            idempotency_key: Some("k1".into()),
+        };
+        let json = serde_json::to_string(&args).unwrap();
+        let back: done::Args = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.idempotency_key.as_deref(), Some("k1"));
+        assert_eq!(back.evidence.unwrap().checks[0].id, "clippy");
+    }
+
+    #[test]
+    fn quality_result_roundtrips() {
+        let r = quality::Result {
+            contract_version: "sha256:ab".into(),
+            checks: vec![quality::Check {
+                id: "fmt".into(),
+                name: "Fmt".into(),
+                cmd: "cargo fmt".into(),
+                required: true,
+                required_if_changed: vec!["**/*.rs".into()],
+            }],
+        };
+        let json = serde_json::to_string(&r).unwrap();
+        let back: quality::Result = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.contract_version, "sha256:ab");
+        assert_eq!(back.checks[0].id, "fmt");
+    }
+
+    #[test]
+    fn review_decision_verdict_wire_forms() {
+        assert_eq!(
+            serde_json::to_string(&review_decision::Verdict::Aprovado).unwrap(),
+            "\"aprovado\""
+        );
+        assert_eq!(
+            serde_json::to_string(&review_decision::Verdict::PedirAlteracoes).unwrap(),
+            "\"pedir_alteracoes\""
+        );
+        let a: review_decision::Args =
+            serde_json::from_str(r#"{"task_id":"T-1","verdict":"pedir_alteracoes"}"#).unwrap();
+        assert_eq!(a.verdict, review_decision::Verdict::PedirAlteracoes);
+        assert!(a.note.is_none());
     }
 }

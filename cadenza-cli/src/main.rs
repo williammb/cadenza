@@ -80,8 +80,51 @@ enum Cmd {
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
     },
+    /// Print this project's quality contract — the checks the agent must
+    /// run before `done`. Resolution order app-side: `--project` → env
+    /// (`TASKAI_PROJECT_ID`/`CADENZA_PROJECT_ID`) → the app's active project.
+    /// `--task` is accepted for symmetry/future use; the app may resolve the
+    /// project from it. Unknown project ⇒ exit 30; resolved-but-no-profile ⇒
+    /// an empty check list (that is `no_validation`, not an error).
+    Quality {
+        /// Task id (optional; default $TASKAI_TASK_ID). Lets the app resolve
+        /// the project from the task when no project is given.
+        #[arg(long)]
+        task: Option<String>,
+        /// Project id (default $TASKAI_PROJECT_ID, fallback $CADENZA_PROJECT_ID).
+        #[arg(long)]
+        project: Option<String>,
+    },
     /// Request completion — the human still has the final word.
-    Done { task_id: String, summary: String },
+    ///
+    /// `done <task_id> <summary>` stays backward compatible. Pass
+    /// `--evidence <file.json>` to attach validation evidence (parsed and
+    /// capped locally; malformed ⇒ exit 2). `--evidence` requires a v3 app:
+    /// against an older app it exits 12 (protocol_mismatch) unless
+    /// `--legacy-done` is given, which sends the plain positional `done`.
+    /// `--idempotency-key` (or $CADENZA_IDEMPOTENCY_KEY) makes the request
+    /// resumable; the resolved key is echoed to stderr in all modes.
+    Done {
+        task_id: String,
+        /// Human summary (positional). May also be given via `--summary`.
+        #[arg(default_value = "")]
+        summary: String,
+        /// Validation evidence JSON (PLAN §B.6 schema). Requires a v3 app.
+        #[arg(long, value_name = "FILE")]
+        evidence: Option<PathBuf>,
+        /// Alias for the positional `summary` (takes precedence if both set).
+        #[arg(long = "summary", value_name = "TEXT")]
+        summary_flag: Option<String>,
+        /// Idempotency key for this done attempt (uuid v4 recommended).
+        /// Falls back to $CADENZA_IDEMPOTENCY_KEY then a fresh v4. Echoed to
+        /// stderr; included in `--json` output. Validated (exit 2 on bad key).
+        #[arg(long = "idempotency-key")]
+        idempotency_key: Option<String>,
+        /// When `--evidence` is set but the app is pre-v3, send the plain
+        /// positional `done` (drop evidence) instead of failing with exit 12.
+        #[arg(long = "legacy-done")]
+        legacy_done: bool,
+    },
     /// Save a task's refined plan. Used in plan mode: the agent interviews
     /// the human and persists the agreed plan. By default the plan is
     /// appended as a `## Plano` section, preserving the original
@@ -261,6 +304,12 @@ fn main() -> ExitCode {
                 eprintln!("error: {bt}");
                 return ExitCode::from(11);
             }
+            if let Some(ue) = e.downcast_ref::<UsageError>() {
+                // Bad usage (malformed evidence / invalid idempotency-key)
+                // mirrors clap's usage exit code.
+                eprintln!("error: {ue}");
+                return ExitCode::from(2);
+            }
             eprintln!("error: {e:#}");
             ExitCode::from(1)
         }
@@ -281,7 +330,9 @@ fn init_tracing(verbose: bool) {
 async fn run(cli: Cli) -> Result<()> {
     let token = read_token().map_err(|e| anyhow::Error::new(TokenError(e.to_string())))?;
     let mut client = Client::connect().await?;
-    let _ = client.hello(&token).await?;
+    // Capture the negotiated protocol version: `done --evidence` gates on it
+    // (PLAN §B.6 — evidence requires v3). Other commands ignore it.
+    let negotiated_protocol = client.hello(&token).await?.protocol;
 
     match cli.cmd {
         Cmd::List { estado } => cmd_list(&mut client, cli.json, estado).await?,
@@ -313,7 +364,28 @@ async fn run(cli: Cli) -> Result<()> {
             )
             .await?
         }
-        Cmd::Done { task_id, summary } => cmd_done(&mut client, cli.json, task_id, summary).await?,
+        Cmd::Quality { task, project } => cmd_quality(&mut client, cli.json, task, project).await?,
+        Cmd::Done {
+            task_id,
+            summary,
+            evidence,
+            summary_flag,
+            idempotency_key,
+            legacy_done,
+        } => {
+            cmd_done(
+                &mut client,
+                cli.json,
+                negotiated_protocol,
+                task_id,
+                summary,
+                summary_flag,
+                evidence,
+                idempotency_key,
+                legacy_done,
+            )
+            .await?
+        }
         Cmd::Plan {
             task_id,
             body,
@@ -507,16 +579,195 @@ async fn cmd_propose(
     Ok(())
 }
 
-async fn cmd_done(client: &mut Client, json: bool, task_id: String, summary: String) -> Result<()> {
+async fn cmd_quality(
+    client: &mut Client,
+    json: bool,
+    task: Option<String>,
+    project: Option<String>,
+) -> Result<()> {
+    // Resolve project locally when possible (explicit flag → env); fall back
+    // to None so the app resolves its active project (PLAN §B.5). `--task`
+    // defaults to $TASKAI_TASK_ID. Unlike `new-task`, no project here is NOT
+    // a hard CLI error — the app can still resolve via task or active project;
+    // an unknown project surfaces as the server's `unknown_project` diagnostic
+    // (exit 30), preserving the right exit code on resolution failure.
+    let project = project
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("TASKAI_PROJECT_ID").ok())
+        .or_else(|| std::env::var("CADENZA_PROJECT_ID").ok())
+        .filter(|s| !s.trim().is_empty());
+    let task = task
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("TASKAI_TASK_ID").ok())
+        .filter(|s| !s.trim().is_empty());
+
+    let result: ops::quality::Result = client
+        .request(ops::OP_QUALITY, ops::quality::Args { task, project })
+        .await?;
+
+    if json {
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        println!("contract: {}", result.contract_version);
+        if result.checks.is_empty() {
+            println!("(no quality checks configured)");
+        } else {
+            for c in &result.checks {
+                let req = if c.required { "required" } else { "optional" };
+                println!("{}\t[{}]\t{}\t{}", c.id, req, c.name, c.cmd);
+                if !c.required_if_changed.is_empty() {
+                    println!(
+                        "\trequired_if_changed: {}",
+                        c.required_if_changed.join(", ")
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Idempotency-key validation failed → exit 2 (bad usage). Maps to the clap
+/// usage exit code in `main` via this dedicated error type.
+#[derive(Debug)]
+struct UsageError(String);
+impl std::fmt::Display for UsageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+impl std::error::Error for UsageError {}
+
+#[allow(clippy::too_many_arguments)]
+async fn cmd_done(
+    client: &mut Client,
+    json: bool,
+    negotiated_protocol: u32,
+    task_id: String,
+    summary: String,
+    summary_flag: Option<String>,
+    evidence_path: Option<PathBuf>,
+    idempotency_key: Option<String>,
+    legacy_done: bool,
+) -> Result<()> {
+    // `--summary` flag wins over the positional when both are given.
+    let summary = summary_flag.unwrap_or(summary);
+
+    // Resolve key: --idempotency-key → $CADENZA_IDEMPOTENCY_KEY → fresh v4
+    // (mirror cmd_propose). A retried `done` only hits the server dedup path
+    // when the SAME key is passed, so crash-prone agents should mint one
+    // up-front. Validate with the rule shared (by duplication) with the app
+    // (PLAN §B.6); a bad key is a usage error (exit 2).
+    let idempotency_key = idempotency_key
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| std::env::var("CADENZA_IDEMPOTENCY_KEY").ok())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
+    if let Err(e) = aliases::validate_idempotency_key(&idempotency_key) {
+        return Err(anyhow::Error::new(UsageError(format!(
+            "invalid idempotency-key: {e}"
+        ))));
+    }
+    // Echo the resolved key to stderr in ALL modes so the agent can capture
+    // and reuse it on retry.
+    eprintln!("idempotency-key: {idempotency_key}");
+
+    // Parse + validate evidence locally if provided (PLAN §B.7). Malformed or
+    // over-cap ⇒ exit 2 (usage). Done before any wire send.
+    let evidence = match evidence_path {
+        None => None,
+        Some(path) => Some(load_evidence(&path)?),
+    };
+
+    // Protocol downgrade gate (PLAN §B.6): evidence needs a v3 app. Against an
+    // older app, exit 12 unless --legacy-done downgrades to the plain
+    // positional done (dropping evidence). No evidence ⇒ works on any app.
+    let send_evidence = match evidence_gate(evidence.is_some(), negotiated_protocol, legacy_done) {
+        EvidenceGate::Send => evidence,
+        EvidenceGate::Downgrade => {
+            eprintln!(
+                "warning: app protocol {negotiated_protocol} < 3; sending legacy done without evidence (--legacy-done)"
+            );
+            None
+        }
+        EvidenceGate::Reject => {
+            return Err(anyhow::Error::new(WireError(
+                cadenza_proto::ErrorBody::new(
+                    "protocol_too_old",
+                    format!(
+                        "--evidence requires app protocol 3 (negotiated {negotiated_protocol}); pass --legacy-done to send without evidence"
+                    ),
+                ),
+            )));
+        }
+    };
+
     let _: ops::done::Result = client
-        .request(ops::OP_DONE, ops::done::Args { task_id, summary })
+        .request(
+            ops::OP_DONE,
+            ops::done::Args {
+                task_id,
+                summary,
+                evidence: send_evidence,
+                idempotency_key: Some(idempotency_key.clone()),
+            },
+        )
         .await?;
     if json {
-        println!("{{\"ok\":true}}");
+        println!(
+            "{}",
+            serde_json::json!({ "ok": true, "idempotency_key": idempotency_key })
+        );
     } else {
         println!("ok");
     }
     Ok(())
+}
+
+/// Outcome of the `done --evidence` protocol gate (PLAN §B.6).
+#[derive(Debug, PartialEq, Eq)]
+enum EvidenceGate {
+    /// Send the request as-is (evidence kept if present).
+    Send,
+    /// Drop evidence and send the plain positional `done` (--legacy-done).
+    Downgrade,
+    /// Refuse: evidence requires a v3 app and no downgrade was requested.
+    Reject,
+}
+
+/// Decide what to do with `--evidence` given the negotiated protocol. Pure so
+/// the gate is unit-testable without a socket (PLAN §B.6 / D.2.4).
+fn evidence_gate(has_evidence: bool, negotiated_protocol: u32, legacy_done: bool) -> EvidenceGate {
+    if has_evidence && negotiated_protocol < 3 {
+        if legacy_done {
+            EvidenceGate::Downgrade
+        } else {
+            EvidenceGate::Reject
+        }
+    } else {
+        EvidenceGate::Send
+    }
+}
+
+/// Read + parse + cap-validate an evidence.json file. Any failure (missing
+/// file, oversized file, bad JSON, cap violation) is a usage error (exit 2).
+fn load_evidence(path: &std::path::Path) -> Result<ops::done::Evidence> {
+    let meta = std::fs::metadata(path)
+        .map_err(|e| anyhow::Error::new(UsageError(format!("evidence file {path:?}: {e}"))))?;
+    if meta.len() > aliases::evidence_caps::MAX_FILE_BYTES {
+        return Err(anyhow::Error::new(UsageError(format!(
+            "evidence file too large: {} bytes (max {})",
+            meta.len(),
+            aliases::evidence_caps::MAX_FILE_BYTES
+        ))));
+    }
+    let raw = std::fs::read_to_string(path)
+        .map_err(|e| anyhow::Error::new(UsageError(format!("read evidence {path:?}: {e}"))))?;
+    let ev: ops::done::Evidence = serde_json::from_str(&raw)
+        .map_err(|e| anyhow::Error::new(UsageError(format!("malformed evidence JSON: {e}"))))?;
+    aliases::validate_evidence(&ev)
+        .map_err(|e| anyhow::Error::new(UsageError(format!("invalid evidence: {e}"))))?;
+    Ok(ev)
 }
 
 async fn cmd_plan(
@@ -968,6 +1219,114 @@ mod tests {
     fn reeval_kind_rejects_unknown_and_aprendizado() {
         assert!(build_reeval_kind("aprendizado", vec![], Some("x".into()), None).is_err());
         assert!(build_reeval_kind("bogus", vec![], None, None).is_err());
+    }
+
+    #[test]
+    fn done_positional_summary_parses() {
+        let cli = Cli::try_parse_from(["cadenza-cli", "done", "T-1", "all good"]).unwrap();
+        match cli.cmd {
+            Cmd::Done {
+                task_id,
+                summary,
+                evidence,
+                summary_flag,
+                idempotency_key,
+                legacy_done,
+            } => {
+                assert_eq!(task_id, "T-1");
+                assert_eq!(summary, "all good");
+                assert!(evidence.is_none());
+                assert!(summary_flag.is_none());
+                assert!(idempotency_key.is_none());
+                assert!(!legacy_done);
+            }
+            other => panic!("expected Cmd::Done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn done_full_flags_parse() {
+        let cli = Cli::try_parse_from([
+            "cadenza-cli",
+            "done",
+            "T-2",
+            "--summary",
+            "via flag",
+            "--evidence",
+            "ev.json",
+            "--idempotency-key",
+            "k-1",
+            "--legacy-done",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Done {
+                task_id,
+                summary,
+                evidence,
+                summary_flag,
+                idempotency_key,
+                legacy_done,
+            } => {
+                assert_eq!(task_id, "T-2");
+                assert_eq!(summary, ""); // positional omitted → default
+                assert_eq!(summary_flag.as_deref(), Some("via flag"));
+                assert_eq!(evidence.as_deref(), Some(std::path::Path::new("ev.json")));
+                assert_eq!(idempotency_key.as_deref(), Some("k-1"));
+                assert!(legacy_done);
+            }
+            other => panic!("expected Cmd::Done, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn quality_parses_flags_and_defaults() {
+        let cli = Cli::try_parse_from(["cadenza-cli", "quality"]).unwrap();
+        match cli.cmd {
+            Cmd::Quality { task, project } => {
+                assert!(task.is_none());
+                assert!(project.is_none());
+            }
+            other => panic!("expected Cmd::Quality, got {other:?}"),
+        }
+        let cli = Cli::try_parse_from([
+            "cadenza-cli",
+            "quality",
+            "--project",
+            "P-1",
+            "--task",
+            "T-9",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Quality { task, project } => {
+                assert_eq!(task.as_deref(), Some("T-9"));
+                assert_eq!(project.as_deref(), Some("P-1"));
+            }
+            other => panic!("expected Cmd::Quality, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn evidence_gate_no_evidence_always_sends() {
+        assert_eq!(evidence_gate(false, 1, false), EvidenceGate::Send);
+        assert_eq!(evidence_gate(false, 3, false), EvidenceGate::Send);
+    }
+
+    #[test]
+    fn evidence_gate_v3_sends() {
+        assert_eq!(evidence_gate(true, 3, false), EvidenceGate::Send);
+        assert_eq!(evidence_gate(true, 4, false), EvidenceGate::Send);
+    }
+
+    #[test]
+    fn evidence_gate_pre_v3_rejects_without_legacy() {
+        assert_eq!(evidence_gate(true, 2, false), EvidenceGate::Reject);
+    }
+
+    #[test]
+    fn evidence_gate_pre_v3_downgrades_with_legacy() {
+        assert_eq!(evidence_gate(true, 2, true), EvidenceGate::Downgrade);
     }
 
     /// `plan <id> --replace` with no `--body` → stdin path, replace=true.

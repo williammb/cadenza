@@ -110,6 +110,77 @@ pub struct Agente {
     pub command: Option<PathBuf>,
 }
 
+/// Per-project, app-side quality contract (PLAN §A). GUI-editable in
+/// `ui/settings.js`; never committed to the repo (explicit user choice).
+/// Absent/empty profile ⇒ a `no_validation` review package.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QualityProfile {
+    /// Display order is the vector order; it does NOT affect `contract_version`
+    /// (the hash is order-independent — see `contract_version`). Duplicate or
+    /// empty `id`s are rejected by `Config::validate`.
+    #[serde(default)]
+    pub checks: Vec<QualityCheck>,
+}
+
+/// One validation command the agent is expected to run before `done`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct QualityCheck {
+    /// Stable, unique-within-profile identifier (e.g. "clippy"). Used to
+    /// correlate reported evidence back to the contract and as the sort key
+    /// for the semantic `contract_version` hash. Validated: non-empty,
+    /// trimmed-unique.
+    pub id: String,
+    /// Human label for the UI (e.g. "Clippy (deny warnings)").
+    pub name: String,
+    /// The command the agent runs. The app NEVER executes this (PLAN key
+    /// decisions); it is contract + display only.
+    pub cmd: String,
+    /// Always-required when true.
+    #[serde(default)]
+    pub required: bool,
+    /// Repo-relative POSIX globset patterns; the check becomes required if
+    /// `required` OR any pattern matches the changed-file set (PLAN §A.1).
+    #[serde(default)]
+    pub required_if_changed: Vec<String>,
+}
+
+impl QualityProfile {
+    /// Semantic, order-independent contract hash (PLAN §A.2). Hashes the
+    /// check list **sorted by `id`** over only the fields that affect
+    /// required-ness — `id`, `cmd`, `required`, `required_if_changed`
+    /// (with each check's pattern list also sorted). Display order, `name`,
+    /// and an empty profile all hash deterministically. Returns
+    /// `"sha256:<hex>"`.
+    pub fn contract_version(&self) -> String {
+        use sha2::{Digest, Sha256};
+        let mut checks: Vec<&QualityCheck> = self.checks.iter().collect();
+        checks.sort_by(|a, b| a.id.trim().cmp(b.id.trim()));
+        let mut h = Sha256::new();
+        for c in &checks {
+            h.update(c.id.trim().as_bytes());
+            h.update([0u8]);
+            h.update(c.cmd.as_bytes());
+            h.update([0u8]);
+            h.update([u8::from(c.required)]);
+            h.update([0u8]);
+            let mut pats: Vec<&str> = c.required_if_changed.iter().map(|s| s.as_str()).collect();
+            pats.sort_unstable();
+            for p in pats {
+                h.update(p.as_bytes());
+                h.update([0u8]);
+            }
+            h.update([0x1eu8]); // record separator between checks
+        }
+        let digest = h.finalize();
+        let mut s = String::from("sha256:");
+        for b in digest {
+            use std::fmt::Write;
+            let _ = write!(s, "{b:02x}");
+        }
+        s
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
@@ -128,6 +199,9 @@ pub struct Project {
     /// all-projects view as a left accent bar on cards.
     #[serde(default)]
     pub color: Option<String>,
+    /// Per-project quality contract (PLAN §A.1). Absent/empty ⇒ no_validation.
+    #[serde(default)]
+    pub quality: Option<QualityProfile>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +317,26 @@ impl Config {
             }
             if p.name.trim().is_empty() {
                 return Err(anyhow!("project '{}' has empty name", p.id));
+            }
+            if let Some(q) = &p.quality {
+                let mut seen = std::collections::HashSet::new();
+                for (j, c) in q.checks.iter().enumerate() {
+                    let id = c.id.trim();
+                    if id.is_empty() {
+                        return Err(anyhow!(
+                            "project '{}' quality.checks[{}] has empty id",
+                            p.id,
+                            j
+                        ));
+                    }
+                    if !seen.insert(id.to_string()) {
+                        return Err(anyhow!(
+                            "project '{}' has duplicate quality check id '{}'",
+                            p.id,
+                            id
+                        ));
+                    }
+                }
             }
         }
         Ok(())
@@ -371,6 +465,113 @@ mod tests {
             "got: {:#}",
             err
         );
+    }
+
+    fn check(id: &str, cmd: &str, required: bool, pats: &[&str]) -> QualityCheck {
+        QualityCheck {
+            id: id.into(),
+            name: format!("{id} name"),
+            cmd: cmd.into(),
+            required,
+            required_if_changed: pats.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn contract_version_is_order_independent() {
+        let a = QualityProfile {
+            checks: vec![
+                check("clippy", "cargo clippy", true, &["src/**"]),
+                check("fmt", "cargo fmt", false, &[]),
+            ],
+        };
+        let b = QualityProfile {
+            checks: vec![
+                check("fmt", "cargo fmt", false, &[]),
+                check("clippy", "cargo clippy", true, &["src/**"]),
+            ],
+        };
+        assert_eq!(a.contract_version(), b.contract_version());
+    }
+
+    #[test]
+    fn contract_version_ignores_name_and_pattern_order() {
+        let a = QualityProfile {
+            checks: vec![check("clippy", "cargo clippy", true, &["a/**", "b/**"])],
+        };
+        let mut b = a.clone();
+        b.checks[0].name = "Totally different label".into();
+        b.checks[0].required_if_changed = vec!["b/**".into(), "a/**".into()];
+        assert_eq!(a.contract_version(), b.contract_version());
+    }
+
+    #[test]
+    fn contract_version_is_sensitive_to_fields() {
+        let base = QualityProfile {
+            checks: vec![check("clippy", "cargo clippy", true, &["src/**"])],
+        };
+        let mut cmd = base.clone();
+        cmd.checks[0].cmd = "cargo clippy --fix".into();
+        let mut req = base.clone();
+        req.checks[0].required = false;
+        let mut pat = base.clone();
+        pat.checks[0].required_if_changed = vec!["other/**".into()];
+        let v = base.contract_version();
+        assert_ne!(v, cmd.contract_version());
+        assert_ne!(v, req.contract_version());
+        assert_ne!(v, pat.contract_version());
+    }
+
+    #[test]
+    fn empty_profile_hashes_deterministically() {
+        let a = QualityProfile::default();
+        let b = QualityProfile::default();
+        assert_eq!(a.contract_version(), b.contract_version());
+        assert!(a.contract_version().starts_with("sha256:"));
+    }
+
+    #[test]
+    fn rejects_duplicate_quality_check_id() {
+        let f = write_tmp(
+            r#"{"data_version":1,"projects":[{"id":"p1","name":"P","path":".","quality":{"checks":[{"id":"x","name":"X","cmd":"a"},{"id":"x","name":"Y","cmd":"b"}]}}]}"#,
+        );
+        let err = Config::load_from(f.path()).unwrap_err();
+        assert!(format!("{:#}", err).contains("duplicate quality check id"));
+    }
+
+    #[test]
+    fn rejects_empty_quality_check_id() {
+        let f = write_tmp(
+            r#"{"data_version":1,"projects":[{"id":"p1","name":"P","path":".","quality":{"checks":[{"id":"  ","name":"X","cmd":"a"}]}}]}"#,
+        );
+        let err = Config::load_from(f.path()).unwrap_err();
+        assert!(format!("{:#}", err).contains("empty id"));
+    }
+
+    #[test]
+    fn quality_profile_roundtrips() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("config.json");
+        let cfg = Config {
+            projects: vec![Project {
+                id: "p1".into(),
+                name: "P".into(),
+                path: ".".into(),
+                agente: None,
+                default_branch: None,
+                color: None,
+                quality: Some(QualityProfile {
+                    checks: vec![check("clippy", "cargo clippy", true, &["src/**"])],
+                }),
+            }],
+            ..Config::default()
+        };
+        cfg.save_to(&path).unwrap();
+        let loaded = Config::load_from(&path).unwrap();
+        let q = loaded.projects[0].quality.as_ref().unwrap();
+        assert_eq!(q.checks.len(), 1);
+        assert_eq!(q.checks[0].id, "clippy");
+        assert!(q.checks[0].required);
     }
 
     #[test]

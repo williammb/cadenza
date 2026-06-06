@@ -282,3 +282,80 @@ settings-update-checking = Verificando…
 settings-update-uptodate = Você está atualizado.
 settings-update-available = Nova versão disponível: v{ $version }
 settings-update-error = Falha ao verificar atualizações: { $error }
+
+# ─────────────────────── Revisão (review package) ───────────────────────
+# Aba "Revisão" no modal da task: estado de evidência, checks, riscos,
+# diff por intenção e ações de aprovação. Textos vindos do agente/repo
+# são renderizados via textContent (nunca innerHTML).
+review-tab = Revisão
+review-empty = Nenhum pacote de revisão para esta task.
+review-load-error = Falha ao carregar a revisão: { $error }
+
+# Estado de evidência (derivado pelo app, nunca declarado pelo agente).
+review-state-contract-unavailable = Contrato indisponível
+review-state-contract-changed = Contrato mudou
+review-state-no-validation = Sem validação
+review-state-partial = Parcial
+review-state-passed = Aprovado
+review-state-failed = Falhou
+
+# Sobreposições do estado de evidência.
+review-needs-focused-human-review = Requer revisão humana focada
+review-validation-scope-unknown = Escopo de validação desconhecido — não dá para confirmar quais checks condicionais eram exigidos.
+
+# Tabela de checks reportados pelo agente.
+review-checks-header = Checks
+review-checks-col-id = Check
+review-checks-col-exit = Código de saída
+review-checks-col-log = Trecho do log
+review-checks-empty = Nenhum check reportado.
+review-log-path = Arquivo de log: { $path }
+
+# Riscos heurísticos sobre o conjunto de alterações.
+review-risks-header = Riscos
+review-risk-new-dependency = Nova dependência
+review-risk-migration = Migração
+review-risk-auth = Autenticação
+review-risk-public-contract = Contrato público
+review-risk-large-file = Arquivo grande
+review-risk-possible-secret = Possível segredo
+review-secret-finding = Possível segredo ({ $kind }) em { $file }:{ $line }
+
+# Diff agrupado por intenção (carregado sob demanda).
+review-load-diff = Carregar diff
+review-diff-loading = Carregando diff…
+review-diff-empty = Nenhuma alteração committada para mostrar.
+review-diff-other = Outros
+review-diff-unavailable = Diff indisponível (worktree ausente ou base não resolvida).
+review-diff-truncated = Diff truncado pelos limites de tamanho.
+review-diff-files-omitted = { $count } arquivo(s) omitido(s) pelos limites de tamanho.
+review-worktree-stale = O worktree mudou desde o "done" — mostrando o patch não committado salvo.
+
+# Resumo, perguntas em aberto e contagens.
+review-summary-header = Resumo
+review-open-questions = Perguntas em aberto
+review-changed-files = { $added } adicionado(s), { $modified } modificado(s), { $deleted } removido(s)
+
+# Ações do revisor.
+review-approve = Aprovar
+review-request-changes = Pedir alterações
+review-note-placeholder = Observação (opcional)
+review-decision-error = Falha ao registrar decisão: { $error }
+review-decided = Decisão registrada.
+
+# ───────────────────── Configurações → Qualidade ─────────────────────
+# Editor por projeto do contrato de qualidade: os checks que o agente
+# deve rodar e reportar no `done`.
+settings-quality-title = Qualidade
+settings-quality-hint = Checks que o agente roda e reporta ao concluir. "Obrigatório" exige o check sempre; "obrigatório se mudar" exige só quando os padrões de arquivo casarem.
+settings-quality-add-check = Adicionar check
+settings-quality-empty = Nenhum check definido.
+settings-quality-id = ID
+settings-quality-name = Nome
+settings-quality-cmd = Comando
+settings-quality-required = Obrigatório
+settings-quality-required-if-changed = Obrigatório se mudar (padrões separados por vírgula)
+settings-quality-move-up = Mover para cima
+settings-quality-move-down = Mover para baixo
+settings-quality-remove = Remover check
+settings-quality-dup-id = IDs de check devem ser únicos e não vazios.

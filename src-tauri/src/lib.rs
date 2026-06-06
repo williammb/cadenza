@@ -22,6 +22,7 @@ mod notify;
 mod observ;
 mod ordering;
 mod projects;
+mod review;
 mod runs;
 mod secrets;
 mod spawn;
@@ -128,6 +129,11 @@ pub fn run() {
             commands::load_translations,
             commands::get_config,
             commands::save_config,
+            // review packages (evidence/diff/decision)
+            commands::get_review_package,
+            commands::get_review_diff,
+            commands::review_decision,
+            commands::list_review_states,
             // task ↔ project
             commands::list_task_projects,
             commands::set_task_project,

@@ -15,8 +15,9 @@ use cadenza_proto::{
     ops::{
         self, OP_APPEND_LOG, OP_AWAIT_DECISION, OP_BYE, OP_CREATE_IDEIA, OP_CREATE_TASK,
         OP_CURRENT_TASK, OP_DELETE_IDEIA, OP_DONE, OP_HELLO, OP_LIST_IDEIAS, OP_LIST_MEMORY,
-        OP_LIST_PROJECTS, OP_LIST_TASKS, OP_PROPOSE, OP_READ_IDEIA, OP_READ_TASK, OP_REVISE_MEMORY,
-        OP_SET_IDEIA_STATUS, OP_SET_TASK_WORKTREE, OP_SUGGEST_LEARNING, OP_UPDATE_BODY,
+        OP_LIST_PROJECTS, OP_LIST_TASKS, OP_PROPOSE, OP_QUALITY, OP_READ_IDEIA, OP_READ_TASK,
+        OP_REVIEW_DECISION, OP_REVISE_MEMORY, OP_SET_IDEIA_STATUS, OP_SET_TASK_WORKTREE,
+        OP_SUGGEST_LEARNING, OP_UPDATE_BODY,
     },
     wire::{ErrorBody, Event, Request, Response},
     Decisao, DecisaoRegistro, Ideia, IdeiaStatus, MemorySuggestion, ProjectInfo, SuggestionKind,
@@ -548,8 +549,7 @@ async fn dispatch(
         }
         OP_DONE => {
             let args: ops::done::Args = serde_json::from_value(req.args).map_err(bad_args)?;
-            check_id(&args.task_id)?;
-            done_op(repo.as_ref(), &args).await?;
+            let result = done_op(deps, &args).await?;
             // Estado changed to aguardando_revisao + body appended; UI
             // needs to pick up both. Emit alongside OP_CREATE_TASK's
             // event so the board reconciles without a manual reload.
@@ -557,7 +557,22 @@ async fn dispatch(
                 ops::EV_TASKS_CHANGED.to_string(),
                 serde_json::json!({ "task_id": args.task_id }),
             ));
-            to_value(&ops::done::Result { ok: true })
+            to_value(&result)
+        }
+        OP_QUALITY => {
+            let args: ops::quality::Args = serde_json::from_value(req.args).map_err(bad_args)?;
+            let result = quality_op(deps, &args).await?;
+            to_value(&result)
+        }
+        OP_REVIEW_DECISION => {
+            let args: ops::review_decision::Args =
+                serde_json::from_value(req.args).map_err(bad_args)?;
+            let result = review_decision_op(deps, &args).await?;
+            let _ = deps.webview_events.try_send((
+                ops::EV_TASKS_CHANGED.to_string(),
+                serde_json::json!({ "task_id": args.task_id }),
+            ));
+            to_value(&result)
         }
         OP_UPDATE_BODY => {
             let args: ops::update_body::Args =
@@ -870,17 +885,221 @@ async fn create_memory_suggestion_op(
     Ok(suggestion.id)
 }
 
-/// `done` is per-design "request to complete" — agents never put a task
-/// in `feito` directly. We append the summary as a log line and move
-/// the task to `aguardando_revisao`, so the human still has final say.
-async fn done_op(repo: &dyn Repository, args: &ops::done::Args) -> Result<(), ErrorBody> {
-    repo.append_log(&args.task_id, &format!("[done request] {}", args.summary))
+/// `done` is per-design "request to complete" — agents never put a task in
+/// `feito` directly (PLAN §C.8). The summary is appended as a `[done request]`
+/// log line and the task moves to `aguardando_revisao`, so the human keeps
+/// final say.
+///
+/// Backward compatible: positional `done` with NO evidence keeps the legacy
+/// behavior exactly (append the line once + flip estado), and produces no
+/// review package. With evidence, the app independently builds a trustworthy
+/// [`ReviewPackage`] (hardened read-only git over the worktree) and persists
+/// it ATOMICALLY with the log + estado flip via
+/// [`Repository::done_with_review_package`] (PLAN §C.9). Re-running the same
+/// `idempotency_key` is a no-op returning the stored package.
+async fn done_op(
+    deps: &ServerDeps,
+    args: &ops::done::Args,
+) -> Result<ops::done::Result, ErrorBody> {
+    check_id(&args.task_id)?;
+
+    let log_line = format!("[done request] {}", args.summary);
+
+    // ── Legacy path: no evidence ⇒ today's behavior, no package. ──────
+    let Some(evidence) = args.evidence.clone() else {
+        deps.state
+            .repo
+            .append_log(&args.task_id, &log_line)
+            .await
+            .map_err(|e| not_found_or_internal(&e))?;
+        deps.state
+            .repo
+            .set_estado(&args.task_id, cadenza_proto::Estado::AguardandoRevisao)
+            .await
+            .map_err(|e| not_found_or_internal(&e))?;
+        return Ok(ops::done::Result { ok: true });
+    };
+
+    // ── Evidence path. ────────────────────────────────────────────────
+    // 1. App-side re-validation + re-cap BEFORE any mutation (PLAN §C.10):
+    //    malformed/over-cap evidence is `bad_args` with NO partial done.
+    let evidence = crate::review::validate_and_cap_evidence(evidence)
+        .map_err(|e| ErrorBody::new("bad_args", e.to_string()))?;
+
+    // 2. Resolve the project (for the quality contract + default branch).
+    //    Resolution failure does NOT fail `done`: the engine yields a
+    //    `contract_unavailable` package (PLAN §C.12). We read the contract +
+    //    default branch out of the lock into owned values to avoid holding
+    //    the mutex across the await-heavy git collection.
+    let project_id = deps.state.task_projects.get(&args.task_id);
+    let (contract, contract_resolved, project_default_branch) = {
+        let cfg = deps
+            .state
+            .config
+            .lock()
+            .map_err(|_| internal("config lock poisoned"))?;
+        match project_id
+            .as_deref()
+            .and_then(|pid| cfg.projects.iter().find(|p| p.id == pid))
+        {
+            Some(p) => (
+                p.quality.clone(),
+                true,
+                p.default_branch.clone().filter(|s| !s.trim().is_empty()),
+            ),
+            None => (None, false, None),
+        }
+    };
+
+    // 3. Resolve the worktree/branch (missing worktree ⇒ skip git).
+    let wt = deps.state.task_worktrees.get(&args.task_id);
+    let worktree_path = wt
+        .as_ref()
+        .and_then(|w| w.worktree_path.clone())
+        .filter(|p| !p.trim().is_empty());
+    let task_branch = wt
+        .as_ref()
+        .and_then(|w| w.branch.clone())
+        .filter(|b| !b.trim().is_empty());
+
+    // 4. Resolve the idempotency key: client-generated (PLAN §C.9). When
+    //    absent we mint one app-side — it won't dedup across reconnects, but
+    //    keeps the storage contract (every package carries a valid key).
+    let idempotency_key = match args.idempotency_key.clone().filter(|k| !k.is_empty()) {
+        Some(k) => {
+            crate::store::validate_idempotency_key(&k)
+                .map_err(|e| ErrorBody::new("bad_args", e.to_string()))?;
+            k
+        }
+        None => uuid::Uuid::new_v4().simple().to_string(),
+    };
+
+    // 5. Run the engine (never errors on git failure — PLAN §C.12).
+    let inputs = crate::review::CollectInputs {
+        worktree_path: worktree_path.as_deref().map(std::path::Path::new),
+        task_branch: task_branch.as_deref(),
+        project_default_branch: project_default_branch.as_deref(),
+        contract: contract.as_ref(),
+        contract_resolved,
+        reported: evidence,
+    };
+    let mut pkg = crate::review::build_package(inputs).await;
+    pkg.task_id = args.task_id.clone();
+    pkg.idempotency_key = idempotency_key;
+    pkg.summary = args.summary.clone();
+
+    // 6. Atomic apply: package upsert + supersede + log append + estado flip
+    //    in ONE unit (journal on files, transaction on SQL). Re-running the
+    //    same key returns the stored package (no-op).
+    deps.state
+        .repo
+        .done_with_review_package(
+            &pkg,
+            Some(&log_line),
+            Some(cadenza_proto::Estado::AguardandoRevisao),
+        )
         .await
         .map_err(|e| not_found_or_internal(&e))?;
-    repo.set_estado(&args.task_id, cadenza_proto::Estado::AguardandoRevisao)
-        .await
-        .map_err(|e| not_found_or_internal(&e))?;
-    Ok(())
+
+    Ok(ops::done::Result { ok: true })
+}
+
+/// `quality` — return the per-project quality contract (PLAN §B.5). Project
+/// resolution: explicit `project` arg → the task's mapped project → the app
+/// `active_project_id`. On resolution failure the app returns an explicit
+/// `unknown_project` diagnostic (NOT an empty list); an empty `checks` list is
+/// reserved for "resolved project has no profile" (→ `no_validation`).
+async fn quality_op(
+    deps: &ServerDeps,
+    args: &ops::quality::Args,
+) -> Result<ops::quality::Result, ErrorBody> {
+    // Resolve a candidate project id. The CLI passes whatever it resolved
+    // locally; the app does the final resolution + active-project fallback.
+    let explicit = args.project.clone().filter(|p| !p.trim().is_empty());
+    let from_task = args
+        .task
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .and_then(|t| deps.state.task_projects.get(t));
+
+    let cfg = deps
+        .state
+        .config
+        .lock()
+        .map_err(|_| internal("config lock poisoned"))?;
+    let resolved = explicit
+        .or(from_task)
+        .or_else(|| cfg.active_project_id.clone());
+
+    let Some(pid) = resolved.filter(|p| !p.trim().is_empty()) else {
+        return Err(ErrorBody::new(
+            "unknown_project",
+            "could not resolve a project (pass --project or set an active project)",
+        ));
+    };
+    let Some(project) = cfg.projects.iter().find(|p| p.id == pid) else {
+        return Err(ErrorBody::new(
+            "unknown_project",
+            format!("unknown project_id: {pid}"),
+        ));
+    };
+
+    // Resolved project: present the contract. No profile ⇒ empty checks +
+    // the empty-profile contract hash (a stable hash over zero checks).
+    let result = match &project.quality {
+        Some(q) => ops::quality::Result {
+            contract_version: q.contract_version(),
+            checks: q
+                .checks
+                .iter()
+                .map(|c| ops::quality::Check {
+                    id: c.id.clone(),
+                    name: c.name.clone(),
+                    cmd: c.cmd.clone(),
+                    required: c.required,
+                    required_if_changed: c.required_if_changed.clone(),
+                })
+                .collect(),
+        },
+        None => ops::quality::Result {
+            contract_version: crate::config::QualityProfile::default().contract_version(),
+            checks: Vec::new(),
+        },
+    };
+    drop(cfg);
+    Ok(result)
+}
+
+/// `review_decision` — the human approve / request-changes op (PLAN §E.16).
+/// Transition guard: requires `estado == aguardando_revisao` AND a latest
+/// non-terminal (`Pending`) package; otherwise `bad_state`. The estado flip,
+/// the `[revisão]` log line (both verdicts), and the package decision mark are
+/// applied together.
+async fn review_decision_op(
+    deps: &ServerDeps,
+    args: &ops::review_decision::Args,
+) -> Result<ops::review_decision::Result, ErrorBody> {
+    // The transition guard + atomic state/log/decision writes live in one
+    // place (`commands::apply_review_decision`); this handler only adapts
+    // the typed error into an `ErrorBody`. `check_id` is performed inside
+    // the shared core via `validate_id`.
+    let note = args.note.clone().unwrap_or_default();
+    crate::commands::apply_review_decision(
+        deps.state.repo.as_ref(),
+        &args.task_id,
+        args.verdict,
+        &note,
+    )
+    .await
+    .map(|_estado| ops::review_decision::Result { ok: true })
+    .map_err(|e| {
+        let body = ErrorBody::new(e.code, e.message);
+        if e.code == "task_busy" {
+            body.retryable()
+        } else {
+            body
+        }
+    })
 }
 
 /// Append (or replace) a `## Plano` section in a task body. The original
@@ -1148,5 +1367,293 @@ mod tests {
         );
         // Exactly one `## Plano` section appended; original heading not falsely matched.
         assert_eq!(out.matches("## Plano\n").count(), 1);
+    }
+
+    // ── AppState-aware handler tests (done/quality/review_decision) ──────
+
+    use crate::commands::AppState;
+    use crate::config::{Config, Project, QualityCheck, QualityProfile};
+    use crate::store::FileRepository;
+
+    /// Build a `ServerDeps` over a file backend rooted in a tempdir, with one
+    /// project (id `P-1`) and an optional quality profile. Returns the deps,
+    /// the kept tempdir, and a drained event receiver.
+    fn mk_deps(
+        quality: Option<QualityProfile>,
+    ) -> (ServerDeps, TempDir, mpsc::Receiver<(String, Value)>) {
+        let dir = TempDir::new().unwrap();
+        let repo = Arc::new(FileRepository::new(dir.path()).unwrap());
+        let config = Config {
+            projects: vec![Project {
+                id: "P-1".into(),
+                name: "Proj".into(),
+                path: dir.path().to_path_buf(),
+                agente: None,
+                default_branch: None,
+                color: None,
+                quality,
+            }],
+            active_project_id: Some("P-1".into()),
+            ..Default::default()
+        };
+
+        let state = AppState::for_test(dir.path(), repo, config).unwrap();
+        let (tx, rx) = mpsc::channel(64);
+        let deps = ServerDeps {
+            state: Arc::new(state),
+            data_dir: dir.path().to_path_buf(),
+            webview_events: tx,
+        };
+        (deps, dir, rx)
+    }
+
+    async fn seed_task(deps: &ServerDeps, id: &str, estado: cadenza_proto::Estado) {
+        let task = cadenza_proto::Task {
+            id: id.into(),
+            titulo: format!("{id} title"),
+            estado,
+            responsavel: "humano".into(),
+            body: format!("# {id}\n\nbody\n"),
+            worktree_path: None,
+            branch: None,
+            blocked_by: Vec::new(),
+        };
+        deps.state.repo.create_task(&task).await.unwrap();
+        deps.state.task_projects.set(id, Some("P-1")).unwrap();
+    }
+
+    #[tokio::test]
+    async fn done_op_legacy_no_evidence_keeps_behavior() {
+        let (deps, _dir, _rx) = mk_deps(None);
+        seed_task(&deps, "T-1", cadenza_proto::Estado::Fazendo).await;
+        let args = ops::done::Args {
+            task_id: "T-1".into(),
+            summary: "done it".into(),
+            evidence: None,
+            idempotency_key: None,
+        };
+        done_op(&deps, &args).await.unwrap();
+        let task = deps.state.repo.read_task("T-1").await.unwrap();
+        assert_eq!(task.estado, cadenza_proto::Estado::AguardandoRevisao);
+        assert_eq!(task.body.matches("[done request] done it").count(), 1);
+        // No package created on the legacy path.
+        assert!(deps
+            .state
+            .repo
+            .list_review_packages("T-1")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn done_op_with_evidence_persists_package_idempotently() {
+        let (deps, _dir, _rx) = mk_deps(None);
+        seed_task(&deps, "T-2", cadenza_proto::Estado::Fazendo).await;
+        let args = ops::done::Args {
+            task_id: "T-2".into(),
+            summary: "with evidence".into(),
+            evidence: Some(ops::done::Evidence::default()),
+            idempotency_key: Some("key-1".into()),
+        };
+        done_op(&deps, &args).await.unwrap();
+        let task = deps.state.repo.read_task("T-2").await.unwrap();
+        assert_eq!(task.estado, cadenza_proto::Estado::AguardandoRevisao);
+        let pkgs = deps.state.repo.list_review_packages("T-2").await.unwrap();
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(pkgs[0].summary, "with evidence");
+
+        // Same key again ⇒ no second package, no second log line.
+        done_op(&deps, &args).await.unwrap();
+        assert_eq!(
+            deps.state
+                .repo
+                .list_review_packages("T-2")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        let task2 = deps.state.repo.read_task("T-2").await.unwrap();
+        assert_eq!(
+            task2.body.matches("[done request] with evidence").count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn done_op_rejects_oversize_evidence_without_mutation() {
+        let (deps, _dir, _rx) = mk_deps(None);
+        seed_task(&deps, "T-3", cadenza_proto::Estado::Fazendo).await;
+        let evidence = ops::done::Evidence {
+            checks: vec![
+                ops::done::EvidenceCheck {
+                    id: "c".into(),
+                    exit: 0,
+                    log_excerpt: String::new(),
+                    log_path: None,
+                };
+                crate::review::caps_max_checks() + 1
+            ],
+            ..Default::default()
+        };
+        let args = ops::done::Args {
+            task_id: "T-3".into(),
+            summary: "bad".into(),
+            evidence: Some(evidence),
+            idempotency_key: Some("key-x".into()),
+        };
+        let err = done_op(&deps, &args).await.unwrap_err();
+        assert_eq!(err.code, "bad_args");
+        // No state mutation: estado unchanged, no package, no log line.
+        let task = deps.state.repo.read_task("T-3").await.unwrap();
+        assert_eq!(task.estado, cadenza_proto::Estado::Fazendo);
+        assert!(!task.body.contains("[done request]"));
+        assert!(deps
+            .state
+            .repo
+            .list_review_packages("T-3")
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn quality_op_unknown_project_is_explicit_error() {
+        let (deps, _dir, _rx) = mk_deps(None);
+        let args = ops::quality::Args {
+            task: None,
+            project: Some("nope".into()),
+        };
+        let err = quality_op(&deps, &args).await.unwrap_err();
+        assert_eq!(err.code, "unknown_project");
+    }
+
+    #[tokio::test]
+    async fn quality_op_resolved_no_profile_is_empty_checks() {
+        let (deps, _dir, _rx) = mk_deps(None);
+        let args = ops::quality::Args {
+            task: None,
+            project: Some("P-1".into()),
+        };
+        let r = quality_op(&deps, &args).await.unwrap();
+        assert!(r.checks.is_empty());
+    }
+
+    #[tokio::test]
+    async fn quality_op_returns_profile_checks() {
+        let profile = QualityProfile {
+            checks: vec![QualityCheck {
+                id: "clippy".into(),
+                name: "Clippy".into(),
+                cmd: "cargo clippy".into(),
+                required: true,
+                required_if_changed: vec!["**/*.rs".into()],
+            }],
+        };
+        let expected = profile.contract_version();
+        let (deps, _dir, _rx) = mk_deps(Some(profile));
+        let args = ops::quality::Args {
+            task: None,
+            project: Some("P-1".into()),
+        };
+        let r = quality_op(&deps, &args).await.unwrap();
+        assert_eq!(r.contract_version, expected);
+        assert_eq!(r.checks.len(), 1);
+        assert_eq!(r.checks[0].id, "clippy");
+    }
+
+    #[tokio::test]
+    async fn review_decision_op_guard_rejects_wrong_estado() {
+        let (deps, _dir, _rx) = mk_deps(None);
+        seed_task(&deps, "T-4", cadenza_proto::Estado::Fazendo).await;
+        let args = ops::review_decision::Args {
+            task_id: "T-4".into(),
+            verdict: ops::review_decision::Verdict::Aprovado,
+            note: None,
+        };
+        let err = review_decision_op(&deps, &args).await.unwrap_err();
+        assert_eq!(err.code, "bad_state");
+    }
+
+    #[tokio::test]
+    async fn review_decision_op_guard_rejects_without_pending_package() {
+        let (deps, _dir, _rx) = mk_deps(None);
+        // Awaiting review but NO package at all.
+        seed_task(&deps, "T-5", cadenza_proto::Estado::AguardandoRevisao).await;
+        let args = ops::review_decision::Args {
+            task_id: "T-5".into(),
+            verdict: ops::review_decision::Verdict::Aprovado,
+            note: None,
+        };
+        let err = review_decision_op(&deps, &args).await.unwrap_err();
+        assert_eq!(err.code, "bad_state");
+    }
+
+    #[tokio::test]
+    async fn review_decision_op_approves_and_marks_package() {
+        let (deps, _dir, _rx) = mk_deps(None);
+        seed_task(&deps, "T-6", cadenza_proto::Estado::Fazendo).await;
+        // Drive a real done-with-evidence to land an aguardando_revisao task
+        // plus a pending package.
+        let done = ops::done::Args {
+            task_id: "T-6".into(),
+            summary: "ready".into(),
+            evidence: Some(ops::done::Evidence::default()),
+            idempotency_key: Some("k-6".into()),
+        };
+        done_op(&deps, &done).await.unwrap();
+
+        let args = ops::review_decision::Args {
+            task_id: "T-6".into(),
+            verdict: ops::review_decision::Verdict::Aprovado,
+            note: Some("lgtm".into()),
+        };
+        review_decision_op(&deps, &args).await.unwrap();
+        let task = deps.state.repo.read_task("T-6").await.unwrap();
+        assert_eq!(task.estado, cadenza_proto::Estado::Feito);
+        assert!(task.body.contains("[revisão] aprovado: lgtm"));
+        let latest = deps
+            .state
+            .repo
+            .latest_review_package("T-6")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.status, crate::store::PackageStatus::Aprovado);
+    }
+
+    #[tokio::test]
+    async fn review_decision_op_pedir_alteracoes_returns_to_fazendo() {
+        let (deps, _dir, _rx) = mk_deps(None);
+        seed_task(&deps, "T-7", cadenza_proto::Estado::Fazendo).await;
+        let done = ops::done::Args {
+            task_id: "T-7".into(),
+            summary: "ready".into(),
+            evidence: Some(ops::done::Evidence::default()),
+            idempotency_key: Some("k-7".into()),
+        };
+        done_op(&deps, &done).await.unwrap();
+
+        let args = ops::review_decision::Args {
+            task_id: "T-7".into(),
+            verdict: ops::review_decision::Verdict::PedirAlteracoes,
+            note: Some("fix X".into()),
+        };
+        review_decision_op(&deps, &args).await.unwrap();
+        let task = deps.state.repo.read_task("T-7").await.unwrap();
+        assert_eq!(task.estado, cadenza_proto::Estado::Fazendo);
+        assert!(task.body.contains("[revisão] pedir_alteracoes: fix X"));
+        let latest = deps
+            .state
+            .repo
+            .latest_review_package("T-7")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            latest.status,
+            crate::store::PackageStatus::AlteracoesSolicitadas
+        );
     }
 }
