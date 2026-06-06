@@ -49,6 +49,10 @@ globset = { workspace = true }
 sqlx = { workspace = true }
 keyring = { workspace = true }
 keyring-core = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+tokio-util = { workspace = true }
+rustls = { workspace = true }
 tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"

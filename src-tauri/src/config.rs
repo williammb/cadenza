@@ -102,6 +102,20 @@ impl Default for PgConfig {
     }
 }
 
+/// Jira Cloud connection settings stored in `config.json`. The API token
+/// is intentionally absent — it lives in the OS keyring, looked up via
+/// `secrets::jira_account_for(base_url)`. `base_url` is validated by
+/// `crate::jira::config::validate_base_url` on config load and again when
+/// the HTTP client is built (single source of truth for the host rule).
+// `Default` is derived (both fields are empty strings); clippy rejects the
+// hand-written impl the contract sketched as `derivable_impls`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct JiraConfig {
+    /// e.g. "https://your-org.atlassian.net" — token lives in the OS keyring, never here.
+    pub base_url: String,
+    pub email: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Agente {
     pub kind: AgenteKind,
@@ -245,6 +259,11 @@ pub struct Config {
     #[serde(default)]
     pub postgres: Option<PgConfig>,
 
+    /// Jira Cloud connection (API token lives in the OS keyring, never here).
+    /// `None` until the user configures Jira.
+    #[serde(default)]
+    pub jira: Option<JiraConfig>,
+
     /// Per-agent discovered model lists, cached so the ~15 s `/model`
     /// probe only runs when the user explicitly clicks "Carregar modelos"
     /// in Settings. Seeds the in-memory `AppState.agent_models` cache at
@@ -268,6 +287,7 @@ impl Default for Config {
             active_project_id: None,
             storage_backend: StorageBackend::default(),
             postgres: None,
+            jira: None,
             agent_models: None,
         }
     }
@@ -339,6 +359,10 @@ impl Config {
                 }
             }
         }
+        if let Some(j) = &self.jira {
+            crate::jira::config::validate_base_url(&j.base_url)
+                .map_err(|e| anyhow!("jira.base_url invalid: {e}"))?;
+        }
         Ok(())
     }
 }
@@ -362,6 +386,31 @@ mod tests {
         assert_eq!(cfg.data_version, 1);
         assert!(cfg.projects.is_empty());
         assert!(cfg.locale.is_none());
+    }
+
+    #[test]
+    fn config_with_invalid_jira_base_url_fails_validate() {
+        let f = write_tmp(
+            r#"{"data_version":1,"jira":{"base_url":"http://evil.example.com","email":"a@b.c"}}"#,
+        );
+        let err = Config::load_from(f.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("jira.base_url invalid"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn config_jira_section_roundtrips_json() {
+        let f = write_tmp(
+            r#"{"data_version":1,"jira":{"base_url":"https://acme.atlassian.net","email":"dev@acme.io"}}"#,
+        );
+        let cfg = Config::load_from(f.path()).unwrap();
+        let j = cfg.jira.as_ref().unwrap();
+        assert_eq!(j.base_url, "https://acme.atlassian.net");
+        assert_eq!(j.email, "dev@acme.io");
+        let json = serde_json::to_string(&cfg).unwrap();
+        assert!(json.contains("acme.atlassian.net"), "got: {json}");
     }
 
     #[test]

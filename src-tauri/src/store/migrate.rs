@@ -77,6 +77,10 @@ impl MigrationLog {
 pub async fn copy_all(from: &dyn Repository, to: &dyn Repository) -> Result<MigrationStats> {
     let mut stats = MigrationStats::default();
 
+    // NOTE (Slice 1): task Jira identity (`jira_site`/`jira_issue_id`) rides
+    // along automatically because `create_task` carries those columns. The
+    // `jira_issues` cache table is NOT copied here — backend-switch Jira
+    // record migration is a later slice; the cache is re-derivable.
     for task in from.list_tasks(None).await? {
         match to.create_task(&task).await {
             Ok(()) => stats.tasks_copied += 1,
@@ -106,6 +110,8 @@ pub async fn copy_all(from: &dyn Repository, to: &dyn Repository) -> Result<Migr
                 file: proposta.file.clone(),
                 what_failed: proposta.what_failed.clone(),
                 action: proposta.action.clone(),
+                jira_site: proposta.jira_site.clone(),
+                jira_issue_id: proposta.jira_issue_id.clone(),
             })
             .await?;
         stats.propostas_copied += 1;
@@ -164,7 +170,54 @@ pub async fn copy_all(from: &dyn Repository, to: &dyn Repository) -> Result<Migr
         }
     }
 
+    // Aggregate (issue-owned) review packages (Slice 5). Copied in
+    // (jira_site, jira_issue_id, attempt) order so the destination re-derives
+    // the same 1..N attempt sequence; the idempotency_key makes a re-run after
+    // a partial migration a no-op (the destination upsert returns the stored
+    // row). STATE-NEUTRAL: no estado side-effects. No decision re-apply —
+    // Slice 5 has no decision path.
+    //
+    // The `jira_issues` cache table is deliberately NOT migrated (Slice 1), so
+    // on a SQL destination the aggregate's FK to `jira_issues` may be orphaned.
+    // Rather than abort the whole backend switch, an aggregate whose parent is
+    // absent is skipped and counted as `..._orphaned` (file backend has no FK,
+    // so it always copies). All OTHER errors still propagate.
+    for pkg in from.all_issue_review_packages().await? {
+        let already = to
+            .list_issue_review_packages(&pkg.jira_site, &pkg.jira_issue_id)
+            .await?
+            .into_iter()
+            .any(|p| p.idempotency_key == pkg.idempotency_key);
+        match to.upsert_issue_review_package(&pkg).await {
+            Ok(_) => {
+                if already {
+                    stats.issue_review_packages_skipped += 1;
+                } else {
+                    stats.issue_review_packages_copied += 1;
+                }
+            }
+            Err(e) if is_foreign_key_error(&e) => {
+                tracing::warn!(
+                    site = %pkg.jira_site,
+                    issue = %pkg.jira_issue_id,
+                    "skipping aggregate review with no migrated jira_issues parent"
+                );
+                stats.issue_review_packages_orphaned += 1;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
     Ok(stats)
+}
+
+/// Whether a store error is a destination foreign-key violation (the
+/// aggregate's `jira_issues` parent was not migrated). The SQL backends map a
+/// FK failure to `StoreError::Other` carrying sqlx's "FOREIGN KEY constraint
+/// failed" / "violates foreign key constraint" text.
+fn is_foreign_key_error(e: &StoreError) -> bool {
+    let s = e.to_string().to_ascii_lowercase();
+    s.contains("foreign key")
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
@@ -180,6 +233,11 @@ pub struct MigrationStats {
     pub memory_suggestions_skipped: usize,
     pub review_packages_copied: usize,
     pub review_packages_skipped: usize,
+    pub issue_review_packages_copied: usize,
+    pub issue_review_packages_skipped: usize,
+    /// Aggregates whose `jira_issues` parent was not migrated (Slice 1 does not
+    /// migrate that cache table) — skipped rather than aborting the switch.
+    pub issue_review_packages_orphaned: usize,
 }
 
 /// Run a migration `from → to` if it hasn't been recorded yet.
@@ -225,6 +283,9 @@ mod tests {
             worktree_path: None,
             branch: None,
             blocked_by: Vec::new(),
+            jira_site: None,
+            jira_issue_id: None,
+            jira_key_display: None,
         }
     }
 
@@ -259,6 +320,8 @@ mod tests {
                 file: "f".into(),
                 what_failed: "".into(),
                 action: "".into(),
+                jira_site: None,
+                jira_issue_id: None,
             })
             .await
             .unwrap();
@@ -389,6 +452,102 @@ mod tests {
         // delete_task cascade removes the packages.
         sqlite.delete_review_packages("T-1").await.unwrap();
         assert!(sqlite.list_review_packages("T-1").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn copies_issue_review_packages_files_to_sqlite() {
+        use crate::review::issue::{IssuePackageStatus, IssueReviewPackage};
+        use cadenza_proto::JiraIssueRecord;
+        let dir = TempDir::new().unwrap();
+        let files = FileRepository::new(dir.path()).unwrap();
+        // The SQLite FK requires the parent jira_issue to exist first.
+        files
+            .upsert_jira_issue(&JiraIssueRecord {
+                jira_site: "site".into(),
+                jira_issue_id: "10001".into(),
+                jira_key: "PROJ-1".into(),
+                project_id: None,
+                analysis_run_id: None,
+                secret_hash: None,
+                secret_expiry_ms: None,
+                secret_status: None,
+                raw_adf: None,
+                branch_name: None,
+                worktree_path: None,
+                base_sha: None,
+                worktree_state: None,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            })
+            .await
+            .unwrap();
+
+        let mk = |key: &str| IssueReviewPackage {
+            jira_site: "site".into(),
+            jira_issue_id: "10001".into(),
+            attempt: 0,
+            idempotency_key: key.into(),
+            status: IssuePackageStatus::Pending,
+            branch_name: "jira/10001-x".into(),
+            base_sha: "base0".into(),
+            head_sha: Some("head1".into()),
+            changed_files: vec![],
+            files_added: 0,
+            files_modified: 0,
+            files_deleted: 0,
+            diff: None,
+            truncated: false,
+            collection_errors: vec![],
+            created_at_ms: 1,
+            collection_duration_ms: 0,
+        };
+        files.upsert_issue_review_package(&mk("k1")).await.unwrap();
+        files.upsert_issue_review_package(&mk("k2")).await.unwrap();
+
+        let sqlite = SqliteRepository::open(&dir.path().join("cadenza.db"))
+            .await
+            .unwrap();
+        // `copy_all` does NOT migrate the `jira_issues` cache table (Slice 1),
+        // and the SQLite aggregate table has an FK to it, so seed the parent in
+        // the destination first — this is the realistic backend-switch setup
+        // (the issues cache is re-fetched, not migrated).
+        sqlite
+            .upsert_jira_issue(&JiraIssueRecord {
+                jira_site: "site".into(),
+                jira_issue_id: "10001".into(),
+                jira_key: "PROJ-1".into(),
+                project_id: None,
+                analysis_run_id: None,
+                secret_hash: None,
+                secret_expiry_ms: None,
+                secret_status: None,
+                raw_adf: None,
+                branch_name: None,
+                worktree_path: None,
+                base_sha: None,
+                worktree_state: None,
+                created_at_ms: 1,
+                updated_at_ms: 1,
+            })
+            .await
+            .unwrap();
+        let stats = copy_all(&files, &sqlite).await.unwrap();
+        assert_eq!(stats.issue_review_packages_copied, 2);
+
+        let listed = sqlite
+            .list_issue_review_packages("site", "10001")
+            .await
+            .unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].attempt, 1);
+        assert_eq!(listed[0].status, IssuePackageStatus::Superseded);
+        assert_eq!(listed[1].attempt, 2);
+        assert_eq!(listed[1].status, IssuePackageStatus::Pending);
+
+        // Re-run: keys already present -> skipped.
+        let again = copy_all(&files, &sqlite).await.unwrap();
+        assert_eq!(again.issue_review_packages_copied, 0);
+        assert_eq!(again.issue_review_packages_skipped, 2);
     }
 
     #[tokio::test]

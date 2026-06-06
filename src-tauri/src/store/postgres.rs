@@ -21,8 +21,9 @@ use tokio::sync::{Mutex, Notify};
 use uuid::Uuid;
 
 use super::{
-    DecisaoRegistro, Estado, Ideia, IdeiaStatus, MemoryItem, MemorySuggestion, NewProposta,
-    PackageStatus, Proposta, Repository, Result, ReviewPackage, StoreError, SuggestionKind, Task,
+    DecisaoRegistro, Estado, Ideia, IdeiaStatus, IssueReviewPackage, JiraIssueRecord, MemoryItem,
+    MemorySuggestion, NewProposta, PackageStatus, Proposta, Repository, Result, ReviewPackage,
+    StoreError, SuggestionKind, Task,
 };
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations-pg");
@@ -148,6 +149,29 @@ fn task_from_row(row: &sqlx::postgres::PgRow) -> Result<Task> {
         worktree_path: None,
         branch: None,
         blocked_by: Vec::new(),
+        jira_site: row.try_get("jira_site").map_err(map_sqlx)?,
+        jira_issue_id: row.try_get("jira_issue_id").map_err(map_sqlx)?,
+        jira_key_display: None,
+    })
+}
+
+fn jira_issue_from_row(row: &sqlx::postgres::PgRow) -> Result<JiraIssueRecord> {
+    Ok(JiraIssueRecord {
+        jira_site: row.try_get("jira_site").map_err(map_sqlx)?,
+        jira_issue_id: row.try_get("jira_issue_id").map_err(map_sqlx)?,
+        jira_key: row.try_get("jira_key").map_err(map_sqlx)?,
+        project_id: row.try_get("project_id").map_err(map_sqlx)?,
+        analysis_run_id: row.try_get("analysis_run_id").map_err(map_sqlx)?,
+        secret_hash: row.try_get("secret_hash").map_err(map_sqlx)?,
+        secret_expiry_ms: row.try_get("secret_expiry_ms").map_err(map_sqlx)?,
+        secret_status: row.try_get("secret_status").map_err(map_sqlx)?,
+        raw_adf: row.try_get("raw_adf").map_err(map_sqlx)?,
+        branch_name: row.try_get("branch_name").map_err(map_sqlx)?,
+        worktree_path: row.try_get("worktree_path").map_err(map_sqlx)?,
+        base_sha: row.try_get("base_sha").map_err(map_sqlx)?,
+        worktree_state: row.try_get("worktree_state").map_err(map_sqlx)?,
+        created_at_ms: row.try_get("created_at_ms").map_err(map_sqlx)?,
+        updated_at_ms: row.try_get("updated_at_ms").map_err(map_sqlx)?,
     })
 }
 
@@ -161,6 +185,10 @@ fn proposta_from_row(row: &sqlx::postgres::PgRow) -> Result<Proposta> {
         file: row.try_get("file").map_err(map_sqlx)?,
         what_failed: row.try_get("what_failed").map_err(map_sqlx)?,
         action: row.try_get("action").map_err(map_sqlx)?,
+        // Jira identity is not persisted on the propostas table in Slice 1.
+        jira_site: None,
+        jira_issue_id: None,
+        jira_key_display: None,
         created_at_ms: row.try_get("created_at_ms").map_err(map_sqlx)?,
     })
 }
@@ -260,6 +288,34 @@ fn review_package_from_row(row: &sqlx::postgres::PgRow) -> Result<ReviewPackage>
     Ok(pkg)
 }
 
+/// Reconstruct the aggregate package from its JSONB `payload`, overlaying the
+/// authoritative `status`/`attempt` columns (the SQLite twin reads a TEXT
+/// column). The supersede UPDATE only touches the column, not the blob.
+fn issue_review_package_from_row(row: &sqlx::postgres::PgRow) -> Result<IssueReviewPackage> {
+    let payload: serde_json::Value = row.try_get("payload").map_err(map_sqlx)?;
+    let mut pkg: IssueReviewPackage = serde_json::from_value(payload)
+        .map_err(|e| StoreError::BadData(format!("bad aggregate review payload: {e}")))?;
+    let status: String = row.try_get("status").map_err(map_sqlx)?;
+    pkg.status = issue_package_status_parse(&status)?;
+    let attempt: i64 = row.try_get("attempt").map_err(map_sqlx)?;
+    pkg.attempt = attempt as u32;
+    Ok(pkg)
+}
+
+/// Parse the aggregate status column string into [`IssuePackageStatus`].
+fn issue_package_status_parse(s: &str) -> Result<crate::review::issue::IssuePackageStatus> {
+    use crate::review::issue::IssuePackageStatus;
+    match s {
+        "pending" => Ok(IssuePackageStatus::Pending),
+        "superseded" => Ok(IssuePackageStatus::Superseded),
+        "aprovado" => Ok(IssuePackageStatus::Aprovado),
+        "alteracoes_solicitadas" => Ok(IssuePackageStatus::AlteracoesSolicitadas),
+        other => Err(StoreError::BadData(format!(
+            "unknown aggregate review status: {other}"
+        ))),
+    }
+}
+
 #[async_trait]
 impl Repository for PgRepository {
     async fn list_tasks(&self, filter: Option<Estado>) -> Result<Vec<Task>> {
@@ -293,8 +349,8 @@ impl Repository for PgRepository {
     async fn create_task(&self, task: &Task) -> Result<()> {
         let now = now_ms();
         let res = sqlx::query(
-            "INSERT INTO tasks (id, titulo, estado, responsavel, body, created_at_ms, updated_at_ms)
-             VALUES ($1, $2, $3, $4, $5, $6, $6)",
+            "INSERT INTO tasks (id, titulo, estado, responsavel, body, created_at_ms, updated_at_ms, jira_site, jira_issue_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $8)",
         )
         .bind(&task.id)
         .bind(&task.titulo)
@@ -302,6 +358,8 @@ impl Repository for PgRepository {
         .bind(&task.responsavel)
         .bind(&task.body)
         .bind(now)
+        .bind(&task.jira_site)
+        .bind(&task.jira_issue_id)
         .execute(&self.pool)
         .await;
         match res {
@@ -414,6 +472,9 @@ impl Repository for PgRepository {
             file: args.file.clone(),
             what_failed: args.what_failed.clone(),
             action: args.action.clone(),
+            jira_site: args.jira_site.clone(),
+            jira_issue_id: args.jira_issue_id.clone(),
+            jira_key_display: None,
             created_at_ms,
         };
 
@@ -604,6 +665,85 @@ impl Repository for PgRepository {
             .map_err(map_sqlx)?;
         if res.rows_affected() == 0 {
             return Err(StoreError::NotFound(id.to_string()));
+        }
+        Ok(())
+    }
+
+    // ─── jira issues ───────────────────────────────────────────────
+
+    async fn upsert_jira_issue(&self, record: &JiraIssueRecord) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO jira_issues
+               (jira_site, jira_issue_id, jira_key, project_id, analysis_run_id,
+                secret_hash, secret_expiry_ms, secret_status, raw_adf,
+                branch_name, worktree_path, base_sha, worktree_state,
+                created_at_ms, updated_at_ms)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+             ON CONFLICT (jira_site, jira_issue_id) DO UPDATE SET
+               jira_key=excluded.jira_key, project_id=excluded.project_id,
+               analysis_run_id=excluded.analysis_run_id, secret_hash=excluded.secret_hash,
+               secret_expiry_ms=excluded.secret_expiry_ms, secret_status=excluded.secret_status,
+               raw_adf=excluded.raw_adf, branch_name=excluded.branch_name,
+               worktree_path=excluded.worktree_path, base_sha=excluded.base_sha,
+               worktree_state=excluded.worktree_state, updated_at_ms=excluded.updated_at_ms",
+        )
+        .bind(&record.jira_site)
+        .bind(&record.jira_issue_id)
+        .bind(&record.jira_key)
+        .bind(&record.project_id)
+        .bind(&record.analysis_run_id)
+        .bind(&record.secret_hash)
+        .bind(record.secret_expiry_ms)
+        .bind(&record.secret_status)
+        .bind(&record.raw_adf)
+        .bind(&record.branch_name)
+        .bind(&record.worktree_path)
+        .bind(&record.base_sha)
+        .bind(&record.worktree_state)
+        .bind(record.created_at_ms)
+        .bind(record.updated_at_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn read_jira_issue(
+        &self,
+        jira_site: &str,
+        jira_issue_id: &str,
+    ) -> Result<Option<JiraIssueRecord>> {
+        let row =
+            sqlx::query("SELECT * FROM jira_issues WHERE jira_site = $1 AND jira_issue_id = $2")
+                .bind(jira_site)
+                .bind(jira_issue_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(map_sqlx)?;
+        match row {
+            Some(r) => Ok(Some(jira_issue_from_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_jira_issues(&self) -> Result<Vec<JiraIssueRecord>> {
+        let rows = sqlx::query("SELECT * FROM jira_issues ORDER BY jira_site, jira_issue_id")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        rows.iter().map(jira_issue_from_row).collect()
+    }
+
+    async fn delete_jira_issue(&self, jira_site: &str, jira_issue_id: &str) -> Result<()> {
+        let res =
+            sqlx::query("DELETE FROM jira_issues WHERE jira_site = $1 AND jira_issue_id = $2")
+                .bind(jira_site)
+                .bind(jira_issue_id)
+                .execute(&self.pool)
+                .await
+                .map_err(map_sqlx)?;
+        if res.rows_affected() == 0 {
+            return Err(StoreError::NotFound(format!("{jira_site}/{jira_issue_id}")));
         }
         Ok(())
     }
@@ -992,10 +1132,294 @@ impl Repository for PgRepository {
         tx.commit().await.map_err(map_sqlx)?;
         Ok(stored)
     }
+
+    // ─── aggregate (issue-owned) review packages (Slice 5) ─────────
+    // STATE-NEUTRAL: these touch ONLY `jira_review_packages` — never `tasks`.
+
+    async fn upsert_issue_review_package(
+        &self,
+        pkg: &IssueReviewPackage,
+    ) -> Result<IssueReviewPackage> {
+        super::validate_idempotency_key(&pkg.idempotency_key)?;
+        let now = now_ms();
+        let mut tx = self.pool.begin().await.map_err(map_sqlx)?;
+
+        if let Some(row) = sqlx::query(
+            "SELECT * FROM jira_review_packages
+             WHERE jira_site = $1 AND jira_issue_id = $2 AND idempotency_key = $3",
+        )
+        .bind(&pkg.jira_site)
+        .bind(&pkg.jira_issue_id)
+        .bind(&pkg.idempotency_key)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_sqlx)?
+        {
+            tx.commit().await.map_err(map_sqlx)?;
+            return issue_review_package_from_row(&row);
+        }
+
+        let next: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(MAX(attempt), 0) + 1 FROM jira_review_packages
+             WHERE jira_site = $1 AND jira_issue_id = $2",
+        )
+        .bind(&pkg.jira_site)
+        .bind(&pkg.jira_issue_id)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        sqlx::query(
+            "UPDATE jira_review_packages SET status = 'superseded'
+             WHERE jira_site = $1 AND jira_issue_id = $2 AND status = 'pending'",
+        )
+        .bind(&pkg.jira_site)
+        .bind(&pkg.jira_issue_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_sqlx)?;
+
+        let mut stored = pkg.clone();
+        stored.attempt = next as u32;
+        let status = stored.status.as_str().to_string();
+        let payload =
+            serde_json::to_value(&stored).map_err(|e| StoreError::BadData(e.to_string()))?;
+
+        let res = sqlx::query(
+            "INSERT INTO jira_review_packages
+                (jira_site, jira_issue_id, attempt, idempotency_key, status, payload, created_at_ms)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(&stored.jira_site)
+        .bind(&stored.jira_issue_id)
+        .bind(next)
+        .bind(&stored.idempotency_key)
+        .bind(&status)
+        .bind(payload)
+        .bind(now)
+        .execute(&mut *tx)
+        .await;
+
+        match res {
+            Ok(_) => {
+                tx.commit().await.map_err(map_sqlx)?;
+                Ok(stored)
+            }
+            Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
+                tx.rollback().await.ok();
+                let row = sqlx::query(
+                    "SELECT * FROM jira_review_packages
+                     WHERE jira_site = $1 AND jira_issue_id = $2 AND idempotency_key = $3",
+                )
+                .bind(&pkg.jira_site)
+                .bind(&pkg.jira_issue_id)
+                .bind(&pkg.idempotency_key)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(map_sqlx)?;
+                issue_review_package_from_row(&row)
+            }
+            Err(e) => {
+                tx.rollback().await.ok();
+                Err(map_sqlx(e))
+            }
+        }
+    }
+
+    async fn latest_issue_review_package(
+        &self,
+        jira_site: &str,
+        jira_issue_id: &str,
+    ) -> Result<Option<IssueReviewPackage>> {
+        let row = sqlx::query(
+            "SELECT * FROM jira_review_packages
+             WHERE jira_site = $1 AND jira_issue_id = $2 ORDER BY attempt DESC LIMIT 1",
+        )
+        .bind(jira_site)
+        .bind(jira_issue_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        match row {
+            Some(r) => Ok(Some(issue_review_package_from_row(&r)?)),
+            None => Ok(None),
+        }
+    }
+
+    async fn list_issue_review_packages(
+        &self,
+        jira_site: &str,
+        jira_issue_id: &str,
+    ) -> Result<Vec<IssueReviewPackage>> {
+        let rows = sqlx::query(
+            "SELECT * FROM jira_review_packages
+             WHERE jira_site = $1 AND jira_issue_id = $2 ORDER BY attempt",
+        )
+        .bind(jira_site)
+        .bind(jira_issue_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(issue_review_package_from_row).collect()
+    }
+
+    async fn all_issue_review_packages(&self) -> Result<Vec<IssueReviewPackage>> {
+        let rows = sqlx::query(
+            "SELECT * FROM jira_review_packages ORDER BY jira_site, jira_issue_id, attempt",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        rows.iter().map(issue_review_package_from_row).collect()
+    }
 }
 
 /// True when `body`'s last non-empty line equals `line` (trailing newline
 /// ignored). Shared dedup for the atomic `done` log append.
 fn body_ends_with_line(body: &str, line: &str) -> bool {
     body.lines().last().map(str::trim_end) == Some(line.trim_end())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Test-only glue: parse a `postgres://user:pass@host:port/db` DSN into
+    /// `PgConnectionParams`. Net-new and test-scoped (the production path
+    /// builds params from config + keyring, never a URL).
+    fn params_from_database_url(url: &str) -> PgConnectionParams {
+        // postgres://user:pass@host:port/db
+        let rest = url
+            .strip_prefix("postgres://")
+            .or_else(|| url.strip_prefix("postgresql://"))
+            .expect("DATABASE_URL must start with postgres://");
+        let (creds, host_db) = rest.split_once('@').expect("missing @ in DATABASE_URL");
+        let (user, password) = creds.split_once(':').unwrap_or((creds, ""));
+        let (hostport, database) = host_db
+            .split_once('/')
+            .expect("missing /db in DATABASE_URL");
+        // Strip any ?query suffix on the database segment.
+        let database = database.split('?').next().unwrap_or(database);
+        let (host, port) = match hostport.split_once(':') {
+            Some((h, p)) => (h.to_string(), p.parse().unwrap_or(5432)),
+            None => (hostport.to_string(), 5432),
+        };
+        PgConnectionParams {
+            host,
+            port,
+            database: database.to_string(),
+            user: user.to_string(),
+            password: password.to_string(),
+            ssl_mode: PgSslModeChoice::Prefer,
+        }
+    }
+
+    fn mk_jira(site: &str, id: &str, key: &str) -> JiraIssueRecord {
+        JiraIssueRecord {
+            jira_site: site.into(),
+            jira_issue_id: id.into(),
+            jira_key: key.into(),
+            project_id: None,
+            analysis_run_id: None,
+            secret_hash: None,
+            secret_expiry_ms: None,
+            secret_status: None,
+            raw_adf: None,
+            branch_name: None,
+            worktree_path: None,
+            base_sha: None,
+            worktree_state: None,
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
+    }
+
+    fn t(id: &str, estado: Estado) -> Task {
+        Task {
+            id: id.into(),
+            titulo: format!("{id} title"),
+            estado,
+            responsavel: "humano".into(),
+            body: format!("body of {id}"),
+            worktree_path: None,
+            branch: None,
+            blocked_by: Vec::new(),
+            jira_site: None,
+            jira_issue_id: None,
+            jira_key_display: None,
+        }
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn pg_task_roundtrip_carries_jira_identity() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        let repo = PgRepository::open(&params_from_database_url(&url))
+            .await
+            .unwrap();
+        let id = format!("T-jira-{}", Uuid::new_v4().simple());
+        let mut task = t(&id, Estado::AFazer);
+        task.jira_site = Some("https://x.atlassian.net".into());
+        task.jira_issue_id = Some("10001".into());
+        repo.create_task(&task).await.unwrap();
+        let got = repo.read_task(&id).await.unwrap();
+        assert_eq!(got.jira_site.as_deref(), Some("https://x.atlassian.net"));
+        assert_eq!(got.jira_issue_id.as_deref(), Some("10001"));
+        // Cleanup.
+        repo.delete_task(&id).await.unwrap();
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn pg_jira_issue_upsert_read_delete() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        let repo = PgRepository::open(&params_from_database_url(&url))
+            .await
+            .unwrap();
+        let site = format!("site-{}", Uuid::new_v4().simple());
+        repo.upsert_jira_issue(&mk_jira(&site, "1", "PROJ-1"))
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.read_jira_issue(&site, "1")
+                .await
+                .unwrap()
+                .unwrap()
+                .jira_key,
+            "PROJ-1"
+        );
+        repo.upsert_jira_issue(&mk_jira(&site, "1", "PROJ-2"))
+            .await
+            .unwrap();
+        assert_eq!(
+            repo.read_jira_issue(&site, "1")
+                .await
+                .unwrap()
+                .unwrap()
+                .jira_key,
+            "PROJ-2"
+        );
+        repo.delete_jira_issue(&site, "1").await.unwrap();
+        assert!(repo.read_jira_issue(&site, "1").await.unwrap().is_none());
+        assert!(matches!(
+            repo.delete_jira_issue(&site, "1").await,
+            Err(StoreError::NotFound(_))
+        ));
+    }
+
+    #[ignore]
+    #[tokio::test]
+    async fn pg_migrate_is_idempotent() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            return;
+        };
+        let params = params_from_database_url(&url);
+        // Opening twice re-runs the migrator; the sqlx ledger no-ops.
+        let _r1 = PgRepository::open(&params).await.unwrap();
+        let _r2 = PgRepository::open(&params).await.unwrap();
+    }
 }

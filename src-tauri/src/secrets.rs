@@ -9,6 +9,10 @@
 //! (typically `"{user}@{host}:{port}/{database}"`) jointly identify
 //! the entry, so multiple Cadenza profiles on the same machine don't
 //! collide.
+//!
+//! The Jira API token (Slice 3) reuses the same store under a distinct
+//! `"jira:<base_url>"` account namespace. Like the PG password, the token
+//! is NEVER logged: this module makes zero log calls — keep it that way.
 
 use std::sync::Once;
 
@@ -50,6 +54,33 @@ pub type Result<T> = std::result::Result<T, SecretsError>;
 /// `commands.rs` and the migration runner agree on the format.
 pub fn account_for(user: &str, host: &str, port: u16, database: &str) -> String {
     format!("{user}@{host}:{port}/{database}")
+}
+
+/// Keyring account for the Jira API token. Distinct namespace from the
+/// PG "{user}@{host}:{port}/{database}" account format — the `jira:`
+/// prefix can never collide with a PG account string. Keyed on the
+/// `base_url` (one token per Jira site), matching config's single
+/// `jira` block.
+pub fn jira_account_for(base_url: &str) -> String {
+    format!("jira:{base_url}")
+}
+
+// `set`/`delete` are the write side of the Jira token. The HTTP client only
+// reads (`get_jira_token`); the Tauri `set_jira_token`/`clear_jira_token`
+// commands that call these are deferred to the UI slice. Allow dead_code so
+// the building blocks ship now under clippy -D warnings without a stub command.
+#[allow(dead_code)]
+pub fn set_jira_token(base_url: &str, token: &str) -> Result<()> {
+    set_password(&jira_account_for(base_url), token)
+}
+
+pub fn get_jira_token(base_url: &str) -> Result<String> {
+    get_password(&jira_account_for(base_url))
+}
+
+#[allow(dead_code)]
+pub fn delete_jira_token(base_url: &str) -> Result<()> {
+    delete_password(&jira_account_for(base_url))
 }
 
 pub fn set_password(account: &str, password: &str) -> Result<()> {

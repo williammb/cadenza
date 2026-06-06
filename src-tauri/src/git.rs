@@ -182,6 +182,53 @@ pub async fn switch_branch(
     Ok(())
 }
 
+/// Resolve `rev` (e.g. `"HEAD"`, a branch, or a tag) to its full commit
+/// sha in `dir` (a repo or worktree). Thin wrapper over `git rev-parse`,
+/// used to capture a worktree's base sha at creation time.
+pub async fn rev_parse(dir: &Path, rev: &str) -> Result<String> {
+    run_git(dir, &["rev-parse", rev]).await
+}
+
+/// Best-effort `git worktree prune` in `repo` — clears stale worktree
+/// administrative entries after a partial/failed `add_worktree` whose
+/// directory was removed. Errors are returned so callers can log them, but
+/// the cleanup path treats this as advisory.
+pub async fn worktree_prune(repo: &Path) -> Result<()> {
+    run_git(repo, &["worktree", "prune"]).await.map(|_| ())
+}
+
+/// `git -C <wt> status --porcelain` in a worktree. Returns the affected-path
+/// lines — tracked changes AND untracked files. An empty vec means clean.
+/// Used by `jira_discard` to refuse a dirty worktree unless `force=true`.
+/// `--porcelain` (unlike `diff --quiet`) reports untracked files too, so a
+/// brand-new file the agent left behind still counts as dirty.
+pub async fn worktree_dirty_files(wt: &Path) -> Result<Vec<String>> {
+    let out = run_git(wt, &["status", "--porcelain"]).await?;
+    Ok(out
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// `git -C <repo> worktree remove <path>` (no `--force` by default; pass
+/// `force=true` for `--force`). Git itself refuses to remove a dirty worktree
+/// without `--force`, so this errors on a dirty tree when `!force`. The caller
+/// is expected to run [`worktree_prune`] afterwards to clear any stale admin
+/// entry.
+pub async fn remove_worktree(repo: &Path, path: &Path, force: bool) -> Result<()> {
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| anyhow!("worktree path is not valid UTF-8: {}", path.display()))?;
+    let mut args = vec!["worktree", "remove", path_str];
+    if force {
+        args.push("--force");
+    }
+    run_git(repo, &args).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +398,54 @@ mod tests {
         pull_branch(clone.path(), "main").await.unwrap();
         let after = run_git(clone.path(), &["rev-parse", "HEAD"]).await.unwrap();
         assert_ne!(before, after, "pull should have advanced HEAD");
+    }
+
+    /// Init a repo and add a clean worktree off `main`; returns (repo, holder,
+    /// worktree path). The holder TempDir keeps the worktree dir alive.
+    async fn repo_with_worktree() -> (TempDir, TempDir, std::path::PathBuf) {
+        let repo = init_repo();
+        let holder = TempDir::new().unwrap();
+        let wt = holder.path().join("wt");
+        add_worktree(repo.path(), &wt, "feature", true, None)
+            .await
+            .unwrap();
+        (repo, holder, wt)
+    }
+
+    #[tokio::test]
+    async fn worktree_dirty_files_empty_on_clean() {
+        let (_repo, _holder, wt) = repo_with_worktree().await;
+        let dirty = worktree_dirty_files(&wt).await.unwrap();
+        assert!(dirty.is_empty(), "expected clean worktree, got: {dirty:?}");
+    }
+
+    #[tokio::test]
+    async fn worktree_dirty_files_reports_untracked() {
+        let (_repo, _holder, wt) = repo_with_worktree().await;
+        // An untracked file is invisible to `diff --quiet` but `--porcelain`
+        // must catch it (this is the whole reason we use status --porcelain).
+        std::fs::write(wt.join("scratch.txt"), b"hello").unwrap();
+        let dirty = worktree_dirty_files(&wt).await.unwrap();
+        assert!(
+            dirty.iter().any(|l| l.contains("scratch.txt")),
+            "expected untracked file reported, got: {dirty:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn remove_worktree_refuses_dirty_without_force() {
+        let (repo, _holder, wt) = repo_with_worktree().await;
+        std::fs::write(wt.join("scratch.txt"), b"hi").unwrap();
+        let res = remove_worktree(repo.path(), &wt, false).await;
+        assert!(res.is_err(), "remove should refuse a dirty worktree");
+        assert!(wt.exists(), "worktree dir must survive a refused remove");
+    }
+
+    #[tokio::test]
+    async fn remove_worktree_force_succeeds() {
+        let (repo, _holder, wt) = repo_with_worktree().await;
+        std::fs::write(wt.join("scratch.txt"), b"hi").unwrap();
+        remove_worktree(repo.path(), &wt, true).await.unwrap();
+        assert!(!wt.exists(), "worktree dir must be gone after force remove");
     }
 }

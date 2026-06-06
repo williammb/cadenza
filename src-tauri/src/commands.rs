@@ -18,6 +18,7 @@ use uuid::Uuid;
 use crate::agent::{self, CodexCapture, LaunchPlan, OpenCodeCapture, PromptDelivery};
 use crate::blockers::TaskBlockers;
 use crate::config::{AgenteKind, Config, PgConfig, PgSslMode, StorageBackend};
+use crate::jira_sidecar::{JiraKeyIndex, TaskJira};
 use crate::ordering::TaskOrder;
 use crate::projects::TaskProjects;
 use crate::runs::{TaskRun, TaskRuns};
@@ -58,6 +59,15 @@ pub struct AppState {
     /// so dependency metadata stays structured without touching legacy
     /// task frontmatter.
     pub task_blockers: Arc<TaskBlockers>,
+    /// task_id → Jira identity (site, issue_id) side mapping. Lives in
+    /// `~/.cadenza/task-jira.json` — the file-backend equivalent of the SQL
+    /// `tasks.jira_site/jira_issue_id` columns (the YAML frontmatter is
+    /// frozen for Node.js compat).
+    pub task_jira: Arc<TaskJira>,
+    /// In-memory `(site, issue_id) → jira_key` index for synchronous
+    /// `jira_key_display` enrichment. Seeded at startup from
+    /// `repo.list_jira_issues()` and updated on `upsert_jira_issue`.
+    pub jira_keys: Arc<JiraKeyIndex>,
     /// Per-column card priority order. Lives in
     /// `~/.cadenza/task-order.json` — keeps the YAML frontmatter format
     /// frozen and the DB schemas untouched. Applied as a sort in
@@ -88,6 +98,22 @@ pub struct AppState {
     /// each mint a derived task. Holding this across read→create→write
     /// makes the second caller observe the first's decision and reuse it.
     pub decision_lock: tokio::sync::Mutex<()>,
+    /// Per-issue creation guard registry for the shared Jira worktree
+    /// (Slice 4). Keyed by `(jira_site, jira_issue_id)`. The OUTER map is a
+    /// std `Mutex` used only for in-memory lookups (never held across an
+    /// `.await`); each value is a `tokio::sync::Mutex` that IS held across
+    /// the git work in `ensure_issue_worktree`, serializing concurrent
+    /// ensure calls for the same issue so they converge on one worktree.
+    pub jira_worktree_locks: Mutex<crate::jira::worktree::WorktreeLockRegistry>,
+    /// One-executor-per-issue registry (Slice 4): `(jira_site,
+    /// jira_issue_id) → ExecutorSlot` for that issue's shared worktree. A
+    /// `Reserving` slot is an in-flight start (claimed at guard time, before
+    /// its session exists); a `Live(session_id)` slot is a running executor,
+    /// reaped lazily once its session leaves `sessions`. This is the
+    /// authoritative index for "is an agent already running for this issue"
+    /// — no cross-task scan needed.
+    pub jira_active_executors:
+        Mutex<HashMap<(String, String), crate::jira::worktree::ExecutorSlot>>,
 }
 
 impl AppState {
@@ -125,6 +151,12 @@ impl AppState {
         let task_worktrees = Arc::new(TaskWorktrees::load(&home)?);
         let task_blockers = Arc::new(TaskBlockers::load(&home)?);
         let task_order = Arc::new(TaskOrder::load(&home)?);
+        let task_jira = Arc::new(TaskJira::load(&home)?);
+        // Seed the synchronous display-key index from any cached records so
+        // `jira_key_display` resolves without an async store read.
+        let jira_records = tauri::async_runtime::block_on(async { repo.list_jira_issues().await })
+            .unwrap_or_default();
+        let jira_keys = Arc::new(JiraKeyIndex::from_records(&jira_records));
 
         // Seed the in-memory model cache from any lists persisted in
         // config.json so the task-start modal shows models instantly
@@ -151,11 +183,15 @@ impl AppState {
             task_runs,
             task_worktrees,
             task_blockers,
+            task_jira,
+            jira_keys,
             task_order,
             app_handle: Mutex::new(None),
             agent_models: Mutex::new(seeded_models),
             token_epoch: AtomicU64::new(0),
             decision_lock: tokio::sync::Mutex::new(()),
+            jira_worktree_locks: Mutex::new(HashMap::new()),
+            jira_active_executors: Mutex::new(HashMap::new()),
         })
     }
 
@@ -178,11 +214,15 @@ impl AppState {
             task_runs: Arc::new(TaskRuns::load(home)?),
             task_worktrees: Arc::new(TaskWorktrees::load(home)?),
             task_blockers: Arc::new(TaskBlockers::load(home)?),
+            task_jira: Arc::new(TaskJira::load(home)?),
+            jira_keys: Arc::new(JiraKeyIndex::default()),
             task_order: Arc::new(TaskOrder::load(home)?),
             app_handle: Mutex::new(None),
             agent_models: Mutex::new(HashMap::new()),
             token_epoch: AtomicU64::new(0),
             decision_lock: tokio::sync::Mutex::new(()),
+            jira_worktree_locks: Mutex::new(HashMap::new()),
+            jira_active_executors: Mutex::new(HashMap::new()),
         })
     }
 }
@@ -424,9 +464,40 @@ fn map_decision_store_err(e: StoreError) -> ReviewDecisionError {
 /// task read from the repo. The single place that defines the enrichment
 /// order, shared by the Tauri commands here and the IPC dispatch in `ipc`.
 pub(crate) fn enrich_task(state: &AppState, task: Task) -> Task {
-    state
+    // First merge the file-backend Jira identity sidecar (no-op when the
+    // task row already carries `jira_site`/`jira_issue_id`, i.e. SQL
+    // backends), then compute the read-only `jira_key_display`.
+    let task = state
         .task_blockers
-        .enrich(state.task_worktrees.enrich(task))
+        .enrich(state.task_worktrees.enrich(task));
+    let task = state.task_jira.enrich(task);
+    enrich_jira_key_display(state, task)
+}
+
+/// Fill the computed, never-persisted `jira_key_display` field from the
+/// in-memory index, falling back to a `"<site>/<issue_id>"` string when no
+/// record is cached. Synchronous — reads `state.jira_keys` lock-only.
+fn enrich_jira_key_display(state: &AppState, mut task: Task) -> Task {
+    if let (Some(site), Some(issue)) = (task.jira_site.clone(), task.jira_issue_id.clone()) {
+        task.jira_key_display = Some(jira_key_display_for(state, &site, &issue));
+    }
+    task
+}
+
+fn jira_key_display_for(state: &AppState, site: &str, issue_id: &str) -> String {
+    match state.jira_keys.get(site, issue_id) {
+        Some(key) => key,
+        None => format!("{site}/{issue_id}"),
+    }
+}
+
+/// Compute `jira_key_display` on a proposta. There is no shared
+/// `enrich_proposta` seam elsewhere; both proposta read handlers call this.
+pub(crate) fn enrich_proposta(state: &AppState, mut p: Proposta) -> Proposta {
+    if let (Some(site), Some(issue)) = (p.jira_site.clone(), p.jira_issue_id.clone()) {
+        p.jira_key_display = Some(jira_key_display_for(state, &site, &issue));
+    }
+    p
 }
 
 async fn normalize_and_validate_blockers(
@@ -896,7 +967,7 @@ fn default_branch_for_task(state: &AppState, task_id: &str) -> Result<Option<Str
 /// Default sibling worktree path: `<repo-parent>/<repo-name>-<branch>`,
 /// with path separators in the branch flattened to `-` so it stays a
 /// single directory name.
-fn suggested_worktree_path(repo: &Path, branch: &str) -> PathBuf {
+pub(crate) fn suggested_worktree_path(repo: &Path, branch: &str) -> PathBuf {
     let sanitized: String = branch
         .chars()
         .map(|c| if c == '/' || c == '\\' { '-' } else { c })
@@ -1091,11 +1162,15 @@ pub async fn current_task(state: State<'_, Arc<AppState>>) -> Result<Option<Task
 pub async fn list_pending_propostas(
     state: State<'_, Arc<AppState>>,
 ) -> Result<Vec<Proposta>, String> {
-    state
+    let propostas = state
         .repo
         .list_pending_propostas()
         .await
-        .map_err(to_str_err)
+        .map_err(to_str_err)?;
+    Ok(propostas
+        .into_iter()
+        .map(|p| enrich_proposta(&state, p))
+        .collect())
 }
 
 #[tauri::command]
@@ -1103,11 +1178,12 @@ pub async fn read_proposta(
     state: State<'_, Arc<AppState>>,
     proposta_id: String,
 ) -> Result<Option<Proposta>, String> {
-    state
+    let proposta = state
         .repo
         .read_proposta(&proposta_id)
         .await
-        .map_err(to_str_err)
+        .map_err(to_str_err)?;
+    Ok(proposta.map(|p| enrich_proposta(&state, p)))
 }
 
 #[tauri::command]
@@ -1211,12 +1287,57 @@ async fn create_task_from_proposta(state: &AppState, proposta_id: &str) -> Resul
         worktree_path: None,
         branch: None,
         blocked_by: Vec::new(),
+        jira_site: proposta.jira_site.clone(),
+        jira_issue_id: proposta.jira_issue_id.clone(),
+        jira_key_display: None,
     };
     state.repo.create_task(&task).await.map_err(to_str_err)?;
+    // File backend has no Jira columns on the task row, so persist identity
+    // to the `task-jira.json` sidecar. On SQL backends the row already
+    // carries it (create_task above); the sidecar is harmless redundancy
+    // and keeps `enrich_task` backend-agnostic.
+    if let (Some(site), Some(issue)) = (&task.jira_site, &task.jira_issue_id) {
+        state
+            .task_jira
+            .set(&task_id, site, issue)
+            .map_err(to_str_err)?;
+    }
     state
         .task_projects
         .set(&task_id, Some(&project_id))
         .map_err(to_str_err)?;
+    // Slice 4: ensure the issue's shared worktree exists and associate this
+    // task with it. Runs under `decision_lock` (held by `decidir_proposta`),
+    // but that lock is global, not per-issue, so `ensure_issue_worktree` also
+    // takes a per-issue guard + persisted reservation to converge re-accepts
+    // of different propostas for the same issue onto one worktree. This is
+    // best-effort for the accept path: a worktree failure must not fail task
+    // creation (the task exists; the worktree can be retried at agent start),
+    // so a failure is logged, not propagated.
+    if let (Some(site), Some(issue)) = (&task.jira_site, &task.jira_issue_id) {
+        // The record (seeded by prior slices) carries the canonical
+        // display key; use it as the branch-name source. Fall back to the
+        // task title when the record can't be read.
+        let summary = match state.repo.read_jira_issue(site, issue).await {
+            Ok(Some(rec)) => rec.jira_key,
+            _ => task.titulo.clone(),
+        };
+        if let Err(e) = crate::jira::worktree::ensure_issue_worktree(
+            state,
+            site,
+            issue,
+            &project_id,
+            &task_id,
+            &summary,
+        )
+        .await
+        {
+            tracing::warn!(
+                error = %e, jira_site = %site, jira_issue_id = %issue, task = %task_id,
+                "ensure_issue_worktree failed during accept; task created without worktree"
+            );
+        }
+    }
     emit_tasks_changed(state, &task_id);
     Ok(task_id)
 }
@@ -1244,6 +1365,13 @@ pub async fn propose(
     state: State<'_, Arc<AppState>>,
     args: NewProposta,
 ) -> Result<Proposta, String> {
+    // Hardening (Slice 2 §C): the public propose surface must not let a
+    // caller forge a Jira identity. Only `jira_materialize` (which stamps
+    // identity server-side from a verified capability secret) may set
+    // these. Mirrors the IPC `OP_PROPOSE` guard.
+    if args.jira_site.is_some() || args.jira_issue_id.is_some() {
+        return Err("jira_site/jira_issue_id may only be set via jira_materialize".to_string());
+    }
     state.repo.propose(args).await.map_err(to_str_err)
 }
 
@@ -1258,6 +1386,1064 @@ pub async fn await_proposta_decisao(
         .await_decisao(&proposta_id, Duration::from_millis(timeout_ms))
         .await
         .map_err(to_str_err)
+}
+
+// ─────────────────── jira analysis runs (Slice 2) ───────────────────
+
+use crate::jira_run::{self, RunSecret, RunSecretError, VerifiedRun};
+use cadenza_proto::{ops as proto_ops, SecretStatus};
+
+/// Epoch-ms now. Local helper (no shared `now_ms` in this module).
+fn now_ms_i64() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Mint an analysis run: generate `analysis_run_id` + capability secret,
+/// then upsert the issue record with `secret_hash` + expiry + status=Active.
+/// Returns the plaintext secret EXACTLY ONCE (the caller surfaces it to the
+/// operator and drops it). The plaintext is never persisted.
+///
+/// Requires an existing `JiraIssueRecord` for `(jira_site, jira_issue_id)`
+/// (so `jira_key` and friends are preserved); absence is an error. Later
+/// slices that own the import path will seed the record first.
+// Minted from tests in Slice 2 and from the production import orchestration
+// (`jira_import_persist`) in Slice 6a.
+pub(crate) async fn create_analysis_run(
+    state: &AppState,
+    jira_site: &str,
+    jira_issue_id: &str,
+    project_id: Option<&str>,
+) -> Result<(String, RunSecret), String> {
+    let mut record = state
+        .repo
+        .read_jira_issue(jira_site, jira_issue_id)
+        .await
+        .map_err(to_str_err)?
+        .ok_or_else(|| format!("no jira issue record for {jira_site}/{jira_issue_id}"))?;
+
+    let analysis_run_id = format!("run-{}", Uuid::new_v4().simple());
+    let secret = jira_run::generate_secret();
+    let now = now_ms_i64();
+
+    record.analysis_run_id = Some(analysis_run_id.clone());
+    record.secret_hash = Some(jira_run::hash_secret(secret.expose()));
+    record.secret_expiry_ms = Some(now + jira_run::RUN_SECRET_TTL_MS);
+    record.secret_status = Some(SecretStatus::Active.as_str().to_string());
+    if let Some(pid) = project_id {
+        record.project_id = Some(pid.to_string());
+    }
+    record.updated_at_ms = now;
+
+    state
+        .repo
+        .upsert_jira_issue(&record)
+        .await
+        .map_err(to_str_err)?;
+
+    Ok((analysis_run_id, secret))
+}
+
+/// Resolve `analysis_run_id` → record by scanning `list_jira_issues`
+/// (no secondary index in Slice 2; acceptable at desktop scale), then
+/// verify status Active + not expired + hash match (constant-time).
+pub(crate) async fn verify_run_secret(
+    state: &AppState,
+    analysis_run_id: &str,
+    presented_secret: &str,
+) -> Result<VerifiedRun, RunSecretError> {
+    let records = state
+        .repo
+        .list_jira_issues()
+        .await
+        .map_err(|_| RunSecretError::NotFound)?;
+    let record = records
+        .into_iter()
+        .find(|r| r.analysis_run_id.as_deref() == Some(analysis_run_id))
+        .ok_or(RunSecretError::NotFound)?;
+
+    let stored_hash = record
+        .secret_hash
+        .as_deref()
+        .ok_or(RunSecretError::NotFound)?;
+
+    // Status gate first (revoked is a definitive no), then expiry, then hash.
+    match record
+        .secret_status
+        .as_deref()
+        .and_then(SecretStatus::parse)
+    {
+        Some(SecretStatus::Revoked) => return Err(RunSecretError::Revoked),
+        Some(SecretStatus::Expired) => return Err(RunSecretError::Expired),
+        _ => {}
+    }
+    if let Some(expiry) = record.secret_expiry_ms {
+        if now_ms_i64() > expiry {
+            return Err(RunSecretError::Expired);
+        }
+    }
+    let presented_hash = jira_run::hash_secret(presented_secret);
+    if !jira_run::secret_hash_eq(stored_hash, &presented_hash) {
+        return Err(RunSecretError::Invalid);
+    }
+    Ok(VerifiedRun {
+        jira_site: record.jira_site,
+        jira_issue_id: record.jira_issue_id,
+        project_id: record.project_id,
+    })
+}
+
+/// Set `secret_status=Revoked` via upsert. Idempotent: no-op if the record
+/// is already revoked (or absent).
+pub(crate) async fn revoke_run_secret(
+    state: &AppState,
+    analysis_run_id: &str,
+) -> Result<(), String> {
+    let records = state.repo.list_jira_issues().await.map_err(to_str_err)?;
+    let Some(mut record) = records
+        .into_iter()
+        .find(|r| r.analysis_run_id.as_deref() == Some(analysis_run_id))
+    else {
+        return Ok(());
+    };
+    if record.secret_status.as_deref() == Some(SecretStatus::Revoked.as_str()) {
+        return Ok(());
+    }
+    record.secret_status = Some(SecretStatus::Revoked.as_str().to_string());
+    record.updated_at_ms = now_ms_i64();
+    state
+        .repo
+        .upsert_jira_issue(&record)
+        .await
+        .map_err(to_str_err)?;
+    Ok(())
+}
+
+/// Failure surface for `jira_materialize_core`. Carries enough to map to the
+/// right wire `ErrorBody.code` (IPC) or `String` (Tauri command).
+#[derive(Debug)]
+pub(crate) enum MaterializeError {
+    Secret(RunSecretError),
+    Decomposition(jira_run::DecompError),
+    Internal(String),
+}
+
+impl MaterializeError {
+    /// `(code, message)` for an `ErrorBody`.
+    pub(crate) fn code_message(&self) -> (&'static str, String) {
+        match self {
+            MaterializeError::Secret(RunSecretError::NotFound)
+            | MaterializeError::Secret(RunSecretError::Invalid) => (
+                "run_secret_invalid",
+                "analysis run secret is unknown or invalid".to_string(),
+            ),
+            MaterializeError::Secret(RunSecretError::Expired) => (
+                "run_secret_expired",
+                "analysis run secret has expired".to_string(),
+            ),
+            MaterializeError::Secret(RunSecretError::Revoked) => (
+                "run_secret_revoked",
+                "analysis run secret has been revoked".to_string(),
+            ),
+            MaterializeError::Decomposition(e) => ("invalid_decomposition", e.reason()),
+            MaterializeError::Internal(m) => ("internal", m.clone()),
+        }
+    }
+}
+
+impl std::fmt::Display for MaterializeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (code, msg) = self.code_message();
+        write!(f, "[{code}] {msg}")
+    }
+}
+
+/// Shared materialize logic behind both the IPC op and the Tauri command.
+///
+/// Verifies the capability secret, validates the decomposition, then creates
+/// one proposal per subtask with the Jira identity stamped SERVER-SIDE from
+/// the verified run (never from the wire args) and a deterministic,
+/// app-owned idempotency key `"jira:<site>:<issue>:<index>"`. Re-running while the
+/// secret is still active is idempotent (same keys ⇒ `propose` dedup). On
+/// success the secret is revoked (best-effort; revoke failure is logged in
+/// English, not fatal — the tasks already exist).
+pub(crate) async fn jira_materialize_core(
+    state: &AppState,
+    args: &proto_ops::jira_materialize::Args,
+) -> Result<proto_ops::jira_materialize::Result, MaterializeError> {
+    // 1. Authorize. Do NOT log `args` — it carries the secret.
+    let verified = verify_run_secret(state, &args.analysis_run_id, &args.run_secret)
+        .await
+        .map_err(MaterializeError::Secret)?;
+
+    // 2. Validate payload.
+    jira_run::validate_decomposition(&args.subtasks).map_err(MaterializeError::Decomposition)?;
+
+    // 3. Create one proposal per subtask, identity stamped from `verified`.
+    let mut created = Vec::with_capacity(args.subtasks.len());
+    for (index, subtask) in args.subtasks.iter().enumerate() {
+        let idempotency_key = format!(
+            "jira:{}:{}:{}",
+            verified.jira_site, verified.jira_issue_id, index
+        );
+        let np = NewProposta {
+            idempotency_key: idempotency_key.clone(),
+            parent: None,
+            title: subtask.title.clone(),
+            repro: subtask.body.clone(),
+            file: String::new(),
+            what_failed: String::new(),
+            action: String::new(),
+            jira_site: Some(verified.jira_site.clone()),
+            jira_issue_id: Some(verified.jira_issue_id.clone()),
+        };
+        let proposta = state
+            .repo
+            .propose(np)
+            .await
+            .map_err(|e| MaterializeError::Internal(e.to_string()))?;
+        created.push(proto_ops::jira_materialize::MaterializedTask {
+            proposta_id: proposta.proposta_id,
+            idempotency_key,
+            subtask_index: index as u32,
+        });
+    }
+
+    // 4. Revoke the now-spent secret (best-effort).
+    if let Err(e) = revoke_run_secret(state, &args.analysis_run_id).await {
+        tracing::warn!(error = %e, "failed to revoke analysis run secret after materialize");
+    }
+
+    Ok(proto_ops::jira_materialize::Result {
+        jira_site: verified.jira_site,
+        jira_issue_id: verified.jira_issue_id,
+        created,
+    })
+}
+
+/// Tauri-command surface for `jira_materialize` (in-app/test parity with the
+/// IPC op). Delegates to [`jira_materialize_core`].
+#[tauri::command]
+pub async fn jira_materialize(
+    state: State<'_, Arc<AppState>>,
+    args: proto_ops::jira_materialize::Args,
+) -> Result<proto_ops::jira_materialize::Result, String> {
+    jira_materialize_core(&state, &args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ───────────────────────── Jira data layer (Slice 3) ─────────────────────────
+
+/// Clone `config.jira` out of the lock, dropping the guard before any
+/// `.await` (we never hold the sync Mutex across an await — commands.rs
+/// state-doc rule). Returns a `JiraError::Config` if Jira is not configured.
+fn jira_config_snapshot(
+    state: &AppState,
+) -> Result<crate::config::JiraConfig, crate::jira::JiraError> {
+    let cfg = state
+        .config
+        .lock()
+        .map_err(|e| crate::jira::JiraError::Config(format!("config lock poisoned: {e}")))?;
+    cfg.jira
+        .clone()
+        .ok_or_else(|| crate::jira::JiraError::Config("Jira is not configured".to_string()))
+    // guard drops here, before the caller awaits
+}
+
+/// Shared `jira_test_connection` logic behind the Tauri command and IPC op.
+/// Fetches `/myself`; returns data only (no persistence).
+pub(crate) async fn jira_test_connection_core(
+    state: &AppState,
+) -> Result<proto_ops::jira_test_connection::Result, crate::jira::JiraError> {
+    let cfg = jira_config_snapshot(state)?;
+    let client = crate::jira::JiraClient::from_config(&cfg)?;
+    let cancel = crate::jira::CancelToken::new();
+    let me = client.test_connection(&cancel).await?;
+    Ok(proto_ops::jira_test_connection::Result {
+        account_id: me.account_id,
+        display_name: me.display_name,
+    })
+}
+
+/// Shared `jira_fetch_issue` logic. Fetches+parses one issue; returns data
+/// only (does NOT persist a `JiraIssueRecord`).
+pub(crate) async fn jira_fetch_issue_core(
+    state: &AppState,
+    args: &proto_ops::jira_fetch_issue::Args,
+) -> Result<proto_ops::jira_fetch_issue::Result, crate::jira::JiraError> {
+    let key = args.key.trim();
+    if key.is_empty() {
+        return Err(crate::jira::JiraError::Config(
+            "issue key is required".to_string(),
+        ));
+    }
+    let cfg = jira_config_snapshot(state)?;
+    let client = crate::jira::JiraClient::from_config(&cfg)?;
+    let cancel = crate::jira::CancelToken::new();
+    let issue = client.fetch_issue(key, &cancel).await?;
+    Ok(proto_ops::jira_fetch_issue::Result {
+        jira_issue_id: issue.jira_issue_id,
+        jira_key: issue.jira_key,
+        summary: issue.summary,
+        description_markdown: issue.description_markdown,
+        raw_adf: issue.raw_adf,
+    })
+}
+
+/// Shared `jira_list_assigned` logic. Lists the caller's open issues with a
+/// page cap; returns data only.
+pub(crate) async fn jira_list_assigned_core(
+    state: &AppState,
+) -> Result<proto_ops::jira_list_assigned::Result, crate::jira::JiraError> {
+    let cfg = jira_config_snapshot(state)?;
+    let client = crate::jira::JiraClient::from_config(&cfg)?;
+    let cancel = crate::jira::CancelToken::new();
+    let res = client.list_assigned(&cancel).await?;
+    Ok(proto_ops::jira_list_assigned::Result {
+        issues: res
+            .issues
+            .into_iter()
+            .map(|i| proto_ops::jira_list_assigned::Issue {
+                key: i.key,
+                id: i.id,
+                summary: i.summary,
+            })
+            .collect(),
+        partial: res.partial,
+    })
+}
+
+#[tauri::command]
+pub async fn jira_test_connection(
+    state: State<'_, Arc<AppState>>,
+) -> Result<proto_ops::jira_test_connection::Result, String> {
+    jira_test_connection_core(&state)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn jira_fetch_issue(
+    state: State<'_, Arc<AppState>>,
+    args: proto_ops::jira_fetch_issue::Args,
+) -> Result<proto_ops::jira_fetch_issue::Result, String> {
+    jira_fetch_issue_core(&state, &args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn jira_list_assigned(
+    state: State<'_, Arc<AppState>>,
+) -> Result<proto_ops::jira_list_assigned::Result, String> {
+    jira_list_assigned_core(&state)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ───────────────────────── Jira import (Slice 6a) ─────────────────────────
+
+/// Failure surface for the import orchestration. Carries enough to map to the
+/// right wire `ErrorBody.code` (IPC) or `String` (Tauri command). The
+/// capability secret NEVER appears in any variant.
+#[derive(Debug)]
+pub(crate) enum ImportError {
+    /// Bad usage / misconfiguration (empty issue_ref, bad analyst_kind, Jira
+    /// not configured). Maps to `jira_config` (exit 2).
+    Config(String),
+    /// The target project id is not in config.projects. Maps to
+    /// `unknown_project` (exit 30).
+    UnknownProject(String),
+    /// The fetch leg failed; passthrough of the Jira data-layer error so its
+    /// own stable code (`jira_auth`/`jira_not_found`/`jira_http`/…) is kept.
+    Fetch(crate::jira::JiraError),
+    /// Minting the analysis run / persisting the seed record failed. Maps to
+    /// `jira_import_failed` (exit 1).
+    Mint(String),
+    /// The analyst PTY spawn failed. Maps to `jira_import_failed` (exit 1).
+    Spawn(String),
+    /// Any other store/internal failure. Maps to `jira_import_failed` (exit 1).
+    Internal(String),
+}
+
+impl ImportError {
+    /// `(wire code, message)` for the IPC `ErrorBody`.
+    pub(crate) fn code_message(&self) -> (&'static str, String) {
+        match self {
+            ImportError::Config(m) => ("jira_config", m.clone()),
+            ImportError::UnknownProject(p) => {
+                ("unknown_project", format!("unknown project_id: {p}"))
+            }
+            // Preserve the fetch error's own stable code/message.
+            ImportError::Fetch(e) => {
+                let (code, msg) = e.code_message();
+                (code, msg)
+            }
+            ImportError::Mint(m) => ("jira_import_failed", m.clone()),
+            ImportError::Spawn(m) => ("jira_import_failed", m.clone()),
+            ImportError::Internal(m) => ("jira_import_failed", m.clone()),
+        }
+    }
+
+    /// Build an `ErrorBody` for the IPC surface.
+    pub(crate) fn to_error_body(&self) -> cadenza_proto::wire::ErrorBody {
+        let (code, message) = self.code_message();
+        cadenza_proto::wire::ErrorBody::new(code, message)
+    }
+}
+
+impl std::fmt::Display for ImportError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (code, msg) = self.code_message();
+        write!(f, "[{code}] {msg}")
+    }
+}
+
+/// Internal outcome of [`jira_import_persist`]. Holds the `RunSecret`
+/// in-memory for the spawn tail ONLY; it is intentionally NOT `Serialize` and
+/// NEVER logged so the capability secret cannot leak through the wire. The
+/// derived `Debug` is safe — `RunSecret`'s own `Debug` redacts the plaintext.
+#[derive(Debug)]
+pub(crate) enum ImportPersistOutcome {
+    New {
+        record: cadenza_proto::JiraIssueRecord,
+        analysis_run_id: String,
+        secret: RunSecret,
+        summary: String,
+    },
+    ExistingActive {
+        record: cadenza_proto::JiraIssueRecord,
+    },
+}
+
+/// "Active work" predicate for the reimport-idempotency check: an Active
+/// analysis run, OR a live worktree (`Ready` with the dir on disk), OR a
+/// worktree mid-creation (`creating`). An inactive record (revoked/expired
+/// secret, no worktree) falls through to a fresh re-mint.
+fn issue_has_active_work(rec: &cadenza_proto::JiraIssueRecord) -> bool {
+    let active_secret = rec.secret_status.as_deref() == Some(SecretStatus::Active.as_str());
+    let live_worktree = crate::jira::worktree::ready_if_valid(rec).is_some();
+    let creating = rec.worktree_state.as_deref()
+        == Some(cadenza_proto::jira::WorktreeState::Creating.as_str());
+    active_secret || live_worktree || creating
+}
+
+/// Steps 1-5 of import, pure & unit-testable: validate project, idempotency
+/// check, upsert seed record, mint run+secret. Takes an ALREADY-FETCHED issue
+/// so the transport/keyring/network is out of the unit-test path. Returns the
+/// new-vs-existing decision plus the minted secret (caller-only; NEVER goes
+/// into the proto `Result`, NEVER logged).
+pub(crate) async fn jira_import_persist(
+    state: &AppState,
+    jira_site: &str,
+    fetched: &crate::jira::FetchedIssue,
+    project_id: &str,
+) -> Result<ImportPersistOutcome, ImportError> {
+    // 1. Validate project.
+    let pid = project_id.trim();
+    if pid.is_empty() {
+        return Err(ImportError::Config("project_id is required".to_string()));
+    }
+    {
+        let cfg = state
+            .config
+            .lock()
+            .map_err(|e| ImportError::Internal(format!("config lock poisoned: {e}")))?;
+        if !cfg.projects.iter().any(|p| p.id == pid) {
+            return Err(ImportError::UnknownProject(pid.to_string()));
+        }
+    }
+
+    // 2. Derive identity.
+    let issue_id = fetched.jira_issue_id.as_str();
+
+    // 3. Reimport idempotency: an existing record with active work is reopened
+    //    WITHOUT re-minting/spawning. (Note: in the production path the fetch
+    //    already happened; the "no second fetch" guarantee for the active case
+    //    is enforced by the test-only `jira_import_via` orchestrator, which is
+    //    the seam the contract specifies.)
+    let existing = state
+        .repo
+        .read_jira_issue(jira_site, issue_id)
+        .await
+        .map_err(|e| ImportError::Internal(e.to_string()))?;
+    if let Some(rec) = &existing {
+        if issue_has_active_work(rec) {
+            return Ok(ImportPersistOutcome::ExistingActive {
+                record: rec.clone(),
+            });
+        }
+    }
+
+    // 4. Upsert the seed record. Preserve `created_at_ms` when re-using an
+    //    existing inactive record; refresh `raw_adf`/`jira_key`/`project_id`.
+    let now = now_ms_i64();
+    let raw_adf = if fetched.raw_adf.is_null() {
+        None
+    } else {
+        Some(
+            serde_json::to_string(&fetched.raw_adf)
+                .map_err(|e| ImportError::Internal(format!("serialize raw_adf: {e}")))?,
+        )
+    };
+    let created_at_ms = existing.as_ref().map(|r| r.created_at_ms).unwrap_or(now);
+    let record = cadenza_proto::JiraIssueRecord {
+        jira_site: jira_site.to_string(),
+        jira_issue_id: fetched.jira_issue_id.clone(),
+        jira_key: fetched.jira_key.clone(),
+        project_id: Some(pid.to_string()),
+        analysis_run_id: None,
+        secret_hash: None,
+        secret_expiry_ms: None,
+        secret_status: None,
+        raw_adf,
+        branch_name: None,
+        worktree_path: None,
+        base_sha: None,
+        worktree_state: None,
+        created_at_ms,
+        updated_at_ms: now,
+    };
+    state
+        .repo
+        .upsert_jira_issue(&record)
+        .await
+        .map_err(|e| ImportError::Mint(e.to_string()))?;
+
+    // 5. Mint run + secret (stamps secret_hash/expiry/status/project on the
+    //    record; re-read so the returned record reflects that).
+    let (analysis_run_id, secret) = create_analysis_run(state, jira_site, issue_id, Some(pid))
+        .await
+        .map_err(ImportError::Mint)?;
+    let record = state
+        .repo
+        .read_jira_issue(jira_site, issue_id)
+        .await
+        .map_err(|e| ImportError::Internal(e.to_string()))?
+        .ok_or_else(|| ImportError::Internal("record vanished after mint".to_string()))?;
+
+    Ok(ImportPersistOutcome::New {
+        record,
+        analysis_run_id,
+        secret,
+        summary: fetched.summary.clone(),
+    })
+}
+
+/// Parse the wire analyst-kind string into an [`AgenteKind`]. Accepts the
+/// canonical serde forms (`claude_code`, `codex`, `copilot`, `antigravity`,
+/// `opencode`) and the hyphenated CLI alias `claude-code`.
+fn parse_analyst_kind(s: &str) -> Result<AgenteKind, ImportError> {
+    match s.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "claude_code" | "claudecode" | "claude" => Ok(AgenteKind::ClaudeCode),
+        "codex" => Ok(AgenteKind::Codex),
+        "copilot" => Ok(AgenteKind::Copilot),
+        "antigravity" | "agy" => Ok(AgenteKind::Antigravity),
+        "opencode" => Ok(AgenteKind::OpenCode),
+        other => Err(ImportError::Config(format!(
+            "unknown analyst_kind: {other}"
+        ))),
+    }
+}
+
+/// Derive the canonical `jira_site` for a record key from configured Jira
+/// base_url (origin/host). Mirrors the host-rule guard used by the client.
+fn jira_site_from_config(state: &AppState) -> Result<String, ImportError> {
+    let cfg = jira_config_snapshot(state).map_err(ImportError::Fetch)?;
+    let url = crate::jira::config::validate_base_url(&cfg.base_url)
+        .map_err(|e| ImportError::Config(format!("base_url: {e}")))?;
+    Ok(url.origin().ascii_serialization())
+}
+
+/// Localized initial prompt sent to the analyst when decomposing a Jira issue.
+/// MUST NOT contain the capability secret — the agent reads it from
+/// `$CADENZA_RUN_SECRET` (injected by `jira_analyst_env`).
+fn render_initial_jira_prompt(
+    i18n_slot: &Mutex<I18n>,
+    jira_key: &str,
+    summary: &str,
+    issue_id: &str,
+) -> String {
+    let mut args = FluentArgs::new();
+    args.set("jira_key", jira_key.to_string());
+    args.set("summary", summary.to_string());
+    args.set("issue_id", issue_id.to_string());
+    match i18n_slot.lock() {
+        Ok(i18n) => i18n.t_with("agent-initial-prompt-jira", Some(&args)),
+        Err(_) => format!(
+            "Use the `cadenza` skill to decompose Jira issue {jira_key} ({summary}) into subtasks. Read $CADENZA_RUN_SECRET and submit via jira-materialize."
+        ),
+    }
+}
+
+/// Full production import: fetch (real client) -> persist (steps 1-5) ->
+/// spawn the analyst (step 6, thin tail). The capability secret reaches the
+/// analyst via ENV only and is never logged.
+pub(crate) async fn jira_import_core(
+    state: &AppState,
+    args: &proto_ops::jira_import::Args,
+) -> Result<proto_ops::jira_import::Result, ImportError> {
+    let issue_ref = args.issue_ref.trim();
+    if issue_ref.is_empty() {
+        return Err(ImportError::Config("issue_ref is required".to_string()));
+    }
+    // Parse the analyst kind up front so a bad kind fails before any fetch.
+    let kind = parse_analyst_kind(&args.analyst_kind)?;
+
+    let jira_site = jira_site_from_config(state)?;
+
+    // Reimport short-circuit BEFORE any network fetch: if a record for this
+    // site already has active work (matched by display key OR durable id),
+    // reopen it without a second fetch. This makes "open existing" work
+    // offline and survive the issue being renamed/deleted on the Jira side
+    // (a post-fetch check would wrongly fail with jira_not_found/jira_http).
+    {
+        let existing = state
+            .repo
+            .list_jira_issues()
+            .await
+            .map_err(|e| ImportError::Internal(e.to_string()))?
+            .into_iter()
+            .find(|r| {
+                r.jira_site == jira_site
+                    && (r.jira_key == issue_ref || r.jira_issue_id == issue_ref)
+                    && issue_has_active_work(r)
+            });
+        if let Some(record) = existing {
+            return Ok(proto_ops::jira_import::Result::ExistingActive {
+                jira_site: record.jira_site,
+                jira_issue_id: record.jira_issue_id,
+                jira_key: record.jira_key,
+                project_id: record.project_id,
+                analysis_run_id: record.analysis_run_id,
+            });
+        }
+    }
+
+    // Fetch (real client) — keeps the transport/keyring/network leg here, out
+    // of the unit-test path (which drives `jira_import_persist` directly).
+    let fetch_args = proto_ops::jira_fetch_issue::Args {
+        key: issue_ref.to_string(),
+    };
+    let fetched = {
+        let r = jira_fetch_issue_core(state, &fetch_args)
+            .await
+            .map_err(ImportError::Fetch)?;
+        crate::jira::FetchedIssue {
+            jira_issue_id: r.jira_issue_id,
+            jira_key: r.jira_key,
+            summary: r.summary,
+            description_markdown: r.description_markdown,
+            raw_adf: r.raw_adf,
+        }
+    };
+
+    match jira_import_persist(state, &jira_site, &fetched, &args.project_id).await? {
+        ImportPersistOutcome::ExistingActive { record } => {
+            Ok(proto_ops::jira_import::Result::ExistingActive {
+                jira_site: record.jira_site,
+                jira_issue_id: record.jira_issue_id,
+                jira_key: record.jira_key,
+                project_id: record.project_id,
+                analysis_run_id: record.analysis_run_id,
+            })
+        }
+        ImportPersistOutcome::New {
+            record,
+            analysis_run_id,
+            secret,
+            summary,
+        } => {
+            // Step 6 — analyst spawn (thin tail, mirrors `destrinchar_ideia`).
+            let pid = record
+                .project_id
+                .clone()
+                .ok_or_else(|| ImportError::Internal("record missing project_id".to_string()))?;
+            let (cwd, command_override) = {
+                let cfg = state
+                    .config
+                    .lock()
+                    .map_err(|e| ImportError::Internal(format!("config lock poisoned: {e}")))?;
+                let project = cfg
+                    .projects
+                    .iter()
+                    .find(|p| p.id == pid)
+                    .ok_or_else(|| ImportError::UnknownProject(pid.clone()))?;
+                let cmd = project
+                    .agente
+                    .as_ref()
+                    .filter(|a| a.kind == kind)
+                    .and_then(|a| a.command.clone())
+                    .or_else(|| {
+                        cfg.agente
+                            .as_ref()
+                            .filter(|a| a.kind == kind)
+                            .and_then(|a| a.command.clone())
+                    });
+                (project.path.clone(), cmd)
+            };
+            if !cwd.exists() {
+                return Err(ImportError::Spawn(format!(
+                    "project path does not exist: {} — fix it in Settings → Projetos",
+                    cwd.display()
+                )));
+            }
+
+            let synthetic_task_id = format!("JIRA-{}-{}", jira_site, fetched.jira_issue_id);
+            let prompt = render_initial_jira_prompt(
+                &state.i18n,
+                &fetched.jira_key,
+                &summary,
+                &fetched.jira_issue_id,
+            );
+            let model = String::new();
+            let plan: LaunchPlan = agent::plan_launch(
+                kind,
+                &model,
+                command_override.as_deref(),
+                &cwd,
+                &synthetic_task_id,
+                &pid,
+                None,
+                Some(&prompt),
+            );
+            let LaunchPlan {
+                spawn,
+                conversation_id_known: _,
+                pending_codex_capture,
+                pending_opencode_capture: _,
+                prompt_delivery,
+            } = plan;
+            // The capability secret reaches the analyst here via ENV ONLY.
+            let spawn = spawn.jira_analyst_env(
+                &analysis_run_id,
+                secret.expose(),
+                &jira_site,
+                &fetched.jira_issue_id,
+                &fetched.jira_key,
+            );
+
+            let pty = PtyHandle::spawn(spawn).map_err(|e| ImportError::Spawn(e.to_string()))?;
+            let session_id = format!("S-{}", Uuid::new_v4().simple());
+            let session = TerminalSession::start(session_id.clone(), pty)
+                .map_err(|e| ImportError::Spawn(e.to_string()))?;
+            state
+                .sessions
+                .lock()
+                .map_err(|e| ImportError::Internal(e.to_string()))?
+                .insert(session_id.clone(), session.clone());
+            // Log identity only — NEVER the secret.
+            tracing::info!(
+                analysis_run_id = %analysis_run_id,
+                jira_key = %fetched.jira_key,
+                session = %session_id,
+                "jira analyst started"
+            );
+
+            if prompt_delivery == PromptDelivery::TypeIn {
+                let session_for_prompt = session.clone();
+                tauri::async_runtime::spawn(async move {
+                    send_initial_prompt(&session_for_prompt, &prompt).await;
+                });
+            }
+            if let Some(capture) = pending_codex_capture {
+                tauri::async_runtime::spawn(async move {
+                    let _ = wait_for_codex_uuid(capture).await;
+                });
+            }
+
+            Ok(proto_ops::jira_import::Result::Imported {
+                jira_site,
+                jira_issue_id: fetched.jira_issue_id,
+                jira_key: fetched.jira_key,
+                summary,
+                project_id: pid,
+                analysis_run_id,
+                session_id,
+            })
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn jira_import(
+    state: State<'_, Arc<AppState>>,
+    args: proto_ops::jira_import::Args,
+) -> Result<proto_ops::jira_import::Result, String> {
+    jira_import_core(&state, &args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+// ───────────────────────── Jira discard (Slice 6a) ─────────────────────────
+
+/// Failure surface for the discard lifecycle.
+#[derive(Debug)]
+pub(crate) enum DiscardError {
+    /// No record for `(jira_site, jira_issue_id)`. Maps to `jira_not_found`
+    /// (exit 30).
+    NotFound,
+    /// A subtask agent is live for this issue. Maps to `jira_worktree_busy`
+    /// (exit 1).
+    Busy,
+    /// The worktree has uncommitted/untracked changes and `force` was not
+    /// set. Carries the COUNT only — never file names. Maps to
+    /// `jira_worktree_dirty` (exit 1).
+    WorktreeDirty { changed_files: u32 },
+    /// `git worktree remove` failed. Maps to `jira_worktree_failed` (exit 1).
+    RemoveFailed(String),
+    /// Any other store/internal failure. Maps to `jira_worktree_failed`
+    /// (exit 1).
+    Internal(String),
+}
+
+impl DiscardError {
+    pub(crate) fn code_message(&self) -> (&'static str, String) {
+        match self {
+            DiscardError::NotFound => (
+                "jira_not_found",
+                "no jira issue record to discard".to_string(),
+            ),
+            DiscardError::Busy => (
+                "jira_worktree_busy",
+                "a subtask agent is still running for this Jira issue".to_string(),
+            ),
+            DiscardError::WorktreeDirty { changed_files } => (
+                "jira_worktree_dirty",
+                format!(
+                    "worktree has {changed_files} uncommitted/untracked change(s); pass --force to discard"
+                ),
+            ),
+            DiscardError::RemoveFailed(m) => ("jira_worktree_failed", m.clone()),
+            DiscardError::Internal(m) => ("jira_worktree_failed", m.clone()),
+        }
+    }
+
+    pub(crate) fn to_error_body(&self) -> cadenza_proto::wire::ErrorBody {
+        let (code, message) = self.code_message();
+        cadenza_proto::wire::ErrorBody::new(code, message)
+    }
+}
+
+impl std::fmt::Display for DiscardError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (code, msg) = self.code_message();
+        write!(f, "[{code}] {msg}")
+    }
+}
+
+/// Discard an imported Jira issue: refuse a dirty worktree unless forced,
+/// remove the worktree, revoke the run secret, delete the record, and forget
+/// subtask sidecars. RETAINS the branch, the produced subtask Tasks, and any
+/// aggregate review packages (audit trail). Keyed by `(site, issue_id)`; the
+/// `delete_task` path never calls this.
+pub(crate) async fn jira_discard_core(
+    state: &AppState,
+    args: &proto_ops::jira_discard::Args,
+) -> Result<proto_ops::jira_discard::Result, DiscardError> {
+    let site = args.jira_site.as_str();
+    let issue = args.jira_issue_id.as_str();
+
+    // 1. Read record.
+    let record = state
+        .repo
+        .read_jira_issue(site, issue)
+        .await
+        .map_err(|e| DiscardError::Internal(e.to_string()))?
+        .ok_or(DiscardError::NotFound)?;
+
+    // 2. Busy check — refuse if a subtask agent is live for this issue.
+    {
+        let active = state
+            .jira_active_executors
+            .lock()
+            .map_err(|e| DiscardError::Internal(e.to_string()))?;
+        let sessions = state
+            .sessions
+            .lock()
+            .map_err(|e| DiscardError::Internal(e.to_string()))?;
+        let key = (site.to_string(), issue.to_string());
+        if crate::jira::worktree::issue_executor_busy(&active, &sessions, &key) {
+            return Err(DiscardError::Busy);
+        }
+    }
+
+    // 3. Dirty check + 4. remove worktree.
+    let mut worktree_removed = false;
+    if let Some(wt) = record.worktree_path.as_deref() {
+        let wt_path = Path::new(wt);
+        if wt_path.exists() {
+            let dirty = crate::git::worktree_dirty_files(wt_path)
+                .await
+                .map_err(|e| DiscardError::RemoveFailed(e.to_string()))?;
+            if !dirty.is_empty() && !args.force {
+                // Count only — never the file names (no sensitive paths on the
+                // wire). The caller learns work would be lost.
+                return Err(DiscardError::WorktreeDirty {
+                    changed_files: dirty.len() as u32,
+                });
+            }
+            // Resolve the repo path from the record's project_id.
+            let repo = record
+                .project_id
+                .as_deref()
+                .and_then(|pid| {
+                    state.config.lock().ok().and_then(|cfg| {
+                        cfg.projects
+                            .iter()
+                            .find(|p| p.id == pid)
+                            .map(|p| p.path.clone())
+                    })
+                })
+                .ok_or_else(|| {
+                    DiscardError::RemoveFailed(
+                        "cannot resolve repo path for worktree removal".to_string(),
+                    )
+                })?;
+            crate::git::remove_worktree(&repo, wt_path, args.force)
+                .await
+                .map_err(|e| DiscardError::RemoveFailed(e.to_string()))?;
+            if let Err(e) = crate::git::worktree_prune(&repo).await {
+                tracing::warn!(error = %e, "worktree_prune after discard failed (advisory)");
+            }
+            worktree_removed = true;
+        }
+    }
+
+    // 5. Revoke the run secret (idempotent, best-effort).
+    if let Some(run_id) = record.analysis_run_id.as_deref() {
+        if let Err(e) = revoke_run_secret(state, run_id).await {
+            tracing::warn!(error = %e, "failed to revoke run secret during discard");
+        }
+    }
+
+    // 6. Delete the record (drops raw_adf + secret columns with the row).
+    state
+        .repo
+        .delete_jira_issue(site, issue)
+        .await
+        .map_err(|e| DiscardError::Internal(e.to_string()))?;
+
+    // 7. Cascade sidecars (best-effort, warn-on-err). Enumerate subtask task
+    //    ids bound to this issue from the task store (no reverse index on
+    //    TaskWorktrees), then forget each task_worktrees entry.
+    let mut forgotten_task_worktrees = 0u32;
+    match state.repo.list_tasks(None).await {
+        Ok(tasks) => {
+            for task in tasks {
+                let enriched = state.task_jira.enrich(task);
+                let belongs = enriched.jira_site.as_deref() == Some(site)
+                    && enriched.jira_issue_id.as_deref() == Some(issue);
+                if belongs && state.task_worktrees.get(&enriched.id).is_some() {
+                    if let Err(e) = state.task_worktrees.forget(&enriched.id) {
+                        tracing::warn!(error = ?e, task = %enriched.id, "task_worktrees.forget during discard failed");
+                    } else {
+                        forgotten_task_worktrees += 1;
+                    }
+                }
+            }
+        }
+        Err(e) => {
+            tracing::warn!(error = ?e, "list_tasks during discard cascade failed");
+        }
+    }
+
+    // Drop the in-process lock + executor slot for this issue.
+    if let Ok(mut locks) = state.jira_worktree_locks.lock() {
+        locks.remove(&(site.to_string(), issue.to_string()));
+    }
+    if let Ok(mut active) = state.jira_active_executors.lock() {
+        active.remove(&(site.to_string(), issue.to_string()));
+    }
+
+    Ok(proto_ops::jira_discard::Result {
+        jira_site: site.to_string(),
+        jira_issue_id: issue.to_string(),
+        worktree_removed,
+        forgotten_task_worktrees,
+    })
+}
+
+#[tauri::command]
+pub async fn jira_discard(
+    state: State<'_, Arc<AppState>>,
+    args: proto_ops::jira_discard::Args,
+) -> Result<proto_ops::jira_discard::Result, String> {
+    jira_discard_core(&state, &args)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Deterministic content key for an aggregate review attempt: a repeat build on
+/// the SAME branch state (same `base_sha`/`head_sha`) dedups to a no-op, while
+/// a new branch HEAD yields a new attempt. Hashed so the raw site/issue is
+/// never a path/key component on the file backend.
+fn issue_review_idempotency_key(
+    site: &str,
+    issue_id: &str,
+    base_sha: &str,
+    head: Option<&str>,
+) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(site.as_bytes());
+    h.update([0]);
+    h.update(issue_id.as_bytes());
+    h.update([0]);
+    h.update(base_sha.as_bytes());
+    h.update([0]);
+    h.update(head.unwrap_or("").as_bytes());
+    let digest = h.finalize();
+    let mut s = String::with_capacity(digest.len() * 2);
+    for b in digest {
+        use std::fmt::Write;
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
+
+/// Shared `jira_review` logic (Slice 5): build the aggregate (issue-owned)
+/// branch-diff review, stamp the deterministic idempotency key, and persist it.
+///
+/// STATE-NEUTRAL: this builds the committed branch diff via the hardened,
+/// read-only git layer and persists ONLY the aggregate package — it NEVER
+/// calls `set_estado`/`done`/`apply_review_decision`, never appends a task log,
+/// and never reads or mutates any subtask estado.
+pub(crate) async fn jira_review_core(
+    state: &AppState,
+    jira_site: &str,
+    jira_issue_id: &str,
+) -> Result<crate::store::IssueReviewPackage, crate::review::issue::IssueReviewError> {
+    use crate::review::issue::IssueReviewError;
+    let mut pkg =
+        crate::review::issue::build_issue_review(state.repo.as_ref(), jira_site, jira_issue_id)
+            .await?;
+    pkg.idempotency_key = issue_review_idempotency_key(
+        jira_site,
+        jira_issue_id,
+        &pkg.base_sha,
+        pkg.head_sha.as_deref(),
+    );
+    let stored = state
+        .repo
+        .upsert_issue_review_package(&pkg)
+        .await
+        .map_err(|e| IssueReviewError::DiffFailed(e.to_string()))?;
+    Ok(stored)
+}
+
+#[tauri::command]
+pub async fn jira_review(
+    state: State<'_, Arc<AppState>>,
+    jira_site: String,
+    jira_issue_id: String,
+) -> Result<crate::store::IssueReviewPackage, String> {
+    jira_review_core(&state, &jira_site, &jira_issue_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 // ───────────────────────── PTY / terminal ─────────────────────────
@@ -1371,6 +2557,16 @@ pub fn pty_kill(state: State<'_, Arc<AppState>>, session_id: String) -> Result<(
         .map_err(to_str_err)?
         .remove(&session_id)
         .ok_or_else(|| format!("session {session_id} not found"))?;
+    // Slice 4: clear the one-executor-per-issue registry for whichever issue
+    // (if any) this session was the active executor of, so a follow-up task
+    // for the same issue can start immediately.
+    if let Ok(mut active) = state.jira_active_executors.lock() {
+        // Drop only the `Live` slot for this session; leave any `Reserving`
+        // slot (owned by an in-flight start) untouched.
+        active.retain(
+            |_, slot| !matches!(slot, crate::jira::worktree::ExecutorSlot::Live(sid) if sid == &session_id),
+        );
+    }
     session.kill().map_err(to_str_err)
 }
 
@@ -1693,6 +2889,54 @@ pub enum TaskAgentMode {
     Plan,
 }
 
+/// RAII reservation for the one-executor-per-issue slot. Created (as
+/// `Reserving`) at guard time; `commit(session_id)` flips it to `Live` once
+/// the session exists. If dropped without `commit` — any early return or
+/// panic during the async spawn window — the still-`Reserving` slot is
+/// removed so the issue is never wedged. A `Live` slot is never clobbered.
+struct ExecutorReservation {
+    state: Arc<AppState>,
+    key: (String, String),
+    committed: bool,
+}
+
+impl ExecutorReservation {
+    fn new(state: Arc<AppState>, key: (String, String)) -> Self {
+        Self {
+            state,
+            key,
+            committed: false,
+        }
+    }
+
+    fn commit(mut self, session_id: String) {
+        if let Ok(mut active) = self.state.jira_active_executors.lock() {
+            active.insert(
+                self.key.clone(),
+                crate::jira::worktree::ExecutorSlot::Live(session_id),
+            );
+        }
+        self.committed = true;
+    }
+}
+
+impl Drop for ExecutorReservation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Ok(mut active) = self.state.jira_active_executors.lock() {
+            // Only clear our own `Reserving` slot — never a `Live` one.
+            if matches!(
+                active.get(&self.key),
+                Some(crate::jira::worktree::ExecutorSlot::Reserving)
+            ) {
+                active.remove(&self.key);
+            }
+        }
+    }
+}
+
 /// Launch the configured agent CLI in a PTY
 /// running inside the task's project directory. The frontend then
 /// calls `pty_attach` with the returned `session_id` to stream output.
@@ -1784,6 +3028,39 @@ pub async fn start_task_agent(
             "project path does not exist: {} — fix it in Settings → Projetos",
             project_path.display()
         ));
+    }
+
+    // 2b. One-executor-per-issue guard (Slice 4). Only execution runs
+    //     contend for the issue's shared worktree; planning is exempt. The
+    //     guard refuses a second start while another task for the same Jira
+    //     issue has a LIVE agent (registry entry whose session is still in
+    //     `state.sessions`); a stale entry (session gone after kill/exit)
+    //     is reaped here and the start proceeds. Checked BEFORE any session
+    //     is created and before the `Fazendo` transition, so a refusal
+    //     leaves no side effects.
+    // Held from the guard until just after the session is created, so the
+    // slot is claimed atomically (closing the check-then-act TOCTOU); if any
+    // step below early-returns, the reservation's Drop clears the slot.
+    let mut executor_reservation: Option<ExecutorReservation> = None;
+    if mode == TaskAgentMode::Execute {
+        if let (Some(site), Some(issue)) = (&task.jira_site, &task.jira_issue_id) {
+            let key = (site.clone(), issue.clone());
+            {
+                let mut active = state.jira_active_executors.lock().map_err(to_str_err)?;
+                let sessions = state.sessions.lock().map_err(to_str_err)?;
+                if crate::jira::worktree::issue_executor_busy(&active, &sessions, &key) {
+                    return Err(
+                        "jira_worktree_busy: another task for this Jira issue already has a running agent"
+                            .to_string(),
+                    );
+                }
+                // Not busy (no entry, or a stale Live whose session is gone)
+                // → claim the slot as Reserving under the held lock so a
+                // concurrent start is refused during our async spawn window.
+                active.insert(key.clone(), crate::jira::worktree::ExecutorSlot::Reserving);
+            }
+            executor_reservation = Some(ExecutorReservation::new(Arc::clone(state.inner()), key));
+        }
     }
 
     // Prepare the git workspace from the task's declarative config: pull the
@@ -1882,6 +3159,12 @@ pub async fn start_task_agent(
         .lock()
         .map_err(to_str_err)?
         .insert(session_id.clone(), session.clone());
+    // Slice 4: commit the one-executor reservation to `Live` now that the
+    // session exists (execution runs only; `None` for non-jira/plan starts).
+    // The pre-spawn guard already claimed the slot as `Reserving`.
+    if let Some(reservation) = executor_reservation.take() {
+        reservation.commit(session_id.clone());
+    }
     tracing::info!(
         task = %task_id, agent = ?agent_kind, model = %model, resumed, auto_mode,
         session = %session_id, "task agent started"
@@ -3118,6 +4401,9 @@ mod tests {
             file: "ui/triage-modal.js".to_string(),
             what_failed: "task_id null hardcoded".to_string(),
             action: "criar a task no backend".to_string(),
+            jira_site: None,
+            jira_issue_id: None,
+            jira_key_display: None,
             created_at_ms: 0,
         }
     }
@@ -3197,6 +4483,9 @@ mod tests {
             worktree_path: None,
             branch: None,
             blocked_by: Vec::new(),
+            jira_site: None,
+            jira_issue_id: None,
+            jira_key_display: None,
         }
     }
 

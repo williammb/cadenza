@@ -22,6 +22,7 @@ mod base;
 mod caps;
 mod collect;
 mod git;
+pub mod issue;
 mod patch;
 mod risk;
 mod state;
@@ -690,5 +691,32 @@ mod tests {
         let json = serde_json::to_string(&pkg).unwrap();
         let back: ReviewPackage = serde_json::from_str(&json).unwrap();
         assert_eq!(pkg, back);
+    }
+
+    /// Slice 5 additivity proof: a stored-format task package carries NO owner
+    /// discriminator (we deliberately did NOT add a `ReviewOwner` enum), so an
+    /// older serialized payload deserializes unchanged. Only the required
+    /// fields are present; every additive field falls back via `serde(default)`.
+    #[test]
+    fn old_task_package_still_deserializes() {
+        let stored = r#"{
+            "task_id": "T-7",
+            "attempt": 3,
+            "idempotency_key": "k-old",
+            "status": "pending",
+            "evidence_state": "passed",
+            "needs_focused_human_review": false,
+            "risk_heuristic_version": 1,
+            "created_at_ms": 999
+        }"#;
+        let pkg: ReviewPackage = serde_json::from_str(stored).unwrap();
+        assert_eq!(pkg.task_id, "T-7");
+        assert_eq!(pkg.attempt, 3);
+        assert_eq!(pkg.status, PackageStatus::Pending);
+        assert_eq!(pkg.evidence_state, EvidenceState::Passed);
+        // Additive fields defaulted.
+        assert!(pkg.changed_files.is_empty());
+        assert!(pkg.uncommitted_patch.is_none());
+        assert!(!pkg.truncated);
     }
 }

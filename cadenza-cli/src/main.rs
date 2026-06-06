@@ -80,6 +80,85 @@ enum Cmd {
         #[arg(long = "idempotency-key")]
         idempotency_key: Option<String>,
     },
+    /// Materialize an analysis run into proposals (server-stamped Jira
+    /// identity). The capability secret is read from $CADENZA_RUN_SECRET
+    /// (or STDIN with --secret-stdin) — never from argv. Subtasks are read
+    /// from a JSON file (`[{"title","body"}, ...]`), or "-" for STDIN.
+    JiraMaterialize {
+        #[arg(long)]
+        analysis_run_id: String,
+        /// Read the capability secret from STDIN (first line) instead of
+        /// $CADENZA_RUN_SECRET.
+        #[arg(long)]
+        secret_stdin: bool,
+        /// Path to a JSON file with `[{"title","body"}, ...]`; or "-" for
+        /// STDIN. Cannot be "-" together with --secret-stdin.
+        #[arg(long)]
+        subtasks_file: String,
+    },
+    /// Verify the configured Jira credentials by calling `/myself`. Prints
+    /// the resolved account id + display name. Exit 2 if Jira is not
+    /// configured, 11 on auth failure.
+    JiraTestConnection {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Fetch one Jira issue by key (e.g. PROJ-123). Prints the summary +
+    /// the description converted to Markdown. Exit 30 if not found.
+    JiraFetchIssue {
+        key: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// List the caller's open (not-Done) assigned Jira issues. The result
+    /// may be marked partial if the page cap was hit.
+    JiraListAssigned {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Build + persist the aggregate (issue-owned) review: the committed
+    /// branch diff of the shared per-issue worktree. STATE-NEUTRAL — does not
+    /// move any subtask. Exit 1 if the worktree is not yet Ready, 30 if the
+    /// issue record is absent. Prints the package JSON.
+    JiraReview {
+        #[arg(long)]
+        site: String,
+        #[arg(long)]
+        issue: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Import a Jira issue into a project and spawn the analyst agent. The
+    /// analyst decomposes the issue into subtasks and submits them via
+    /// `jira-materialize`. Re-importing an issue that already has active work
+    /// is idempotent (no re-fetch/spawn).
+    JiraImport {
+        /// Jira issue key, e.g. PROJ-123.
+        issue_ref: String,
+        /// Target project id.
+        #[arg(long)]
+        project: String,
+        /// Analyst agent kind (claude-code|codex|copilot|antigravity|opencode).
+        #[arg(long)]
+        analyst: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Discard an imported Jira issue: remove its worktree, revoke its run
+    /// secret, and delete its record. Refuses a dirty worktree unless
+    /// `--force` is given. RETAINS the produced subtasks, branch, and review
+    /// packages.
+    JiraDiscard {
+        #[arg(long)]
+        site: String,
+        #[arg(long)]
+        issue: String,
+        /// Override the dirty-worktree refusal (loses uncommitted work).
+        #[arg(long)]
+        force: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Print this project's quality contract — the checks the agent must
     /// run before `done`. Resolution order app-side: `--project` → env
     /// (`TASKAI_PROJECT_ID`/`CADENZA_PROJECT_ID`) → the app's active project.
@@ -364,6 +443,44 @@ async fn run(cli: Cli) -> Result<()> {
             )
             .await?
         }
+        Cmd::JiraMaterialize {
+            analysis_run_id,
+            secret_stdin,
+            subtasks_file,
+        } => {
+            cmd_jira_materialize(
+                &mut client,
+                cli.json,
+                analysis_run_id,
+                secret_stdin,
+                subtasks_file,
+            )
+            .await?
+        }
+        Cmd::JiraTestConnection { json } => {
+            cmd_jira_test_connection(&mut client, cli.json || json).await?
+        }
+        Cmd::JiraFetchIssue { key, json } => {
+            cmd_jira_fetch_issue(&mut client, cli.json || json, key).await?
+        }
+        Cmd::JiraListAssigned { json } => {
+            cmd_jira_list_assigned(&mut client, cli.json || json).await?
+        }
+        Cmd::JiraReview { site, issue, json } => {
+            cmd_jira_review(&mut client, cli.json || json, site, issue).await?
+        }
+        Cmd::JiraImport {
+            issue_ref,
+            project,
+            analyst,
+            json,
+        } => cmd_jira_import(&mut client, cli.json || json, issue_ref, project, analyst).await?,
+        Cmd::JiraDiscard {
+            site,
+            issue,
+            force,
+            json,
+        } => cmd_jira_discard(&mut client, cli.json || json, site, issue, force).await?,
         Cmd::Quality { task, project } => cmd_quality(&mut client, cli.json, task, project).await?,
         Cmd::Done {
             task_id,
@@ -539,6 +656,8 @@ async fn cmd_propose(
         file,
         what_failed,
         action,
+        jira_site: None,
+        jira_issue_id: None,
     };
     let started: ops::propose::Result = client.request(ops::OP_PROPOSE, propose_args).await?;
     eprintln!("propose enviado — id={}", started.proposta_id);
@@ -575,6 +694,229 @@ async fn cmd_propose(
         return Err(anyhow::Error::new(WireError(
             cadenza_proto::ErrorBody::new("proposal_rejected", "human rejected the proposal"),
         )));
+    }
+    Ok(())
+}
+
+/// Resolve the capability secret. Pure helper so it is unit-testable:
+/// `--secret-stdin` reads `stdin_line`; otherwise the `env` lookup is used.
+/// Returns `UsageError` (exit 2) if neither path yields a non-empty secret.
+fn resolve_run_secret(
+    secret_stdin: bool,
+    env_secret: Option<String>,
+    stdin_line: Option<String>,
+) -> Result<String> {
+    let raw = if secret_stdin { stdin_line } else { env_secret };
+    let secret = raw.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    secret.ok_or_else(|| {
+        anyhow::Error::new(UsageError(
+            "no run secret: set $CADENZA_RUN_SECRET or pass --secret-stdin".to_string(),
+        ))
+    })
+}
+
+/// Parse the subtasks JSON (`[{"title","body"}, ...]`). Pure helper so it is
+/// unit-testable. Malformed input ⇒ `UsageError` (exit 2).
+fn parse_subtasks(text: &str) -> Result<Vec<ops::jira_materialize::Subtask>> {
+    serde_json::from_str(text)
+        .map_err(|e| anyhow::Error::new(UsageError(format!("invalid subtasks JSON: {e}"))))
+}
+
+async fn cmd_jira_materialize(
+    client: &mut Client,
+    json: bool,
+    analysis_run_id: String,
+    secret_stdin: bool,
+    subtasks_file: String,
+) -> Result<()> {
+    use std::io::Read as _;
+
+    let subtasks_from_stdin = subtasks_file == "-";
+    if secret_stdin && subtasks_from_stdin {
+        return Err(anyhow::Error::new(UsageError(
+            "cannot read both --secret-stdin and subtasks_file=- from STDIN".to_string(),
+        )));
+    }
+
+    // Read STDIN once if either source needs it.
+    let stdin_line = if secret_stdin {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_line(&mut buf)
+            .context("read secret from stdin")?;
+        Some(buf)
+    } else {
+        None
+    };
+
+    let run_secret = resolve_run_secret(
+        secret_stdin,
+        std::env::var("CADENZA_RUN_SECRET").ok(),
+        stdin_line,
+    )?;
+
+    let subtasks_text = if subtasks_from_stdin {
+        let mut buf = String::new();
+        std::io::stdin()
+            .read_to_string(&mut buf)
+            .context("read subtasks from stdin")?;
+        buf
+    } else {
+        std::fs::read_to_string(&subtasks_file)
+            .with_context(|| format!("read subtasks file {subtasks_file}"))?
+    };
+    let subtasks = parse_subtasks(&subtasks_text)?;
+
+    let args = ops::jira_materialize::Args {
+        analysis_run_id,
+        run_secret,
+        subtasks,
+    };
+    let result: ops::jira_materialize::Result =
+        client.request(ops::OP_JIRA_MATERIALIZE, args).await?;
+
+    if json {
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        for t in &result.created {
+            println!(
+                "{}\t{}\t{}",
+                t.subtask_index, t.proposta_id, t.idempotency_key
+            );
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_jira_test_connection(client: &mut Client, json: bool) -> Result<()> {
+    let args = ops::jira_test_connection::Args {};
+    let result: ops::jira_test_connection::Result =
+        client.request(ops::OP_JIRA_TEST_CONNECTION, args).await?;
+    if json {
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        println!("{}\t{}", result.account_id, result.display_name);
+    }
+    Ok(())
+}
+
+async fn cmd_jira_fetch_issue(client: &mut Client, json: bool, key: String) -> Result<()> {
+    let args = ops::jira_fetch_issue::Args { key };
+    let result: ops::jira_fetch_issue::Result =
+        client.request(ops::OP_JIRA_FETCH_ISSUE, args).await?;
+    if json {
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        println!("{}\t{}", result.jira_key, result.summary);
+        if !result.description_markdown.is_empty() {
+            println!("{}", result.description_markdown);
+        }
+    }
+    Ok(())
+}
+
+async fn cmd_jira_list_assigned(client: &mut Client, json: bool) -> Result<()> {
+    let args = ops::jira_list_assigned::Args {};
+    let result: ops::jira_list_assigned::Result =
+        client.request(ops::OP_JIRA_LIST_ASSIGNED, args).await?;
+    if json {
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        for issue in &result.issues {
+            println!("{}\t{}", issue.key, issue.summary);
+        }
+        if result.partial {
+            eprintln!("warning: result is partial (page cap reached)");
+        }
+    }
+    Ok(())
+}
+
+/// Build + persist the aggregate (issue-owned) review and print it. The
+/// returned package is a JSON passthrough (its concrete type lives in the app
+/// crate), so output is always JSON; `--json` just selects compact vs pretty.
+async fn cmd_jira_review(
+    client: &mut Client,
+    json: bool,
+    site: String,
+    issue: String,
+) -> Result<()> {
+    let args = ops::jira_review::Args {
+        jira_site: site,
+        jira_issue_id: issue,
+    };
+    let result: ops::jira_review::Result = client.request(ops::OP_JIRA_REVIEW, args).await?;
+    if json {
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&result)?);
+    }
+    Ok(())
+}
+
+/// Import a Jira issue + spawn the analyst. Prints the outcome
+/// (`imported`/`existing_active`) and the key identity fields; never prints any
+/// secret (the wire `Result` carries none — it reaches the analyst via ENV).
+async fn cmd_jira_import(
+    client: &mut Client,
+    json: bool,
+    issue_ref: String,
+    project: String,
+    analyst: String,
+) -> Result<()> {
+    let args = ops::jira_import::Args {
+        issue_ref,
+        project_id: project,
+        analyst_kind: analyst,
+    };
+    let result: ops::jira_import::Result = client.request(ops::OP_JIRA_IMPORT, args).await?;
+    if json {
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        match &result {
+            ops::jira_import::Result::Imported {
+                jira_key,
+                analysis_run_id,
+                session_id,
+                ..
+            } => {
+                println!("imported\t{jira_key}\t{analysis_run_id}\t{session_id}");
+            }
+            ops::jira_import::Result::ExistingActive {
+                jira_key,
+                analysis_run_id,
+                ..
+            } => {
+                let run = analysis_run_id.as_deref().unwrap_or("-");
+                println!("existing_active\t{jira_key}\t{run}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Discard an imported Jira issue. Prints whether a worktree was removed and
+/// how many subtask sidecars were forgotten.
+async fn cmd_jira_discard(
+    client: &mut Client,
+    json: bool,
+    site: String,
+    issue: String,
+    force: bool,
+) -> Result<()> {
+    let args = ops::jira_discard::Args {
+        jira_site: site,
+        jira_issue_id: issue,
+        force,
+    };
+    let result: ops::jira_discard::Result = client.request(ops::OP_JIRA_DISCARD, args).await?;
+    if json {
+        println!("{}", serde_json::to_string(&result)?);
+    } else {
+        println!(
+            "discarded\tworktree_removed={}\tforgotten_task_worktrees={}",
+            result.worktree_removed, result.forgotten_task_worktrees
+        );
     }
     Ok(())
 }
@@ -1165,6 +1507,93 @@ impl std::error::Error for TokenError {}
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn jira_materialize_reads_secret_from_env() {
+        // env path (secret_stdin = false) takes the env value.
+        let got = resolve_run_secret(false, Some("env-secret".into()), None).unwrap();
+        assert_eq!(got, "env-secret");
+    }
+
+    #[test]
+    fn jira_materialize_secret_stdin_flag_reads_stdin() {
+        // stdin path (secret_stdin = true) takes the stdin line, ignoring env.
+        let got = resolve_run_secret(
+            true,
+            Some("env-secret".into()),
+            Some("stdin-secret\n".into()),
+        )
+        .unwrap();
+        assert_eq!(got, "stdin-secret");
+    }
+
+    #[test]
+    fn jira_materialize_missing_secret_is_usage_error() {
+        let err = resolve_run_secret(false, None, None).unwrap_err();
+        // Maps to the bad-usage exit code (2) via UsageError.
+        assert!(err.downcast_ref::<UsageError>().is_some());
+        // Empty/whitespace env is also rejected.
+        let err2 = resolve_run_secret(false, Some("   ".into()), None).unwrap_err();
+        assert!(err2.downcast_ref::<UsageError>().is_some());
+    }
+
+    #[test]
+    fn jira_materialize_parses_subtasks_file() {
+        let text = r#"[{"title":"a","body":"b1"},{"title":"c","body":""}]"#;
+        let parsed = parse_subtasks(text).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].title, "a");
+        assert_eq!(parsed[1].body, "");
+        // Malformed JSON ⇒ UsageError (exit 2).
+        let err = parse_subtasks("not json").unwrap_err();
+        assert!(err.downcast_ref::<UsageError>().is_some());
+    }
+
+    #[test]
+    fn jira_materialize_clap_parses() {
+        let cli = Cli::try_parse_from([
+            "cadenza-cli",
+            "jira-materialize",
+            "--analysis-run-id",
+            "run-1",
+            "--subtasks-file",
+            "subs.json",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::JiraMaterialize {
+                analysis_run_id,
+                secret_stdin,
+                subtasks_file,
+            } => {
+                assert_eq!(analysis_run_id, "run-1");
+                assert!(!secret_stdin);
+                assert_eq!(subtasks_file, "subs.json");
+            }
+            other => panic!("expected Cmd::JiraMaterialize, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn jira_review_clap_parses() {
+        let cli = Cli::try_parse_from([
+            "cadenza-cli",
+            "jira-review",
+            "--site",
+            "https://x.atlassian.net",
+            "--issue",
+            "10001",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::JiraReview { site, issue, json } => {
+                assert_eq!(site, "https://x.atlassian.net");
+                assert_eq!(issue, "10001");
+                assert!(!json);
+            }
+            other => panic!("expected Cmd::JiraReview, got {other:?}"),
+        }
+    }
 
     /// `plan <id> --body "..."` parses with append-by-default semantics.
     #[test]

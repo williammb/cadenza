@@ -238,6 +238,70 @@ pub(crate) async fn collect_changes(git: &GitCtx, base: &BaseResolution) -> Coll
     }
 }
 
+/// Collect the committed `base..HEAD` changed-file set for the aggregate
+/// (issue-owned) review (Slice 5). Branch-diff ONLY: no staged/unstaged/
+/// untracked sources, no fingerprint — just the committed range, parsed with
+/// the same `--name-status`/`--numstat` parsers as the per-task path.
+///
+/// Returns the changed files plus `truncated` (byte cap clipped any read) and
+/// `both_failed` (BOTH the name-status and numstat reads errored — the caller
+/// turns that into a hard `DiffFailed`). Non-fatal git errors are folded into
+/// `errors`.
+pub(crate) struct CommittedChanges {
+    pub files: Vec<ChangedFile>,
+    pub truncated: bool,
+    pub both_failed: bool,
+    pub errors: Vec<CollectionError>,
+}
+
+pub(crate) async fn collect_committed_range(git: &GitCtx, range: &str) -> CommittedChanges {
+    let mut acc: BTreeMap<String, Entry> = BTreeMap::new();
+    let mut errors: Vec<CollectionError> = Vec::new();
+    let mut truncated = false;
+    let mut name_status_failed = false;
+    let mut numstat_failed = false;
+
+    match git.run_diff(&["diff", "--name-status", "-z", range]).await {
+        Ok(o) => {
+            truncated |= o.truncated;
+            parse_name_status(&o.stdout, &mut acc);
+        }
+        Err(e) => {
+            name_status_failed = true;
+            errors.push(err(e.code, e.detail));
+        }
+    }
+    match git.run_diff(&["diff", "--numstat", "-z", range]).await {
+        Ok(o) => {
+            truncated |= o.truncated;
+            parse_numstat(&o.stdout, &mut acc);
+        }
+        Err(e) => {
+            numstat_failed = true;
+            errors.push(err(e.code, e.detail));
+        }
+    }
+
+    let files = acc
+        .into_iter()
+        .map(|(path, e)| ChangedFile {
+            path,
+            change: e.change.unwrap_or(FileChange::Modified),
+            renamed_from: e.renamed_from,
+            lines_added: e.lines_added,
+            lines_deleted: e.lines_deleted,
+            binary: false,
+        })
+        .collect();
+
+    CommittedChanges {
+        files,
+        truncated,
+        both_failed: name_status_failed && numstat_failed,
+        errors,
+    }
+}
+
 /// `sha256:<hex>` of arbitrary bytes — the worktree/index fingerprint.
 pub(crate) fn fingerprint_of(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};

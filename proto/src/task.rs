@@ -74,6 +74,24 @@ pub struct Task {
     /// `task-blockers.json`, not in legacy task frontmatter.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blocked_by: Vec<String>,
+
+    /// Jira site (cloud id / base URL) this task was imported from.
+    /// Persisted on SQL backends as a task column and in the
+    /// `task-jira.json` sidecar on the file backend (the YAML frontmatter
+    /// is frozen for Node.js compat). `None` when not Jira-derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jira_site: Option<String>,
+
+    /// Jira issue id (numeric/opaque) this task was imported from. Stored
+    /// alongside `jira_site`. `None` when not Jira-derived.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jira_issue_id: Option<String>,
+
+    /// Computed at read time from `JiraIssueRecord`; NEVER persisted. See
+    /// `enrich_task`. Falls back to `"<site>/<issue_id>"` when no record
+    /// is cached.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jira_key_display: Option<String>,
 }
 
 #[cfg(test)]
@@ -117,5 +135,47 @@ mod tests {
         .unwrap();
 
         assert!(task.blocked_by.is_empty());
+    }
+
+    #[test]
+    fn task_jira_fields_default_to_none_when_absent() {
+        let task: Task = serde_json::from_str(
+            r#"{
+                "id": "T-1",
+                "titulo": "Example",
+                "estado": "a_fazer",
+                "responsavel": "humano",
+                "body": "body"
+            }"#,
+        )
+        .unwrap();
+
+        assert!(task.jira_site.is_none());
+        assert!(task.jira_issue_id.is_none());
+        assert!(task.jira_key_display.is_none());
+    }
+
+    #[test]
+    fn task_jira_identity_roundtrips_json() {
+        let task = Task {
+            id: "T-1".into(),
+            titulo: "Example".into(),
+            estado: Estado::AFazer,
+            responsavel: "humano".into(),
+            body: "body".into(),
+            worktree_path: None,
+            branch: None,
+            blocked_by: Vec::new(),
+            jira_site: Some("https://x.atlassian.net".into()),
+            jira_issue_id: Some("10001".into()),
+            jira_key_display: None,
+        };
+        let json = serde_json::to_string(&task).unwrap();
+        // Computed field is dropped on the wire when None.
+        assert!(!json.contains("jira_key_display"));
+        let back: Task = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.jira_site.as_deref(), Some("https://x.atlassian.net"));
+        assert_eq!(back.jira_issue_id.as_deref(), Some("10001"));
+        assert!(back.jira_key_display.is_none());
     }
 }
