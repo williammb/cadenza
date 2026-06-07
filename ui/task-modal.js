@@ -404,6 +404,28 @@ async function loadReview(taskId, estado) {
   }
   reviewBodyEl.append(stateRow);
 
+  // ── measured token usage (feature #1) ──
+  // Best-effort: Claude-only, silent when unavailable; never blocks the render.
+  invoke("get_task_usage", { taskId })
+    .then((usage) => {
+      if (!usage || myGen !== reviewLoadGen || myOpen !== openGen) return;
+      // "total" = new tokens (input + output + cache writes); cache READS are
+      // re-sent context (grows each turn), excluded from the headline number.
+      const total =
+        (usage.input_tokens || 0) +
+        (usage.output_tokens || 0) +
+        (usage.cache_creation_tokens || 0);
+      const line = document.createElement("p");
+      line.className = "review-usage modal-status";
+      line.textContent = t("review-usage", {
+        total,
+        input: usage.input_tokens || 0,
+        output: usage.output_tokens || 0,
+      });
+      reviewBodyEl.append(line);
+    })
+    .catch(() => {});
+
   // ── summary ──
   if (pkg.summary && pkg.summary.trim()) {
     reviewBodyEl.append(reviewSubhead("review-summary-header"));

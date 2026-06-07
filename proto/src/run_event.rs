@@ -24,6 +24,50 @@ use serde::{Deserialize, Serialize};
 /// envelope/payload muda de forma que um leitor queira ramificar.
 pub const RUN_EVENT_SCHEMA_VERSION: u32 = 1;
 
+/// Observação de uso (tokens) de um run, MEDIDA da telemetria nativa do
+/// agente — nunca estimada (feature #1). Custo em $ é deixado de fora de
+/// propósito: depende de uma tabela de preços por modelo que mudaria sozinha;
+/// expomos contagens medidas e dizemos "indisponível" quando não há fonte.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageObservation {
+    #[serde(default)]
+    pub schema_version: u32,
+    /// De onde os números vieram, ex.: `claude_session_jsonl`.
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_creation_tokens: u64,
+}
+
+impl UsageObservation {
+    pub fn new(source: String) -> Self {
+        Self {
+            schema_version: RUN_EVENT_SCHEMA_VERSION,
+            source,
+            ..Default::default()
+        }
+    }
+
+    /// Total de tokens NOVOS do run: entrada não-cacheada + saída + escrita de
+    /// cache. **Exclui `cache_read_tokens`** de propósito — leituras de cache
+    /// são o contexto re-enviado a cada turno (cresce a cada turno), então
+    /// somá-las contaria o mesmo contexto N vezes e inflaria o "total".
+    /// `cache_read_tokens` é o tamanho do contexto cacheado (snapshot final),
+    /// reportado à parte.
+    pub fn total_tokens(&self) -> u64 {
+        self.input_tokens
+            .saturating_add(self.output_tokens)
+            .saturating_add(self.cache_creation_tokens)
+    }
+}
+
 /// Um registro append-only do log de auditoria de runs.
 ///
 /// `ts_ms` é epoch-ms cunhado no servidor
@@ -123,6 +167,15 @@ pub enum RunEventKind {
         #[serde(default)]
         safety_commit: Option<String>,
     },
+    /// Uso (tokens) medido de um run (feature #1). Cumulativo por conversa no
+    /// momento da emissão (tipicamente no fim da sessão). `conversation_id`
+    /// permite agregar distinguindo "mesma conversa re-observada" (manter o
+    /// último) de "conversas distintas na mesma task" (somar).
+    UsoObservado {
+        usage: UsageObservation,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        conversation_id: Option<String>,
+    },
     /// Catch-all de forward-compat: um leitor antigo decodifica um tipo de
     /// evento futuro aqui em vez de falhar (o payload é descartado).
     #[serde(other)]
@@ -140,6 +193,7 @@ impl RunEventKind {
             RunEventKind::PropostaDecidida { .. } => "proposta_decidida",
             RunEventKind::CheckpointCriado { .. } => "checkpoint_criado",
             RunEventKind::RunRevertido { .. } => "run_revertido",
+            RunEventKind::UsoObservado { .. } => "uso_observado",
             RunEventKind::Desconhecido => "desconhecido",
         }
     }

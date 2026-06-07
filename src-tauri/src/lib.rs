@@ -33,6 +33,7 @@ mod secrets;
 mod spawn;
 mod store;
 mod terminal;
+mod usage;
 mod win_sd;
 mod worktrees;
 
@@ -143,6 +144,8 @@ pub fn run() {
             // run timeline / analytics (#8)
             commands::list_run_events,
             commands::get_run_analytics,
+            // cost / token telemetry (#1)
+            commands::get_task_usage,
             // checkpoints / rollback (#6)
             commands::revert_task_checkpoint,
             // review follow-up to agent (#7)

@@ -18,7 +18,7 @@ pub use ideia::{Ideia, IdeiaStatus, NewIdeia};
 pub use jira::{JiraIssueRecord, SecretStatus};
 pub use memory::{MemoryItem, MemorySuggestion, ProjectMemory, SuggestionKind};
 pub use project::ProjectInfo;
-pub use run_event::{RunEvent, RunEventKind, RUN_EVENT_SCHEMA_VERSION};
+pub use run_event::{RunEvent, RunEventKind, UsageObservation, RUN_EVENT_SCHEMA_VERSION};
 pub use task::{Estado, Task};
 pub use triage::{Decisao, DecisaoRegistro, NewProposta, Proposta};
 pub use wire::{ErrorBody, Event, Request, Response};

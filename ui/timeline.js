@@ -165,6 +165,18 @@ function describe(ev) {
       if (k.decisao) parts.push(k.decisao);
       if (k.proposta_id) parts.push(k.proposta_id);
       break;
+    case "uso_observado": {
+      const u = k.usage || {};
+      // "total" = new tokens (input + output + cache writes); cache READS are
+      // re-sent context, not new tokens, so they're excluded from the headline.
+      const total =
+        (u.input_tokens || 0) +
+        (u.output_tokens || 0) +
+        (u.cache_creation_tokens || 0);
+      parts.push(t("timeline-usage-tokens", { total }));
+      if (u.model) parts.push(u.model);
+      break;
+    }
     default:
       break;
   }

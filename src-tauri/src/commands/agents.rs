@@ -393,6 +393,10 @@ pub async fn start_task_agent(
         let handle = tokio::runtime::Handle::current();
         let task_for_hook = task_id.clone();
         let sid_for_hook = session_id.clone();
+        let agent_for_hook = agent_kind;
+        // For Claude the conversation id is the session UUID known up front;
+        // used to locate the transcript for usage capture (feature #1).
+        let conv_for_hook = conversation_id_known.clone();
         Some(Box::new(move |reason| {
             let motivo = match reason {
                 crate::terminal::EndReason::Killed => "encerrada",
@@ -402,13 +406,33 @@ pub async fn start_task_agent(
             handle.spawn(async move {
                 crate::audit::record(
                     repo.as_ref(),
-                    Some(task_for_hook),
+                    Some(task_for_hook.clone()),
                     cadenza_proto::RunEventKind::SessaoEncerrada {
                         session_id: Some(sid_for_hook),
                         motivo: motivo.to_string(),
                     },
                 )
                 .await;
+                // Feature #1: capture MEASURED token usage for Claude runs once
+                // the session ended (the transcript is now ~complete). A short
+                // delay lets the JSONL finish flushing. Best-effort, Claude-only;
+                // other agents degrade to no usage event.
+                if agent_for_hook == AgenteKind::ClaudeCode {
+                    if let Some(conv) = conv_for_hook {
+                        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                        if let Some(usage) = crate::usage::claude_usage(&conv) {
+                            crate::audit::record(
+                                repo.as_ref(),
+                                Some(task_for_hook),
+                                cadenza_proto::RunEventKind::UsoObservado {
+                                    usage,
+                                    conversation_id: Some(conv),
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                }
             });
         }))
     } else {
