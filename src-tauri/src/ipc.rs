@@ -1244,11 +1244,11 @@ async fn review_decision_op(
     args: &ops::review_decision::Args,
 ) -> Result<ops::review_decision::Result, ErrorBody> {
     // The transition guard + atomic state/log/decision writes live in one
-    // place (`commands::apply_review_decision`); this handler only adapts
+    // place (`crate::review::apply_review_decision`); this handler only adapts
     // the typed error into an `ErrorBody`. `check_id` is performed inside
     // the shared core via `validate_id`.
     let note = args.note.clone().unwrap_or_default();
-    crate::commands::apply_review_decision(
+    crate::review::apply_review_decision(
         deps.state.repo.as_ref(),
         &args.task_id,
         args.verdict,
