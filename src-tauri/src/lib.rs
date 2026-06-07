@@ -37,7 +37,7 @@ mod worktrees;
 
 use commands::AppState;
 
-fn data_dir() -> PathBuf {
+pub(crate) fn data_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".cadenza")
