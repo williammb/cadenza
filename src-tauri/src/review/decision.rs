@@ -103,6 +103,20 @@ pub(crate) async fn apply_review_decision(
         .await
         .map_err(map_decision_store_err)?;
 
+    // Run timeline (feature #8): emit in the shared core so BOTH callers (the
+    // webview command and the IPC op) are covered exactly once. The core stays
+    // AppState-free — it records through the same `&dyn Repository`.
+    crate::audit::record(
+        repo,
+        Some(task_id.to_string()),
+        cadenza_proto::RunEventKind::RevisaoDecidida {
+            verdict: label.to_string(),
+            nota: (!note.trim().is_empty()).then(|| note.to_string()),
+            novo_estado: Some(target_estado.as_str().to_string()),
+        },
+    )
+    .await;
+
     Ok(target_estado)
 }
 

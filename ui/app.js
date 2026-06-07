@@ -31,6 +31,7 @@ import {
   setJiraImportRefreshCallback,
 } from "./jira-import.js";
 import { initModalA11y } from "./modal-a11y.js";
+import { openTimeline } from "./timeline.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -439,6 +440,9 @@ function wireTopbar() {
   document
     .getElementById("btn-jira-import")
     .addEventListener("click", () => openJiraImport({ projectId: cachedActiveProject }));
+  document
+    .getElementById("btn-timeline")
+    .addEventListener("click", () => openTimeline());
   document
     .getElementById("btn-settings")
     .addEventListener("click", () => openSettings());

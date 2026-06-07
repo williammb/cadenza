@@ -288,6 +288,21 @@ pub use tasks::*;
 mod attachments;
 pub use attachments::*;
 
+// ───────────────────────── run timeline / analytics (#8) ─────────────────────────
+
+mod analytics;
+pub use analytics::*;
+
+// ───────────────────────── checkpoints / rollback (#6) ─────────────────────────
+
+mod checkpoints;
+pub use checkpoints::*;
+
+// ───────────────────────── review follow-up to agent (#7) ─────────────────────────
+
+mod followup;
+pub use followup::*;
+
 // ───────────────────────── task ↔ project mapping ─────────────────────────
 //
 // Task↔project mapping and active-project handlers live in `projects.rs`.

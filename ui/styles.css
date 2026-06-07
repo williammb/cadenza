@@ -1484,6 +1484,63 @@ textarea::placeholder {
   opacity: 0.75;
 }
 
+/* ============================= RUN TIMELINE (#8) ============================= */
+
+.timeline-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.75rem;
+}
+
+.timeline-stat {
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
+  background: var(--col-bg);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.timeline-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.timeline-row {
+  display: grid;
+  grid-template-columns: minmax(9rem, auto) minmax(8rem, auto) 1fr;
+  gap: 0.5rem;
+  align-items: baseline;
+  padding: 0.4rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--col-bg);
+}
+
+.timeline-when {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.timeline-kind {
+  font-size: 0.85rem;
+}
+
+.timeline-detail {
+  color: var(--muted);
+  font-size: 0.85rem;
+  word-break: break-word;
+}
+
 /* ============================= TERMINAL DRAWER ============================= */
 
 .terminal-drawer {
@@ -2385,6 +2442,12 @@ textarea::placeholder {
 .review-note {
   width: 100%;
   resize: vertical;
+}
+/* Feature #7: per-file inline review comment box under each diff. */
+.review-comment {
+  width: 100%;
+  resize: vertical;
+  margin-top: 0.4rem;
 }
 .review-action-buttons {
   display: flex;

@@ -16,6 +16,7 @@ use async_trait::async_trait;
 use std::time::Duration;
 use thiserror::Error;
 
+mod events_inner;
 mod files;
 mod files_inner;
 mod ideias_inner;
@@ -47,7 +48,7 @@ pub use sqlite::SqliteRepository;
 #[allow(unused_imports)]
 pub use cadenza_proto::{
     Decisao, DecisaoRegistro, Estado, Ideia, IdeiaStatus, JiraIssueRecord, MemoryItem,
-    MemorySuggestion, NewProposta, ProjectMemory, Proposta, SuggestionKind, Task,
+    MemorySuggestion, NewProposta, ProjectMemory, Proposta, RunEvent, SuggestionKind, Task,
 };
 
 /// Unified error covering tasks + triage + transport. Each backend
@@ -70,6 +71,24 @@ pub enum StoreError {
 }
 
 pub type Result<T> = std::result::Result<T, StoreError>;
+
+/// A run-timeline event in its RAW stored form: the JSON `payload` verbatim
+/// plus the promoted columns. Used ONLY by the cross-backend migration
+/// (`migrate::copy_all`) so events move byte-for-byte without a lossy
+/// decode/re-encode through [`cadenza_proto::RunEvent`] — an unknown future
+/// event kind would otherwise be flattened to `Desconhecido` and lose its
+/// `tipo` + payload (feature #8 forward-compat invariant).
+#[derive(Debug, Clone)]
+pub struct RawEvent {
+    pub id: String,
+    pub task_id: Option<String>,
+    pub kind: String,
+    /// The verbatim stored JSON of the event (the full `RunEvent`). On the
+    /// JSONB backend this is a re-serialization of the stored value — data is
+    /// preserved even though byte formatting may differ.
+    pub payload: String,
+    pub ts_ms: i64,
+}
 
 /// Reject ids that could escape the store root via path traversal.
 /// Ids must be a single normal path component (no separators, no `..`,
@@ -360,6 +379,36 @@ pub trait Repository: Send + Sync {
 
     /// Migration dump, ordered `(jira_site, jira_issue_id, attempt)`.
     async fn all_issue_review_packages(&self) -> Result<Vec<IssueReviewPackage>>;
+
+    // ─── run timeline / audit event log (feature #8) ───────────────
+    // Append-only foundation: agent_started, session_ended, done_submitted,
+    // review_decided, proposal_decided. Reads return events in stable
+    // insertion order (oldest first). No update/delete — the log is durable.
+
+    /// Append one audit event. Never updates or deletes.
+    async fn append_event(&self, event: &RunEvent) -> Result<()>;
+
+    /// Events in stable insertion order (oldest first). When `task_id` is
+    /// `Some`, only events scoped to that task. `limit`, when `Some(n)`,
+    /// keeps only the most-recent `n` (still returned oldest-first).
+    /// Consumed by the run-timeline command (a separate workflow); allow
+    /// until wired.
+    #[allow(dead_code)]
+    async fn list_events(&self, task_id: Option<&str>, limit: Option<i64>)
+        -> Result<Vec<RunEvent>>;
+
+    /// Migration dump: every event across all scopes, in insertion order.
+    async fn all_events(&self) -> Result<Vec<RunEvent>>;
+
+    /// RAW migration dump: every event as its verbatim stored payload +
+    /// promoted columns, in insertion order. Used by `copy_all` to move events
+    /// across backends WITHOUT decoding through `RunEvent` (so unknown future
+    /// event kinds survive a backend switch by an older binary).
+    async fn all_events_raw(&self) -> Result<Vec<RawEvent>>;
+
+    /// Append a [`RawEvent`] verbatim (append-only). The migration twin of
+    /// [`append_event`](Repository::append_event); copies the payload as-is.
+    async fn append_event_raw(&self, raw: &RawEvent) -> Result<()>;
 }
 
 // ─── error conversions from the legacy sync engines ────────────────
@@ -410,6 +459,16 @@ impl From<review_inner::ReviewError> for StoreError {
             Inner::Io(e) => StoreError::Io(e),
             Inner::Json(e) => StoreError::BadData(e.to_string()),
             Inner::Other(e) => StoreError::Other(e.to_string()),
+        }
+    }
+}
+
+impl From<events_inner::EventError> for StoreError {
+    fn from(e: events_inner::EventError) -> Self {
+        use events_inner::EventError as Inner;
+        match e {
+            Inner::Io(io) => StoreError::Io(io),
+            Inner::BadData(m) => StoreError::BadData(m),
         }
     }
 }

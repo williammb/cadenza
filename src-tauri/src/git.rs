@@ -229,6 +229,169 @@ pub async fn remove_worktree(repo: &Path, path: &Path, force: bool) -> Result<()
     Ok(())
 }
 
+// ─── checkpoints / rollback (feature #6) ───────────────────────────
+//
+// A checkpoint captures the FULL working-tree state (tracked + untracked,
+// minus .gitignored) of a repo/worktree into a commit object anchored under
+// `refs/cadenza/checkpoints/...`, WITHOUT touching HEAD, the index, or the
+// working tree. Restoring rewinds the working tree back to a snapshot. These
+// are the primitives behind "revert this run" — non-destructive by
+// construction (anchored refs, no force-reset of a branch).
+
+/// Run `git -C <dir> <args...>` with a custom `GIT_INDEX_FILE`, so a
+/// checkpoint can stage into a throwaway index without disturbing the real
+/// one. Same success/stderr handling as [`run_git`].
+async fn run_git_with_index(dir: &Path, index: &Path, args: &[&str]) -> Result<String> {
+    let output = git_command()
+        .arg("-C")
+        .arg(dir)
+        .env("GIT_INDEX_FILE", index)
+        .args(args)
+        .output()
+        .await
+        .with_context(|| format!("failed to run git: git {}", args.join(" ")))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let detail = if stderr.trim().is_empty() {
+            stdout.trim()
+        } else {
+            stderr.trim()
+        };
+        bail!("git {} failed: {}", args.join(" "), detail);
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Snapshot the current working-tree state of `dir` into a commit anchored at
+/// `refname` (e.g. `refs/cadenza/checkpoints/T-42/<uuid>`). Captures tracked
+/// AND untracked files (respecting `.gitignore`), via a throwaway index so the
+/// real index, HEAD, and working tree are left untouched. The anchored ref
+/// keeps the commit from being garbage-collected. Returns the commit sha.
+pub async fn create_checkpoint(dir: &Path, refname: &str) -> Result<String> {
+    let index = std::env::temp_dir().join(format!("cadenza-cp-{}.index", uuid::Uuid::new_v4()));
+    // Seed the throwaway index from HEAD, then overlay the working tree
+    // (`add -A` records modifications, additions, and deletions). The result
+    // is a tree that mirrors the current working state.
+    run_git_with_index(dir, &index, &["read-tree", "HEAD"]).await?;
+    let add_res = run_git_with_index(dir, &index, &["add", "-A"]).await;
+    let tree_res = match add_res {
+        Ok(_) => run_git_with_index(dir, &index, &["write-tree"]).await,
+        Err(e) => Err(e),
+    };
+    // Always clean up the throwaway index, success or failure.
+    let _ = std::fs::remove_file(&index);
+    let tree = tree_res?;
+    let head = rev_parse(dir, "HEAD").await?;
+    let commit = run_git(
+        dir,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &head,
+            "-m",
+            "cadenza checkpoint",
+        ],
+    )
+    .await?;
+    run_git(dir, &["update-ref", refname, &commit]).await?;
+    Ok(commit)
+}
+
+/// Snapshot the CURRENT real index of `dir` (staged content) into a commit
+/// anchored at `refname`, so staged-but-uncommitted blobs stay reachable
+/// across a [`restore_checkpoint`] (which overwrites the index). Best-effort
+/// companion to [`create_checkpoint`] (which captures the working tree but
+/// records working-tree blobs, not the staged ones). Returns the commit sha.
+pub async fn checkpoint_index(dir: &Path, refname: &str) -> Result<String> {
+    // `write-tree` operates on the real index; it writes whatever is staged.
+    let tree = run_git(dir, &["write-tree"]).await?;
+    let head = rev_parse(dir, "HEAD").await?;
+    let commit = run_git(
+        dir,
+        &[
+            "commit-tree",
+            &tree,
+            "-p",
+            &head,
+            "-m",
+            "cadenza pre-revert index",
+        ],
+    )
+    .await?;
+    run_git(dir, &["update-ref", refname, &commit]).await?;
+    Ok(commit)
+}
+
+/// Whether `dir` is a LINKED worktree (`git worktree add`) rather than the
+/// main repository. In a linked worktree the per-worktree git dir differs
+/// from the common dir; in the main repo they are identical. Drives how
+/// aggressively [`restore_checkpoint`] cleans (a disposable worktree can be
+/// rewound harder than a human's main repo).
+pub async fn is_linked_worktree(dir: &Path) -> Result<bool> {
+    let git_dir = run_git(dir, &["rev-parse", "--git-dir"]).await?;
+    let common = run_git(dir, &["rev-parse", "--git-common-dir"]).await?;
+    Ok(git_dir != common)
+}
+
+/// Rewind the working tree of `dir` to the snapshot in `commit` (a checkpoint
+/// created by [`create_checkpoint`]). Tracked files are restored to the
+/// snapshot, files deleted since are brought back, and files added since are
+/// removed. NON-destructive to history: HEAD and the branch ref are NOT moved;
+/// the restored state shows up as ordinary uncommitted working changes.
+///
+/// `remove_nested` controls `git clean`: `true` (`clean -ff -d`, for a
+/// disposable worktree) also removes nested git repos added since the
+/// snapshot; `false` (`clean -f -d`, for the human's main repo) leaves nested
+/// repos in place. Either way `.gitignore`d files are kept (no `-x`).
+///
+/// Returns the list of UNTRACKED paths still present after the rewind (`??`
+/// status lines) — empty means a complete rewind; non-empty signals a PARTIAL
+/// one (e.g. a nested repo `clean` refused to remove) the caller should warn
+/// about.
+///
+/// CAUTION: this overwrites the working tree and deletes added-since untracked
+/// files. Callers MUST snapshot the current state first (see the revert
+/// command) so the rewind is itself reversible.
+pub async fn restore_checkpoint(
+    dir: &Path,
+    commit: &str,
+    remove_nested: bool,
+) -> Result<Vec<String>> {
+    let tree = rev_parse(dir, &format!("{commit}^{{tree}}")).await?;
+    // index ← snapshot tree (working tree untouched yet)
+    run_git(dir, &["read-tree", &tree]).await?;
+    // working tree ← index (overwrites modified/restores deleted snapshot files)
+    run_git(dir, &["checkout-index", "-a", "-f"]).await?;
+    // drop files that exist now but aren't in the snapshot (added since).
+    // -d removes now-empty dirs; .gitignored files are kept (no -x). A second
+    // force (-ff) is needed to remove nested git repos, which we only do in a
+    // disposable worktree — never in the user's main repo.
+    let clean_args: &[&str] = if remove_nested {
+        &["clean", "-ff", "-d"]
+    } else {
+        &["clean", "-f", "-d"]
+    };
+    run_git(dir, clean_args).await?;
+    // Detect leftovers WHILE the index still equals the snapshot tree: a clean
+    // working tree shows no status, so any `??` here is a path that couldn't be
+    // removed (e.g. a nested git repo) — a PARTIAL rewind. Must run before the
+    // `read-tree HEAD` below, which would otherwise flag legitimately-restored
+    // snapshot-untracked files (not in HEAD) as false `??`.
+    let leftovers = run_git(dir, &["status", "--porcelain"])
+        .await?
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with("??"))
+        .map(str::to_string)
+        .collect();
+    // index ← HEAD so the rewound state reads as unstaged working changes,
+    // not a giant staged diff. Working tree is left as the snapshot.
+    run_git(dir, &["read-tree", "HEAD"]).await?;
+    Ok(leftovers)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -447,5 +610,160 @@ mod tests {
         std::fs::write(wt.join("scratch.txt"), b"hi").unwrap();
         remove_worktree(repo.path(), &wt, true).await.unwrap();
         assert!(!wt.exists(), "worktree dir must be gone after force remove");
+    }
+
+    /// Stage + commit a file in `dir` (test helper).
+    fn commit_file(dir: &Path, name: &str, content: &str, msg: &str) {
+        std::fs::write(dir.join(name), content).unwrap();
+        let run = |args: &[&str]| {
+            let ok = StdCommand::new("git")
+                .arg("-C")
+                .arg(dir)
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["add", name]);
+        run(&["commit", "-m", msg]);
+    }
+
+    #[tokio::test]
+    async fn checkpoint_captures_and_restores_working_tree() {
+        let repo = init_repo();
+        let dir = repo.path();
+        commit_file(dir, "a.txt", "1", "add a");
+
+        // Working state to snapshot: a.txt modified + an untracked b.txt.
+        std::fs::write(dir.join("a.txt"), "2").unwrap();
+        std::fs::write(dir.join("b.txt"), "new").unwrap();
+
+        let refname = "refs/cadenza/checkpoints/T-1/cp1";
+        let commit = create_checkpoint(dir, refname).await.unwrap();
+        assert!(!commit.is_empty());
+
+        // create_checkpoint must NOT touch the working tree or HEAD.
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "2");
+        assert_eq!(current_branch(dir).await.unwrap(), "main");
+
+        // Diverge: change a.txt again, add c.txt, delete b.txt.
+        std::fs::write(dir.join("a.txt"), "3").unwrap();
+        std::fs::write(dir.join("c.txt"), "later").unwrap();
+        std::fs::remove_file(dir.join("b.txt")).unwrap();
+
+        let leftovers = restore_checkpoint(dir, &commit, true).await.unwrap();
+        assert!(
+            leftovers.is_empty(),
+            "expected complete rewind, got {leftovers:?}"
+        );
+
+        // Modified-since file rewound, deleted-since file restored, added-since
+        // file removed.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("a.txt")).unwrap(),
+            "2",
+            "modified file rewound to snapshot"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("b.txt")).unwrap(),
+            "new",
+            "deleted-since file restored from snapshot"
+        );
+        assert!(
+            !dir.join("c.txt").exists(),
+            "file added after the snapshot must be removed"
+        );
+        // The branch ref was NOT moved (non-destructive to history).
+        assert_eq!(current_branch(dir).await.unwrap(), "main");
+    }
+
+    #[tokio::test]
+    async fn restore_is_noop_when_nothing_changed() {
+        let repo = init_repo();
+        let dir = repo.path();
+        commit_file(dir, "a.txt", "1", "add a");
+        std::fs::write(dir.join("a.txt"), "2").unwrap();
+
+        let commit = create_checkpoint(dir, "refs/cadenza/checkpoints/T-1/cp")
+            .await
+            .unwrap();
+        // Restore immediately — working tree already matches the snapshot.
+        restore_checkpoint(dir, &commit, false).await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("a.txt")).unwrap(), "2");
+    }
+
+    #[tokio::test]
+    async fn is_linked_worktree_distinguishes_main_and_worktree() {
+        let (repo, _holder, wt) = repo_with_worktree().await;
+        assert!(
+            !is_linked_worktree(repo.path()).await.unwrap(),
+            "main repo is not a linked worktree"
+        );
+        assert!(
+            is_linked_worktree(&wt).await.unwrap(),
+            "added worktree is a linked worktree"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_keeps_nested_repo_in_main_mode_and_reports_it() {
+        let repo = init_repo();
+        let dir = repo.path();
+        commit_file(dir, "a.txt", "1", "add a");
+        let commit = create_checkpoint(dir, "refs/cadenza/checkpoints/T-1/cp")
+            .await
+            .unwrap();
+
+        // A nested git repo appears after the snapshot.
+        std::fs::create_dir(dir.join("nested")).unwrap();
+        StdCommand::new("git")
+            .arg("-C")
+            .arg(dir.join("nested"))
+            .args(["init"])
+            .status()
+            .unwrap();
+        std::fs::write(dir.join("nested").join("f.txt"), "x").unwrap();
+
+        // Main-repo mode (remove_nested=false): nested repo SURVIVES and is
+        // reported as a leftover (partial rewind), never silently nuked.
+        let leftovers = restore_checkpoint(dir, &commit, false).await.unwrap();
+        assert!(dir.join("nested").exists(), "nested repo kept in main mode");
+        assert!(
+            leftovers.iter().any(|l| l.contains("nested")),
+            "leftover reported, got {leftovers:?}"
+        );
+
+        // Worktree mode (remove_nested=true): nested repo IS removed, no leftover.
+        let leftovers2 = restore_checkpoint(dir, &commit, true).await.unwrap();
+        assert!(
+            !dir.join("nested").exists(),
+            "nested repo removed with -ff in worktree mode"
+        );
+        assert!(leftovers2.is_empty(), "no leftovers, got {leftovers2:?}");
+    }
+
+    #[tokio::test]
+    async fn checkpoint_index_preserves_staged_blob() {
+        let repo = init_repo();
+        let dir = repo.path();
+        commit_file(dir, "a.txt", "1", "add a");
+        // Stage content distinct from HEAD, then snapshot the index.
+        std::fs::write(dir.join("a.txt"), "staged").unwrap();
+        StdCommand::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["add", "a.txt"])
+            .status()
+            .unwrap();
+        let commit = checkpoint_index(dir, "refs/cadenza/checkpoints/T-1/idx")
+            .await
+            .unwrap();
+        // The snapshot commit's tree carries the STAGED blob, so it stays
+        // reachable even after a later restore clobbers the real index.
+        let show = run_git(dir, &["show", &format!("{commit}:a.txt")])
+            .await
+            .unwrap();
+        assert_eq!(show, "staged");
     }
 }

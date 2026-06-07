@@ -195,6 +195,28 @@ pub async fn copy_all(from: &dyn Repository, to: &dyn Repository) -> Result<Migr
         }
     }
 
+    // Run timeline events (feature #8). Copied via the RAW payload path so an
+    // unknown future event kind is moved byte-for-byte rather than flattened to
+    // `Desconhecido` by a decode/re-encode through `RunEvent` — preserving the
+    // forward-compat invariant of the append-only audit log. Append-only with a
+    // stable `id`, so a re-run after a partial migration skips ids already
+    // present (idempotent). Insertion order is preserved because
+    // `all_events_raw` returns events in order and we append in that order.
+    let existing_event_ids: std::collections::HashSet<String> = to
+        .all_events_raw()
+        .await?
+        .into_iter()
+        .map(|e| e.id)
+        .collect();
+    for raw in from.all_events_raw().await? {
+        if existing_event_ids.contains(&raw.id) {
+            stats.events_skipped += 1;
+        } else {
+            to.append_event_raw(&raw).await?;
+            stats.events_copied += 1;
+        }
+    }
+
     Ok(stats)
 }
 
@@ -213,6 +235,8 @@ pub struct MigrationStats {
     pub review_packages_skipped: usize,
     pub issue_review_packages_copied: usize,
     pub issue_review_packages_skipped: usize,
+    pub events_copied: usize,
+    pub events_skipped: usize,
 }
 
 /// Run a migration `from → to` if it hasn't been recorded yet.
@@ -427,6 +451,54 @@ mod tests {
         // delete_task cascade removes the packages.
         sqlite.delete_review_packages("T-1").await.unwrap();
         assert!(sqlite.list_review_packages("T-1").await.unwrap().is_empty());
+    }
+
+    // Regression (#8 forward-compat): an event whose `tipo` is unknown to this
+    // binary must survive a backend migration byte-for-byte, NOT be flattened
+    // to `{"tipo":"desconhecido"}` by a lossy decode/re-encode. Exercises the
+    // raw copy path (all_events_raw / append_event_raw).
+    #[tokio::test]
+    async fn migration_preserves_unknown_future_event_kind() {
+        use crate::store::RawEvent;
+        let dir = TempDir::new().unwrap();
+        let files = FileRepository::new(dir.path()).unwrap();
+
+        // A future event kind this build doesn't know, with a real payload.
+        let future = r#"{"id":"E-future","schema_version":99,"ts_ms":777,"task_id":"T-1","kind":{"tipo":"algo_do_futuro","x":1,"y":"z"}}"#;
+        files
+            .append_event_raw(&RawEvent {
+                id: "E-future".into(),
+                task_id: Some("T-1".into()),
+                kind: "algo_do_futuro".into(),
+                payload: future.into(),
+                ts_ms: 777,
+            })
+            .await
+            .unwrap();
+
+        let sqlite = SqliteRepository::open(&dir.path().join("cadenza.db"))
+            .await
+            .unwrap();
+        let stats = copy_all(&files, &sqlite).await.unwrap();
+        assert_eq!(stats.events_copied, 1);
+
+        let raw = sqlite.all_events_raw().await.unwrap();
+        let copied = raw
+            .iter()
+            .find(|e| e.id == "E-future")
+            .expect("event copied");
+        assert_eq!(copied.kind, "algo_do_futuro", "kind column preserved");
+        // The original tipo + payload survive — NOT rewritten to desconhecido.
+        let v: serde_json::Value = serde_json::from_str(&copied.payload).unwrap();
+        assert_eq!(v["kind"]["tipo"], "algo_do_futuro");
+        assert_eq!(v["kind"]["x"], 1);
+        assert_eq!(v["kind"]["y"], "z");
+        assert_eq!(v["schema_version"], 99);
+
+        // Re-run is idempotent: the id is already present -> skipped.
+        let again = copy_all(&files, &sqlite).await.unwrap();
+        assert_eq!(again.events_copied, 0);
+        assert_eq!(again.events_skipped, 1);
     }
 
     #[tokio::test]

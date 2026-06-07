@@ -18,6 +18,11 @@ const { invoke } = window.__TAURI__.core;
 
 const DEFAULT_RESPONSAVEL = "humano";
 
+// Feature #7: draft inline review comments, keyed by file path, for the
+// lifetime of the open review diff. Ephemeral — cleared each time the diff
+// (re)renders; compiled + sent to the agent by "Send to agent".
+const reviewComments = new Map();
+
 const dialog = document.getElementById("task-modal");
 const form = document.getElementById("task-form");
 const titleEl = document.getElementById("task-modal-title");
@@ -206,6 +211,10 @@ function resetTabState() {
   reviewAvailable = false;
   learningsAvailable = false;
   reviewLoadDone = false;
+  // Feature #7: clear draft review comments on EVERY modal open so one task's
+  // comments can't leak into another's "Send to agent" (the diff-render clear
+  // is gated behind the lazy "load diff" click, which may never happen).
+  reviewComments.clear();
   activateTab("detalhes");
   return myOpen;
 }
@@ -559,6 +568,8 @@ async function loadReviewDiff(taskId, wrap, btn) {
 }
 
 function renderReviewDiff(resp, wrap) {
+  // Fresh draft comments per diff render (feature #7).
+  reviewComments.clear();
   // Stale: the worktree moved since done — show a note and the stored
   // capped+redacted uncommitted patch instead of the (now divergent)
   // live committed diff.
@@ -635,6 +646,18 @@ function makeDiffFileDetails(path, patch, truncated) {
   if (truncated) {
     details.append(diffMarker(t("review-diff-truncated")));
   }
+  // Feature #7: a per-file comment box. Drafts are collected into
+  // reviewComments and sent to the agent by makeReviewActions' send button.
+  const comment = document.createElement("textarea");
+  comment.className = "review-comment";
+  comment.rows = 1;
+  comment.placeholder = t("review-comment-placeholder");
+  comment.addEventListener("input", () => {
+    const v = comment.value.trim();
+    if (v) reviewComments.set(path, v);
+    else reviewComments.delete(path);
+  });
+  details.append(comment);
   return details;
 }
 
@@ -665,9 +688,17 @@ function makeReviewActions(taskId) {
   approveBtn.className = "btn btn-primary";
   approveBtn.textContent = t("review-approve");
 
-  async function decide(verdict, btn) {
-    requestBtn.disabled = true;
-    approveBtn.disabled = true;
+  // Feature #7: request changes AND hand the inline comments to the same agent.
+  const sendBtn = document.createElement("button");
+  sendBtn.type = "button";
+  sendBtn.className = "btn";
+  sendBtn.textContent = t("review-send-to-agent");
+
+  const allButtons = [requestBtn, approveBtn, sendBtn];
+  const setDisabled = (v) => allButtons.forEach((b) => (b.disabled = v));
+
+  async function decide(verdict) {
+    setDisabled(true);
     status.className = "modal-status";
     status.textContent = "";
     try {
@@ -682,17 +713,57 @@ function makeReviewActions(taskId) {
       closeTaskModal();
       onClosedRefresh?.();
     } catch (e) {
-      requestBtn.disabled = false;
-      approveBtn.disabled = false;
+      setDisabled(false);
       status.className = "modal-status error";
       status.textContent = t("review-decision-error", { error: e });
     }
   }
 
-  requestBtn.addEventListener("click", () => decide("pedir_alteracoes", requestBtn));
-  approveBtn.addEventListener("click", () => decide("aprovado", approveBtn));
+  async function sendToAgent() {
+    const comments = [...reviewComments.entries()].map(([file, body]) => ({
+      file,
+      line: null,
+      body,
+    }));
+    if (comments.length === 0 && !note.value.trim()) {
+      status.className = "modal-status error";
+      status.textContent = t("review-send-empty");
+      return;
+    }
+    setDisabled(true);
+    status.className = "modal-status";
+    status.textContent = "";
+    try {
+      const res = await invoke("send_review_followup", {
+        taskId,
+        comments,
+        note: note.value,
+      });
+      // The decision is committed either way; only the delivery may have
+      // degraded. live_failed = agent wasn't reachable — keep the modal open
+      // with a warning so the human knows to use Continuar (don't claim success).
+      if (res.delivery === "live_failed") {
+        setDisabled(false);
+        status.className = "modal-status warn";
+        status.textContent = t("review-sent-degraded");
+        return;
+      }
+      status.className = "modal-status ok";
+      status.textContent = t("review-sent-to-agent");
+      closeTaskModal();
+      onClosedRefresh?.();
+    } catch (e) {
+      setDisabled(false);
+      status.className = "modal-status error";
+      status.textContent = t("review-decision-error", { error: e });
+    }
+  }
 
-  btnRow.append(requestBtn, approveBtn);
+  requestBtn.addEventListener("click", () => decide("pedir_alteracoes"));
+  approveBtn.addEventListener("click", () => decide("aprovado"));
+  sendBtn.addEventListener("click", () => sendToAgent());
+
+  btnRow.append(requestBtn, sendBtn, approveBtn);
   actions.append(btnRow, status);
   return actions;
 }

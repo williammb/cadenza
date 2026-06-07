@@ -14,8 +14,9 @@
 
 use super::{
     Estado, FileRepository, NewProposta, PgConnectionParams, PgRepository, PgSslModeChoice,
-    Repository, SqliteRepository, Task,
+    Repository, RunEvent, SqliteRepository, Task,
 };
+use cadenza_proto::RunEventKind;
 use tempfile::TempDir;
 
 // ─── fixtures ──────────────────────────────────────────────────────────
@@ -254,12 +255,72 @@ async fn scenario_propose_idempotent(repo: &dyn Repository, prefix: &str) {
     );
 }
 
+/// Append-only run-timeline event log: events appended come back in insertion
+/// order, scoped-by-task filtering works, a re-list is identical (no loss/dup),
+/// and `limit` keeps the most-recent N oldest-first. Scoped to a per-prefix
+/// `task_id` so it is safe on the shared PG database (append-only has no
+/// cleanup, but other threads' events carry a different task_id).
+async fn scenario_event_log(repo: &dyn Repository, prefix: &str) {
+    let task_id = format!("{prefix}-evt-task");
+    let ids: Vec<String> = (0..4).map(|i| format!("{prefix}-evt-{i}")).collect();
+    for (i, id) in ids.iter().enumerate() {
+        let ev = RunEvent::new(
+            id.clone(),
+            1_700_000_000_000 + i as i64,
+            Some(task_id.clone()),
+            RunEventKind::DoneEnviado {
+                resumo: Some(format!("done {i}")),
+                com_evidencia: false,
+            },
+        );
+        repo.append_event(&ev).await.expect("append_event");
+    }
+
+    let listed: Vec<String> = repo
+        .list_events(Some(&task_id), None)
+        .await
+        .expect("list_events")
+        .iter()
+        .map(|e| e.id.clone())
+        .collect();
+    assert_eq!(
+        listed, ids,
+        "[{prefix}] events return in insertion order, scoped by task"
+    );
+
+    let again: Vec<String> = repo
+        .list_events(Some(&task_id), None)
+        .await
+        .expect("list_events 2")
+        .iter()
+        .map(|e| e.id.clone())
+        .collect();
+    assert_eq!(
+        again, ids,
+        "[{prefix}] event listing is stable across calls"
+    );
+
+    let last_two: Vec<String> = repo
+        .list_events(Some(&task_id), Some(2))
+        .await
+        .expect("list_events limited")
+        .iter()
+        .map(|e| e.id.clone())
+        .collect();
+    assert_eq!(
+        last_two,
+        ids[2..].to_vec(),
+        "[{prefix}] limit keeps the most-recent N, oldest-first"
+    );
+}
+
 /// Run every scenario against one constructed backend, under a backend-unique
 /// prefix so concurrent test threads sharing a PG database never collide.
 async fn run_all_scenarios(repo: &dyn Repository, prefix: &str) {
     scenario_task_roundtrip(repo, &format!("{prefix}-trt")).await;
     scenario_list_ordering_stable(repo, &format!("{prefix}-ord")).await;
     scenario_propose_idempotent(repo, &format!("{prefix}-prop")).await;
+    scenario_event_log(repo, &format!("{prefix}-evt")).await;
 }
 
 // ─── file backend ──────────────────────────────────────────────────────
