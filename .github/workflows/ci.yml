@@ -203,3 +203,62 @@ jobs:
         run: cargo test --workspace -- --ignored
         env:
           DATABASE_URL: postgres://cadenza:cadenza@localhost:5432/cadenza_test
+
+  coverage:
+    name: Coverage report
+    runs-on: ubuntu-latest
+    # Report-only, no gate. Run only on pushes to main to avoid slowing PRs.
+    if: github.event_name == 'push'
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libssl-dev \
+            libdbus-1-dev \
+            pkg-config
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          shared-key: ci-${{ runner.os }}-stable
+          cache-on-failure: true
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Create cadenza-cli bundle resource placeholder
+        shell: bash
+        run: |
+          mkdir -p target/release
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            : > target/release/cadenza-cli.exe
+          else
+            : > target/release/cadenza-cli
+          fi
+
+      - name: Generate coverage report (lcov + html)
+        run: |
+          cargo llvm-cov --workspace --lcov --output-path lcov.info
+          cargo llvm-cov report --html --output-dir coverage-html
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: |
+            lcov.info
+            coverage-html
+          if-no-files-found: error

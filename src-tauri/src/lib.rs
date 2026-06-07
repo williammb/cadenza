@@ -50,6 +50,9 @@ pub fn run() {
             None
         }
     };
+    // Install the global panic hook now that the subscriber is live, so
+    // any later panic is logged to the rolling file before unwinding.
+    observ::install_panic_hook();
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "starting cadenza");
 
     let app_state = match AppState::init() {
