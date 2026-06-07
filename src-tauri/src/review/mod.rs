@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 mod base;
 mod caps;
 mod collect;
+mod decision;
 mod git;
 pub mod issue;
 mod patch;
@@ -28,6 +29,7 @@ mod risk;
 mod state;
 
 pub use caps::validate_and_cap_evidence;
+pub(crate) use decision::apply_review_decision;
 // `CapError` is the error type of the re-exported `validate_and_cap_evidence`,
 // so it must be publicly nameable; callers only ever stringify it.
 #[allow(unused_imports)]
