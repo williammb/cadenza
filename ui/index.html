@@ -80,6 +80,15 @@
         </button>
         <button
           type="button"
+          class="btn"
+          id="btn-timeline"
+          data-i18n-aria-label="timeline-open-aria"
+          aria-label="Abrir a linha do tempo de runs"
+        >
+          <span data-i18n="timeline-open">Linha do tempo</span>
+        </button>
+        <button
+          type="button"
           class="btn btn-icon"
           id="btn-terminal-open"
           aria-pressed="false"
@@ -1139,6 +1148,36 @@
       </article>
     </dialog>
 
+    <dialog id="timeline-modal" class="modal">
+      <article class="modal-form">
+        <header class="modal-header">
+          <div class="modal-title-row">
+            <h2 data-i18n="timeline-title">Linha do tempo de runs</h2>
+          </div>
+          <button
+            type="button"
+            class="btn btn-icon modal-close"
+            data-action="close-timeline"
+            data-i18n-aria-label="action-close"
+            aria-label="Fechar"
+          >×</button>
+        </header>
+
+        <div id="timeline-stats" class="timeline-stats"></div>
+
+        <div id="timeline-empty" class="modal-empty" hidden data-i18n="timeline-empty">
+          (sem eventos ainda)
+        </div>
+
+        <ol id="timeline-body" class="timeline-list"></ol>
+
+        <footer class="modal-footer">
+          <span class="modal-status" id="timeline-status" aria-live="polite"></span>
+          <button type="button" class="btn" data-action="close-timeline" data-i18n="action-close">Fechar</button>
+        </footer>
+      </article>
+    </dialog>
+
     <!-- ============================ START AGENT MODAL ============================ -->
     <dialog id="start-agent-modal" class="modal">
       <form method="dialog" class="modal-form" id="start-agent-form">
@@ -1402,6 +1441,7 @@
     <script type="module" src="ideia-modal.js"></script>
     <script type="module" src="terminal.js"></script>
     <script type="module" src="start-agent-modal.js"></script>
+    <script type="module" src="timeline.js"></script>
     <script type="module" src="app.js"></script>
   </body>
 </html>

@@ -373,6 +373,7 @@ form.addEventListener("submit", async (e) => {
             model,
             mode: currentMode === "plan" ? "plan" : "execute",
             autoMode,
+            followupPrompt: null,
           });
     await attachTerminal(result.session_id, {
       taskId: currentTaskId,

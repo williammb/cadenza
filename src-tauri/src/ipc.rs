@@ -1081,6 +1081,16 @@ async fn done_op(
             .set_estado(&args.task_id, cadenza_proto::Estado::AguardandoRevisao)
             .await
             .map_err(|e| not_found_or_internal(&e))?;
+        // Run timeline (feature #8): legacy (no-evidence) done.
+        crate::audit::record(
+            deps.state.repo.as_ref(),
+            Some(args.task_id.clone()),
+            cadenza_proto::RunEventKind::DoneEnviado {
+                resumo: Some(args.summary.clone()),
+                com_evidencia: false,
+            },
+        )
+        .await;
         return Ok(ops::done::Result { ok: true });
     };
 
@@ -1164,6 +1174,20 @@ async fn done_op(
         )
         .await
         .map_err(|e| not_found_or_internal(&e))?;
+
+    // Run timeline (feature #8): evidence done. NOTE: the evidence apply is
+    // idempotent on (task_id, idempotency_key) — a retried key re-emits here
+    // since `done_with_review_package` doesn't signal replay-vs-fresh. A rare
+    // duplicate audit row is tolerable for an append-only log.
+    crate::audit::record(
+        deps.state.repo.as_ref(),
+        Some(args.task_id.clone()),
+        cadenza_proto::RunEventKind::DoneEnviado {
+            resumo: Some(args.summary.clone()),
+            com_evidencia: true,
+        },
+    )
+    .await;
 
     Ok(ops::done::Result { ok: true })
 }

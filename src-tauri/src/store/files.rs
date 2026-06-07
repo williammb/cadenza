@@ -16,11 +16,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{
-    files_inner::Store as FileStore, ideias_inner::IdeiaStore, jira_inner::JiraIssueStore,
-    jira_review_inner::JiraReviews, memory_inner::MemoryStore, review_inner::Reviews,
-    triage_inner::Triage as FileTriage, validate_id, DecisaoRegistro, Estado, Ideia, IdeiaStatus,
-    IssueReviewPackage, JiraIssueRecord, MemoryItem, MemorySuggestion, NewProposta, PackageStatus,
-    Proposta, Repository, Result, ReviewPackage, StoreError, Task,
+    events_inner::EventStore, files_inner::Store as FileStore, ideias_inner::IdeiaStore,
+    jira_inner::JiraIssueStore, jira_review_inner::JiraReviews, memory_inner::MemoryStore,
+    review_inner::Reviews, triage_inner::Triage as FileTriage, validate_id, DecisaoRegistro,
+    Estado, Ideia, IdeiaStatus, IssueReviewPackage, JiraIssueRecord, MemoryItem, MemorySuggestion,
+    NewProposta, PackageStatus, Proposta, RawEvent, Repository, Result, ReviewPackage, RunEvent,
+    StoreError, Task,
 };
 
 /// Tasks live under `<home>/tasks/`, triage under `<home>/triage/`,
@@ -35,6 +36,7 @@ pub struct FileRepository {
     reviews: Arc<Reviews>,
     jira: Arc<JiraIssueStore>,
     jira_reviews: Arc<JiraReviews>,
+    events: Arc<EventStore>,
 }
 
 impl FileRepository {
@@ -48,6 +50,7 @@ impl FileRepository {
         // Aggregate (issue-owned) reviews live in a SUBDIR so the flat
         // `reviews/` scans never ingest them.
         let jira_reviews = JiraReviews::new(home.join("reviews").join("jira"))?;
+        let events = EventStore::new(home.join("events"))?;
         Ok(Self {
             tasks: Arc::new(tasks),
             triage: Arc::new(triage),
@@ -56,6 +59,7 @@ impl FileRepository {
             reviews: Arc::new(reviews),
             jira: Arc::new(jira),
             jira_reviews: Arc::new(jira_reviews),
+            events: Arc::new(events),
         })
     }
 }
@@ -299,6 +303,31 @@ impl Repository for FileRepository {
 
     async fn all_issue_review_packages(&self) -> Result<Vec<IssueReviewPackage>> {
         Ok(self.jira_reviews.all()?)
+    }
+
+    // ─── run timeline / audit event log (feature #8) ───────────────
+    async fn append_event(&self, event: &RunEvent) -> Result<()> {
+        Ok(self.events.append(event)?)
+    }
+
+    async fn list_events(
+        &self,
+        task_id: Option<&str>,
+        limit: Option<i64>,
+    ) -> Result<Vec<RunEvent>> {
+        Ok(self.events.list(task_id, limit)?)
+    }
+
+    async fn all_events(&self) -> Result<Vec<RunEvent>> {
+        Ok(self.events.all()?)
+    }
+
+    async fn all_events_raw(&self) -> Result<Vec<RawEvent>> {
+        Ok(self.events.all_raw()?)
+    }
+
+    async fn append_event_raw(&self, raw: &RawEvent) -> Result<()> {
+        Ok(self.events.append_raw(&raw.payload)?)
     }
 }
 

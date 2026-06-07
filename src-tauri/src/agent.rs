@@ -379,15 +379,18 @@ fn plan_copilot(command: String, mut args: Vec<String>, ctx: &AgentPlanContext<'
     args.push("--session-id".to_string());
     args.push(conversation_id.clone());
 
-    if ctx.existing_conversation_id.is_none() {
-        if !ctx.model.is_empty() {
-            args.push("--model".to_string());
-            args.push(ctx.model.to_string());
-        }
-        if let Some(prompt) = ctx.initial_prompt {
-            args.push("-i".to_string());
-            args.push(prompt.to_string());
-        }
+    // --model only on a fresh start (a resumed session keeps its model).
+    if ctx.existing_conversation_id.is_none() && !ctx.model.is_empty() {
+        args.push("--model".to_string());
+        args.push(ctx.model.to_string());
+    }
+    // The initial prompt is baked whenever present — including on a RESUME, so
+    // a follow-up (e.g. compiled review comments) reaches the same session via
+    // `-i` (feature #7). Copilot reuses the same `--session-id` on resume, so
+    // `-i` there continues the existing conversation.
+    if let Some(prompt) = ctx.initial_prompt {
+        args.push("-i".to_string());
+        args.push(prompt.to_string());
     }
 
     let cfg = SpawnConfig::new(command)
@@ -472,9 +475,9 @@ fn plan_codex(command: String, mut args: Vec<String>, ctx: &AgentPlanContext<'_>
     // Codex takes the initial prompt as a trailing positional argument and
     // starts the interactive TUI by default (the `exec` subcommand is the
     // non-interactive one). Verified against `codex --help`: "Usage: codex
-    // [OPTIONS] [PROMPT]". Only on a fresh start — a resume uses the
-    // `resume <id>` subcommand and carries its own context, so the caller
-    // passes no prompt there.
+    // [OPTIONS] [PROMPT]". Baked whenever present — on a fresh start AND on a
+    // resume (`codex resume <id> [PROMPT]`), so a feature #7 follow-up (e.g.
+    // compiled review comments) reaches the resumed session.
     if let Some(prompt) = ctx.initial_prompt {
         args.push(prompt.to_string());
     }
@@ -553,8 +556,11 @@ fn plan_antigravity(
     // agy takes the initial prompt via `--prompt-interactive <prompt>`,
     // which "runs an initial prompt interactively and continue[s] the
     // session" (verified against `agy --help`). It does NOT accept a bare
-    // positional prompt, so the flag is required. Only on a fresh start —
-    // a resume carries its own context.
+    // positional prompt, so the flag is required. Baked whenever present —
+    // including on a RESUME (`--conversation <id> --prompt-interactive <p>`),
+    // so a feature #7 follow-up reaches the same conversation. NOTE: the
+    // resume+prompt argv combination is unverified empirically (see the
+    // TODO(agy-verify) note below).
     if let Some(prompt) = ctx.initial_prompt {
         args.push("--prompt-interactive".to_string());
         args.push(prompt.to_string());
@@ -593,20 +599,22 @@ fn plan_opencode(command: String, mut args: Vec<String>, ctx: &AgentPlanContext<
         Some(id) => {
             args.push("--session".to_string());
             args.push(id.to_string());
-            // Resume keeps the saved session's model/context. Do not pass
-            // --model or --prompt on resume.
+            // Resume keeps the saved session's model — do not pass --model.
         }
         None => {
             if !ctx.model.is_empty() {
                 args.push("--model".to_string());
                 args.push(ctx.model.to_string());
             }
-            if let Some(prompt) = ctx.initial_prompt {
-                args.push("--prompt".to_string());
-                args.push(prompt.to_string());
-            }
         }
     };
+    // The prompt is baked whenever present — including on a RESUME (`--session
+    // <id> --prompt <p>`), so a follow-up (e.g. compiled review comments)
+    // reaches the same session (feature #7).
+    if let Some(prompt) = ctx.initial_prompt {
+        args.push("--prompt".to_string());
+        args.push(prompt.to_string());
+    }
 
     let conv_seed = ctx.existing_conversation_id.unwrap_or("");
 
@@ -931,6 +939,62 @@ mod tests {
     }
 
     #[test]
+    fn resume_carries_followup_prompt_for_all_agents() {
+        // Feature #7: a resume must deliver a caller-supplied follow-up prompt
+        // to the SAME conversation. Every planner should bake it into argv even
+        // on the resume branch (each uses a different flag/position, but the
+        // text always appears as an argv element).
+        for kind in [
+            AgenteKind::ClaudeCode,
+            AgenteKind::Codex,
+            AgenteKind::Copilot,
+            AgenteKind::Antigravity,
+            AgenteKind::OpenCode,
+        ] {
+            let plan = plan_launch(
+                kind,
+                "some-model",
+                None,
+                Path::new("/tmp/proj"),
+                "T-9",
+                "proj-a",
+                Some("CONV-123"),
+                Some("FIXUP_MARKER"),
+            );
+            let args = &plan.spawn.args;
+            let prompt_pos = args
+                .iter()
+                .position(|a| a == "FIXUP_MARKER")
+                .unwrap_or_else(|| {
+                    panic!("{kind:?} resume must carry the follow-up prompt; args = {args:?}")
+                });
+            // The prompt must come AFTER the resume id, so it attaches to the
+            // resumed conversation rather than being parsed as something else.
+            let id_pos = args
+                .iter()
+                .position(|a| a == "CONV-123")
+                .unwrap_or_else(|| {
+                    panic!("{kind:?} resume must reference the conversation id; args = {args:?}")
+                });
+            assert!(
+                prompt_pos > id_pos,
+                "{kind:?} follow-up prompt must follow the resume id; args = {args:?}"
+            );
+            // --model must NOT be re-sent on resume for the model-pinned agents
+            // (Codex/agy/OpenCode); the follow-up prompt must not reintroduce it.
+            if matches!(
+                kind,
+                AgenteKind::Codex | AgenteKind::Antigravity | AgenteKind::OpenCode
+            ) {
+                assert!(
+                    !args.iter().any(|a| a == "--model"),
+                    "{kind:?} resume must not re-send --model; args = {args:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn codex_new_session_marks_pending_capture() {
         let plan = plan_launch(
             AgenteKind::Codex,
@@ -1062,7 +1126,9 @@ mod tests {
     }
 
     #[test]
-    fn copilot_resume_uses_session_id_and_skips_model_prompt() {
+    fn copilot_resume_keeps_session_skips_model_carries_followup() {
+        // With a follow-up prompt: reuse the session id, skip --model, and
+        // carry the prompt via -i (feature #7).
         let plan = plan_launch(
             AgenteKind::Copilot,
             "gpt-5.2",
@@ -1071,7 +1137,7 @@ mod tests {
             "T-21",
             "proj-copilot",
             Some("019d4891-0feb-78a2-8f90-841686dc0175"),
-            Some("ignored"),
+            Some("address the review"),
         );
         let args = &plan.spawn.args;
         let s = args
@@ -1080,13 +1146,27 @@ mod tests {
             .expect("--session-id");
         assert_eq!(args[s + 1], "019d4891-0feb-78a2-8f90-841686dc0175");
         assert!(!args.iter().any(|a| a == "--model"));
-        assert!(!args.iter().any(|a| a == "-i"));
+        let i = args.iter().position(|a| a == "-i").expect("-i");
+        assert_eq!(args[i + 1], "address the review");
         assert_eq!(
             plan.conversation_id_known.as_deref(),
             Some("019d4891-0feb-78a2-8f90-841686dc0175")
         );
         assert!(plan.pending_codex_capture.is_none());
         assert!(plan.pending_opencode_capture.is_none());
+
+        // Plain "Continuar" (no follow-up): no -i is added.
+        let plain = plan_launch(
+            AgenteKind::Copilot,
+            "gpt-5.2",
+            None,
+            Path::new("/tmp/proj"),
+            "T-21",
+            "proj-copilot",
+            Some("019d4891-0feb-78a2-8f90-841686dc0175"),
+            None,
+        );
+        assert!(!plain.spawn.args.iter().any(|a| a == "-i"));
     }
 
     #[test]
@@ -1178,7 +1258,9 @@ mod tests {
     }
 
     #[test]
-    fn opencode_resume_uses_session_flag_and_skips_model_prompt() {
+    fn opencode_resume_keeps_session_skips_model_carries_followup() {
+        // With a follow-up prompt: reuse the session, skip --model, carry the
+        // prompt via --prompt (feature #7).
         let plan = plan_launch(
             AgenteKind::OpenCode,
             "anthropic/claude-sonnet-4-6",
@@ -1187,7 +1269,7 @@ mod tests {
             "T-4",
             "proj-d",
             Some("ses_2132323b6ffeuRlYHhPcU8DaZ6"),
-            Some("ignored"),
+            Some("address the review"),
         );
         let args = &plan.spawn.args;
         let s = args
@@ -1196,12 +1278,26 @@ mod tests {
             .expect("--session");
         assert_eq!(args[s + 1], "ses_2132323b6ffeuRlYHhPcU8DaZ6");
         assert!(!args.iter().any(|a| a == "--model"));
-        assert!(!args.iter().any(|a| a == "--prompt"));
+        let p = args.iter().position(|a| a == "--prompt").expect("--prompt");
+        assert_eq!(args[p + 1], "address the review");
         assert!(plan.pending_opencode_capture.is_none());
         assert_eq!(
             plan.conversation_id_known.as_deref(),
             Some("ses_2132323b6ffeuRlYHhPcU8DaZ6")
         );
+
+        // Plain "Continuar" (no follow-up): no --prompt is added.
+        let plain = plan_launch(
+            AgenteKind::OpenCode,
+            "anthropic/claude-sonnet-4-6",
+            None,
+            Path::new("/tmp/proj"),
+            "T-4",
+            "proj-d",
+            Some("ses_2132323b6ffeuRlYHhPcU8DaZ6"),
+            None,
+        );
+        assert!(!plain.spawn.args.iter().any(|a| a == "--prompt"));
     }
 
     #[test]

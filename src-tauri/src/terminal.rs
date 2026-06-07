@@ -95,11 +95,32 @@ pub struct TerminalSession {
     /// exists; cleared the first time a frontend attaches, after which
     /// xterm.js is the sole CPR responder. See `run_reader_loop`.
     dsr_armed: Arc<AtomicBool>,
+    /// Set by [`kill`](TerminalSession::kill) before terminating the child so
+    /// the reader-thread end hook can report `EndReason::Killed` (an explicit
+    /// stop) instead of `Eof` (the agent exited on its own). Run timeline (#8).
+    killed: Arc<AtomicBool>,
 }
+
+/// Why a PTY reader loop ended — fed to the optional end hook. Run timeline
+/// (feature #8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EndReason {
+    /// The child closed its end of the PTY (normal exit).
+    Eof,
+    /// A read error stopped the loop.
+    Error,
+    /// The session was killed explicitly (e.g. `pty_kill`).
+    Killed,
+}
+
+/// Called exactly once, on the reader thread, after a PTY session's read loop
+/// exits. Runs off the tokio runtime, so an impl that needs async must hop
+/// onto a captured runtime handle. Run timeline (feature #8).
+pub type EndHook = Box<dyn FnOnce(EndReason) + Send + 'static>;
 
 impl TerminalSession {
     pub fn start(id: impl Into<String>, pty: PtyHandle) -> Result<Arc<Self>> {
-        Self::start_with_cap(id, pty, DEFAULT_RING_BYTES)
+        Self::start_inner(id, pty, DEFAULT_RING_BYTES, None)
     }
 
     pub fn start_with_cap(
@@ -107,12 +128,34 @@ impl TerminalSession {
         pty: PtyHandle,
         ring_cap: usize,
     ) -> Result<Arc<Self>> {
+        Self::start_inner(id, pty, ring_cap, None)
+    }
+
+    /// Like [`start`](Self::start) but registers an [`EndHook`] fired once when
+    /// the reader loop exits (covers natural exit AND explicit kill, since a
+    /// kill makes the reader hit EOF). `None` behaves exactly like `start`.
+    /// Run timeline (feature #8).
+    pub fn start_with_end_hook(
+        id: impl Into<String>,
+        pty: PtyHandle,
+        on_end: Option<EndHook>,
+    ) -> Result<Arc<Self>> {
+        Self::start_inner(id, pty, DEFAULT_RING_BYTES, on_end)
+    }
+
+    fn start_inner(
+        id: impl Into<String>,
+        pty: PtyHandle,
+        ring_cap: usize,
+        on_end: Option<EndHook>,
+    ) -> Result<Arc<Self>> {
         let id = id.into();
         let reader = pty.try_clone_reader()?;
         let writer = Arc::new(Mutex::new(pty.take_writer()?));
         let ring = Arc::new(Mutex::new(RingBuffer::new(ring_cap)));
         let (tx, _) = broadcast::channel::<Vec<u8>>(BROADCAST_CAPACITY);
         let dsr_armed = Arc::new(AtomicBool::new(true));
+        let killed = Arc::new(AtomicBool::new(false));
 
         let session = Arc::new(Self {
             id: id.clone(),
@@ -123,6 +166,7 @@ impl TerminalSession {
             last_size: Mutex::new(None),
             attach_task: Mutex::new(None),
             dsr_armed: dsr_armed.clone(),
+            killed: killed.clone(),
         });
 
         // Move reader + ring + tx into a dedicated thread. PTY reads
@@ -133,7 +177,15 @@ impl TerminalSession {
         std::thread::Builder::new()
             .name(format!("pty-reader-{id}"))
             .spawn(move || {
-                run_reader_loop(reader, ring, tx, writer_for_reader, dsr_armed);
+                run_reader_loop(
+                    reader,
+                    ring,
+                    tx,
+                    writer_for_reader,
+                    dsr_armed,
+                    killed,
+                    on_end,
+                );
             })?;
 
         Ok(session)
@@ -206,27 +258,34 @@ impl TerminalSession {
     }
 
     pub fn kill(&self) -> Result<()> {
+        // Mark BEFORE killing so the reader-thread end hook (which fires when
+        // the kill makes the reader hit EOF) reports an explicit stop rather
+        // than a natural exit. Run timeline (feature #8).
+        self.killed.store(true, Ordering::Relaxed);
         self.pty.lock().unwrap().kill()
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_reader_loop(
     mut reader: Box<dyn Read + Send>,
     ring: Arc<Mutex<RingBuffer>>,
     tx: broadcast::Sender<Vec<u8>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     dsr_armed: Arc<AtomicBool>,
+    killed: Arc<AtomicBool>,
+    on_end: Option<EndHook>,
 ) {
     // Windows ConPTY withholds the child's output until the terminal
     // answers a Device Status Report query at startup; the writer goes
     // along so we can reply (see spawn::answer_dsr_cpr). A no-op on Unix.
     let mut dsr_state: u8 = 0;
     let mut buf = [0u8; READ_CHUNK];
-    loop {
+    let exit_reason = loop {
         match reader.read(&mut buf) {
             Ok(0) => {
                 tracing::debug!("pty reader: EOF");
-                break;
+                break EndReason::Eof;
             }
             Ok(n) => {
                 {
@@ -248,9 +307,21 @@ fn run_reader_loop(
             }
             Err(e) => {
                 tracing::warn!(error = %e, "pty reader: read error, stopping");
-                break;
+                break EndReason::Error;
             }
         }
+    };
+
+    // Run timeline (feature #8): fire the end hook exactly once. A kill wins
+    // over the raw read outcome so the timeline reads "stopped" rather than
+    // "exited" when the user pressed stop.
+    if let Some(hook) = on_end {
+        let reason = if killed.load(Ordering::Relaxed) {
+            EndReason::Killed
+        } else {
+            exit_reason
+        };
+        hook(reason);
     }
 }
 

@@ -415,6 +415,41 @@ settings-jira-test-error = Error: { $error }
 settings-jira-token-cleared = Token removed from the keyring.
 
 # ───────────────────────── Import from Jira ─────────────────────────
+# review follow-up to agent (#7) — this header is sent to the AGENT
+review-followup-header = Please address the following review feedback:
+# review follow-up to agent (#7) — UI strings
+review-comment-placeholder = Comment on this file…
+review-send-to-agent = Send comments to agent
+review-send-empty = Add at least one comment or a note first
+review-sent-to-agent = Comments sent to the agent.
+review-sent-degraded = Comments recorded, but the agent wasn't reachable — reopen the task and use Continue.
+
+# run timeline / analytics (#8)
+timeline-open = Timeline
+timeline-open-aria = Open the run timeline
+timeline-title = Run timeline
+timeline-empty = (no events yet)
+timeline-total = { $n } events
+timeline-resumed = resumed
+timeline-with-evidence = with evidence
+timeline-load-error = Failed to load timeline: { $error }
+timeline-kind-agente_iniciado = Agent started
+timeline-kind-sessao_encerrada = Session ended
+timeline-kind-done_enviado = Done submitted
+timeline-kind-revisao_decidida = Review decided
+timeline-kind-proposta_decidida = Proposal decided
+timeline-kind-checkpoint_criado = Checkpoint created
+timeline-kind-run_revertido = Run reverted
+timeline-kind-uso_observado = Usage measured
+timeline-kind-desconhecido = (unknown)
+timeline-usage-tokens = { $total } tokens
+review-usage = Tokens: { $total } total ({ $input } in / { $output } out)
+timeline-revert = Revert
+timeline-revert-confirm = Revert { $task } to the checkpoint from { $when } ({ $commit })? Files added since (including your own untracked files) are removed, but your current state is snapshotted first, so this can be undone.
+timeline-reverted = Reverted workspace at { $dir }
+timeline-revert-partial = Reverted { $dir }, but { $count } untracked path(s) couldn't be removed (e.g. a nested git repo)
+timeline-revert-error = Revert failed: { $error }
+
 jira-import-open = Import from Jira
 jira-import-open-aria = Import a Jira issue
 jira-import-title = Import a Jira issue

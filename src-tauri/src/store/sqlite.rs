@@ -23,8 +23,8 @@ use uuid::Uuid;
 
 use super::{
     DecisaoRegistro, Estado, Ideia, IdeiaStatus, IssueReviewPackage, JiraIssueRecord, MemoryItem,
-    MemorySuggestion, NewProposta, PackageStatus, Proposta, Repository, Result, ReviewPackage,
-    StoreError, SuggestionKind, Task,
+    MemorySuggestion, NewProposta, PackageStatus, Proposta, RawEvent, Repository, Result,
+    ReviewPackage, RunEvent, StoreError, SuggestionKind, Task,
 };
 
 /// Embedded migrations from `src-tauri/migrations/`. Runs every startup
@@ -252,6 +252,14 @@ fn issue_review_package_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<IssueR
     let attempt: i64 = row.try_get("attempt").map_err(map_sqlx)?;
     pkg.attempt = attempt as u32;
     Ok(pkg)
+}
+
+/// Reconstruct a [`RunEvent`] from its JSON `payload`. Events are
+/// immutable, so the blob is the sole source of truth (no column overlay).
+fn event_from_row(row: &sqlx::sqlite::SqliteRow) -> Result<RunEvent> {
+    let payload: String = row.try_get("payload").map_err(map_sqlx)?;
+    serde_json::from_str(&payload)
+        .map_err(|e| StoreError::BadData(format!("bad event payload: {e}")))
 }
 
 /// Parse the aggregate status column string into [`IssuePackageStatus`].
@@ -1243,6 +1251,110 @@ impl Repository for SqliteRepository {
         .await
         .map_err(map_sqlx)?;
         rows.iter().map(issue_review_package_from_row).collect()
+    }
+
+    // ─── run timeline / audit event log (feature #8) ───────────────
+    async fn append_event(&self, event: &RunEvent) -> Result<()> {
+        let payload =
+            serde_json::to_string(event).map_err(|e| StoreError::BadData(e.to_string()))?;
+        sqlx::query(
+            "INSERT INTO events (id, task_id, kind, payload, created_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(&event.id)
+        .bind(event.task_id.as_deref())
+        .bind(event.kind_tag())
+        .bind(&payload)
+        .bind(event.ts_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
+    }
+
+    async fn list_events(
+        &self,
+        task_id: Option<&str>,
+        limit: Option<i64>,
+    ) -> Result<Vec<RunEvent>> {
+        // For a capped read, take the most-recent N (seq DESC LIMIT n) then
+        // re-order to oldest-first so the timeline reads chronologically.
+        let rows =
+            match (task_id, limit) {
+                (Some(t), Some(n)) => {
+                    sqlx::query(
+                        "SELECT * FROM (SELECT * FROM events WHERE task_id = ?1 \
+                 ORDER BY seq DESC LIMIT ?2) ORDER BY seq",
+                    )
+                    .bind(t)
+                    .bind(n.max(0))
+                    .fetch_all(&self.pool)
+                    .await
+                }
+                (Some(t), None) => {
+                    sqlx::query("SELECT * FROM events WHERE task_id = ?1 ORDER BY seq")
+                        .bind(t)
+                        .fetch_all(&self.pool)
+                        .await
+                }
+                (None, Some(n)) => sqlx::query(
+                    "SELECT * FROM (SELECT * FROM events ORDER BY seq DESC LIMIT ?1) ORDER BY seq",
+                )
+                .bind(n.max(0))
+                .fetch_all(&self.pool)
+                .await,
+                (None, None) => {
+                    sqlx::query("SELECT * FROM events ORDER BY seq")
+                        .fetch_all(&self.pool)
+                        .await
+                }
+            }
+            .map_err(map_sqlx)?;
+        rows.iter().map(event_from_row).collect()
+    }
+
+    async fn all_events(&self) -> Result<Vec<RunEvent>> {
+        let rows = sqlx::query("SELECT * FROM events ORDER BY seq")
+            .fetch_all(&self.pool)
+            .await
+            .map_err(map_sqlx)?;
+        rows.iter().map(event_from_row).collect()
+    }
+
+    async fn all_events_raw(&self) -> Result<Vec<RawEvent>> {
+        let rows = sqlx::query(
+            "SELECT id, task_id, kind, payload, created_at_ms FROM events ORDER BY seq",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        let mut out = Vec::with_capacity(rows.len());
+        for r in &rows {
+            out.push(RawEvent {
+                id: r.try_get("id").map_err(map_sqlx)?,
+                task_id: r.try_get("task_id").map_err(map_sqlx)?,
+                kind: r.try_get("kind").map_err(map_sqlx)?,
+                payload: r.try_get("payload").map_err(map_sqlx)?,
+                ts_ms: r.try_get("created_at_ms").map_err(map_sqlx)?,
+            });
+        }
+        Ok(out)
+    }
+
+    async fn append_event_raw(&self, raw: &RawEvent) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO events (id, task_id, kind, payload, created_at_ms) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(&raw.id)
+        .bind(raw.task_id.as_deref())
+        .bind(&raw.kind)
+        .bind(&raw.payload)
+        .bind(raw.ts_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(map_sqlx)?;
+        Ok(())
     }
 }
 

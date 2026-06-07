@@ -108,6 +108,11 @@ pub async fn start_task_agent(
     mode: Option<TaskAgentMode>,
     // Absent/null from older callers -> false.
     auto_mode: Option<bool>,
+    // Feature #7: a caller-supplied follow-up prompt (e.g. compiled review
+    // comments). On RESUME it is delivered to the same conversation instead of
+    // the usual `None`; on a fresh start it is appended to the task prompt.
+    // Absent/null from older callers -> no follow-up (unchanged behavior).
+    followup_prompt: Option<String>,
 ) -> Result<StartTaskAgentResult, String> {
     let mode = mode.unwrap_or_default();
     let auto_mode = auto_mode.unwrap_or(false);
@@ -263,6 +268,28 @@ pub async fn start_task_agent(
     // otherwise the project repo.
     let cwd = prepare_task_workspace(&state, &task_id).await?;
 
+    // Run timeline (#6): snapshot the workspace BEFORE the agent runs so a
+    // later "revert this run" can rewind to this exact pre-run state. Execute
+    // only (plan records no run); best-effort — a checkpoint failure (e.g. cwd
+    // not a git repo) must NOT block the start, it just means revert won't be
+    // available for this run. The CheckpointCriado event is emitted below once
+    // the run is committed.
+    let checkpoint: Option<(String, String)> = if mode == TaskAgentMode::Execute {
+        let git_ref = format!(
+            "refs/cadenza/checkpoints/{task_id}/{}",
+            Uuid::new_v4().simple()
+        );
+        match crate::git::create_checkpoint(&cwd, &git_ref).await {
+            Ok(commit) => Some((git_ref, commit)),
+            Err(e) => {
+                tracing::warn!(error = %e, task = %task_id, "checkpoint at agent start failed; revert unavailable for this run");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // 3. Decide new vs resume from `task-runs.json`. Plan mode always
     //    starts fresh: planning runs are never recorded, and matching an
     //    earlier *execution* conversation would resume the wrong posture.
@@ -288,7 +315,10 @@ pub async fn start_task_agent(
     //    the planner bakes the prompt into the command line so the backend
     //    never types into the live PTY (no race with the agent's UI boot).
     let initial_prompt: Option<String> = if resumed {
-        None
+        // Resume carries ONLY a caller-supplied follow-up (feature #7), if any
+        // — the agent already has the task context. Plain "Continuar" (no
+        // follow-up) keeps the prior `None` behavior.
+        followup_prompt.clone()
     } else {
         let mut prompt = render_initial_task_prompt(&state.i18n, &task_id, &task_titulo, mode);
         // Inject the project's curated memory on a fresh execution start so
@@ -304,6 +334,13 @@ pub async fn start_task_agent(
                     tracing::warn!(error = ?e, project = %project_id, "load project memory for prompt failed")
                 }
             }
+        }
+        // A follow-up on a FRESH start (no conversation to resume — e.g. capture
+        // failed) is appended so the agent still sees the comments, even though
+        // it's a new conversation.
+        if let Some(f) = &followup_prompt {
+            prompt.push('\n');
+            prompt.push_str(f);
         }
         Some(prompt)
     };
@@ -346,7 +383,63 @@ pub async fn start_task_agent(
         format!("failed to start agent: {e}. Is the CLI installed and on PATH? You can override the binary path in Settings.")
     })?;
     let session_id = format!("S-{}", Uuid::new_v4().simple());
-    let session = TerminalSession::start(session_id.clone(), pty).map_err(to_str_err)?;
+    // Run timeline (feature #8): for execution runs, register an end hook that
+    // records `session_ended` when the PTY reader exits (natural exit, error,
+    // or explicit kill). Plan launches record no run, so they get no hook —
+    // keeping the timeline consistent with `agent_started`. The hook fires on
+    // the reader thread (off the runtime), so it hops onto a captured handle.
+    let on_end: Option<crate::terminal::EndHook> = if mode == TaskAgentMode::Execute {
+        let repo = state.repo.clone();
+        let handle = tokio::runtime::Handle::current();
+        let task_for_hook = task_id.clone();
+        let sid_for_hook = session_id.clone();
+        let agent_for_hook = agent_kind;
+        // For Claude the conversation id is the session UUID known up front;
+        // used to locate the transcript for usage capture (feature #1).
+        let conv_for_hook = conversation_id_known.clone();
+        Some(Box::new(move |reason| {
+            let motivo = match reason {
+                crate::terminal::EndReason::Killed => "encerrada",
+                crate::terminal::EndReason::Eof => "eof",
+                crate::terminal::EndReason::Error => "erro",
+            };
+            handle.spawn(async move {
+                crate::audit::record(
+                    repo.as_ref(),
+                    Some(task_for_hook.clone()),
+                    cadenza_proto::RunEventKind::SessaoEncerrada {
+                        session_id: Some(sid_for_hook),
+                        motivo: motivo.to_string(),
+                    },
+                )
+                .await;
+                // Feature #1: capture MEASURED token usage for Claude runs once
+                // the session ended (the transcript is now ~complete). A short
+                // delay lets the JSONL finish flushing. Best-effort, Claude-only;
+                // other agents degrade to no usage event.
+                if agent_for_hook == AgenteKind::ClaudeCode {
+                    if let Some(conv) = conv_for_hook {
+                        tokio::time::sleep(std::time::Duration::from_millis(800)).await;
+                        if let Some(usage) = crate::usage::claude_usage(&conv) {
+                            crate::audit::record(
+                                repo.as_ref(),
+                                Some(task_for_hook),
+                                cadenza_proto::RunEventKind::UsoObservado {
+                                    usage,
+                                    conversation_id: Some(conv),
+                                },
+                            )
+                            .await;
+                        }
+                    }
+                }
+            });
+        }))
+    } else {
+        None
+    };
+    let session = TerminalSession::start_with_end_hook(session_id.clone(), pty, on_end)
+        .map_err(to_str_err)?;
     state
         .sessions
         .lock()
@@ -401,6 +494,37 @@ pub async fn start_task_agent(
         };
         if let Err(e) = state.task_runs.upsert(&task_id, run) {
             tracing::warn!(error = ?e, task = %task_id, "task_runs.upsert failed");
+        }
+
+        // Run timeline (feature #8): record the agent start. Execute runs
+        // only — a plan launch records no run, so it emits no agent_started
+        // either (keeps the timeline consistent with the run record).
+        crate::audit::record(
+            state.repo.as_ref(),
+            Some(task_id.clone()),
+            cadenza_proto::RunEventKind::AgenteIniciado {
+                agente: crate::audit::serde_tag(&agent_kind),
+                model: Some(model.clone()),
+                modo: Some("execute".to_string()),
+                resumido: resumed,
+                session_id: Some(session_id.clone()),
+            },
+        )
+        .await;
+
+        // Run timeline (#6): record the pre-run checkpoint so the UI can offer
+        // "revert this run".
+        if let Some((git_ref, commit)) = &checkpoint {
+            crate::audit::record(
+                state.repo.as_ref(),
+                Some(task_id.clone()),
+                cadenza_proto::RunEventKind::CheckpointCriado {
+                    git_ref: git_ref.clone(),
+                    commit: commit.clone(),
+                    dir: cwd.to_string_lossy().into_owned(),
+                },
+            )
+            .await;
         }
 
         if let Some(capture) = pending_codex_capture {

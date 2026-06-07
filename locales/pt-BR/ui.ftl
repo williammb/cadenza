@@ -416,6 +416,41 @@ settings-jira-test-error = Erro: { $error }
 settings-jira-token-cleared = Token removido do keyring.
 
 # ───────────────────────── Importar do Jira ─────────────────────────
+# follow-up de review para o agente (#7) — este header é enviado ao AGENTE
+review-followup-header = Por favor, enderece o seguinte feedback da revisão:
+# follow-up de review para o agente (#7) — strings da UI
+review-comment-placeholder = Comentar este arquivo…
+review-send-to-agent = Enviar comentários ao agente
+review-send-empty = Adicione ao menos um comentário ou uma nota primeiro
+review-sent-to-agent = Comentários enviados ao agente.
+review-sent-degraded = Comentários registrados, mas o agente não estava acessível — reabra a task e use Continuar.
+
+# linha do tempo de runs / analytics (#8)
+timeline-open = Linha do tempo
+timeline-open-aria = Abrir a linha do tempo de runs
+timeline-title = Linha do tempo de runs
+timeline-empty = (sem eventos ainda)
+timeline-total = { $n } eventos
+timeline-resumed = retomado
+timeline-with-evidence = com evidência
+timeline-load-error = Falha ao carregar a linha do tempo: { $error }
+timeline-kind-agente_iniciado = Agente iniciado
+timeline-kind-sessao_encerrada = Sessão encerrada
+timeline-kind-done_enviado = Done enviado
+timeline-kind-revisao_decidida = Revisão decidida
+timeline-kind-proposta_decidida = Proposta decidida
+timeline-kind-checkpoint_criado = Checkpoint criado
+timeline-kind-run_revertido = Run revertido
+timeline-kind-uso_observado = Uso medido
+timeline-kind-desconhecido = (desconhecido)
+timeline-usage-tokens = { $total } tokens
+review-usage = Tokens: { $total } no total ({ $input } entrada / { $output } saída)
+timeline-revert = Reverter
+timeline-revert-confirm = Reverter { $task } para o checkpoint de { $when } ({ $commit })? Arquivos adicionados depois (inclusive seus arquivos não-rastreados) são removidos, mas o estado atual é snapshotado antes, então dá para desfazer.
+timeline-reverted = Workspace revertido em { $dir }
+timeline-revert-partial = Revertido { $dir }, mas { $count } caminho(s) não-rastreado(s) não puderam ser removidos (ex.: um repo git aninhado)
+timeline-revert-error = Falha ao reverter: { $error }
+
 jira-import-open = Importar do Jira
 jira-import-open-aria = Importar issue do Jira
 jira-import-title = Importar issue do Jira

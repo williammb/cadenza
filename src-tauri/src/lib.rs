@@ -11,6 +11,7 @@ use cadenza_i18n::I18n;
 
 mod agent;
 mod attachments;
+mod audit;
 mod auth;
 mod blockers;
 mod commands;
@@ -32,6 +33,7 @@ mod secrets;
 mod spawn;
 mod store;
 mod terminal;
+mod usage;
 mod win_sd;
 mod worktrees;
 
@@ -139,6 +141,15 @@ pub fn run() {
             commands::read_task_run,
             commands::list_task_runs,
             commands::clear_task_run,
+            // run timeline / analytics (#8)
+            commands::list_run_events,
+            commands::get_run_analytics,
+            // cost / token telemetry (#1)
+            commands::get_task_usage,
+            // checkpoints / rollback (#6)
+            commands::revert_task_checkpoint,
+            // review follow-up to agent (#7)
+            commands::send_review_followup,
             // i18n / config
             commands::get_locale,
             commands::set_locale,

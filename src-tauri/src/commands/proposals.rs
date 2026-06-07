@@ -68,6 +68,9 @@ pub async fn decidir_proposta(
     state: State<'_, Arc<AppState>>,
     mut registro: DecisaoRegistro,
 ) -> Result<(), String> {
+    // Audit fields captured up front (registro is moved into write_decisao).
+    let proposta_id = registro.proposta_id.clone();
+    let decisao_tag = crate::audit::serde_tag(&registro.decisao);
     if registro.decisao == Decisao::Aceita && registro.task_id.is_none() {
         // Serializa read→create→write para que um duplo-clique não deixe
         // duas chamadas concorrentes lerem "sem decisão" e materializarem
@@ -87,9 +90,43 @@ pub async fn decidir_proposta(
             None => create_task_from_proposta(&state, &registro.proposta_id).await?,
         };
         registro.task_id = Some(task_id);
-        return state.repo.write_decisao(registro).await.map_err(to_str_err);
+        let task_id_evt = registro.task_id.clone();
+        state
+            .repo
+            .write_decisao(registro)
+            .await
+            .map_err(to_str_err)?;
+        emit_proposal_decided(&state, task_id_evt, proposta_id, decisao_tag).await;
+        return Ok(());
     }
-    state.repo.write_decisao(registro).await.map_err(to_str_err)
+    let task_id_evt = registro.task_id.clone();
+    state
+        .repo
+        .write_decisao(registro)
+        .await
+        .map_err(to_str_err)?;
+    emit_proposal_decided(&state, task_id_evt, proposta_id, decisao_tag).await;
+    Ok(())
+}
+
+/// Run timeline (feature #8): record a triage proposal decision after the
+/// `write_decisao` commits. Emitted from the command (the only durable
+/// decision site — there is no NDJSON/CLI op for proposal decisions).
+async fn emit_proposal_decided(
+    state: &AppState,
+    task_id: Option<String>,
+    proposta_id: String,
+    decisao: String,
+) {
+    crate::audit::record(
+        state.repo.as_ref(),
+        task_id,
+        cadenza_proto::RunEventKind::PropostaDecidida {
+            proposta_id,
+            decisao,
+        },
+    )
+    .await;
 }
 
 /// Materialize the derived task for an accepted proposal and return its
