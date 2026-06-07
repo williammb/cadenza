@@ -816,6 +816,46 @@ document.getElementById("btn-check-update").addEventListener("click", async () =
   }
 });
 
+// ───────────────────────── diagnostics export ───────────────────────
+//
+// Builds a redacted log/env .zip via the backend (export_diagnostics opens
+// a native save dialog and scrubs secrets per diagnostics.rs) and reveals
+// the logs folder. All user text is i18n; the backend logs in English.
+const diagnosticsStatusEl = document.getElementById("diagnostics-status");
+function setDiagnosticsStatus(msg, kind) {
+  diagnosticsStatusEl.textContent = msg ?? "";
+  diagnosticsStatusEl.className = "modal-status" + (kind ? ` ${kind}` : "");
+}
+
+document.getElementById("btn-export-diagnostics").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-export-diagnostics");
+  btn.disabled = true;
+  setDiagnosticsStatus(t("settings-diagnostics-exporting"));
+  try {
+    const res = await invoke("export_diagnostics");
+    if (res && res.status === "saved") {
+      setDiagnosticsStatus(
+        t("settings-diagnostics-saved", { count: res.logs, path: res.path }),
+        "ok",
+      );
+    } else {
+      setDiagnosticsStatus(t("settings-diagnostics-cancelled"));
+    }
+  } catch (e) {
+    setDiagnosticsStatus(t("settings-diagnostics-error", { error: e }), "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("btn-open-logs").addEventListener("click", async () => {
+  try {
+    await invoke("open_logs_folder");
+  } catch (e) {
+    setDiagnosticsStatus(t("settings-diagnostics-open-error", { error: e }), "error");
+  }
+});
+
 // Close buttons (header × and footer Cancel)
 document
   .querySelectorAll('[data-action="close-settings"]')

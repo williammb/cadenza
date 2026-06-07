@@ -73,6 +73,19 @@ tokio-util = "0.7"
 # via rustls' `ring` feature — zero new crates). default-features=false avoids
 # pulling aws-lc-rs as a second provider.
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# Windows-only IPC/auth hardening (Item 3): resolve the current user's SID and
+# build a restrictive DACL/security descriptor for the auth token file and the
+# named pipe. windows-sys 0.61 is already in the lock tree (pulled by
+# interprocess 2.4), so pinning the same major adds ZERO new crates. widestring
+# is likewise already resolved transitively (via interprocess). Both are
+# MIT/Apache-2.0 — deny-compatible.
+windows-sys = "0.61"
+widestring = "1"
+# Diagnostics export (Item 7): zip the rolling logs + env info into a single
+# support bundle. default-features=false drops bzip2/zstd/lzma/aes/deflate64;
+# the `deflate-flate2` feature reuses `flate2` (already in the tree via `png`),
+# so this adds no new compression backends. zip 4.x is MIT — deny-compatible.
+zip = { version = "4", default-features = false, features = ["deflate-flate2"] }
 
 cadenza-proto = { path = "proto" }
 cadenza-i18n = { path = "i18n" }

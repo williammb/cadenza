@@ -1,8 +1,11 @@
 //! NDJSON IPC server over the local socket.
 //!
 //! Transport per DESIGN-desktop-v2.md § "Protocolo IPC":
-//! - **Windows:** named pipe `cadenza-<username>` (ACL hardening TODO
-//!   in Phase 5 — current build relies on per-user pipe namespace).
+//! - **Windows:** named pipe `cadenza-<username>`, created with a security
+//!   descriptor restricting connections to the current user's SID (owner-only
+//!   DACL — see [`crate::win_sd`]). If the SID can't be resolved we fail open
+//!   to the per-user pipe namespace and log a warning rather than refuse to
+//!   start.
 //! - **Unix:** filesystem socket at `~/.cadenza/run/socket`.
 //!
 //! Each connection runs:
@@ -29,6 +32,8 @@ use interprocess::local_socket::{tokio::prelude::*, ListenerOptions};
 use interprocess::local_socket::{GenericFilePath, ToFsName};
 #[cfg(windows)]
 use interprocess::local_socket::{GenericNamespaced, ToNsName};
+#[cfg(windows)]
+use interprocess::os::windows::local_socket::ListenerOptionsExt;
 use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -139,10 +144,19 @@ pub async fn run_server(deps: ServerDeps) -> Result<()> {
             .as_str()
             .to_ns_name::<GenericNamespaced>()
             .context("build namespaced pipe name")?;
-        ListenerOptions::new()
-            .name(name)
-            .create_tokio()
-            .context("create_tokio listener")?
+        let mut opts = ListenerOptions::new().name(name);
+        // Restrict the pipe to the current user's SID (owner-only DACL). If we
+        // can't resolve the SID we fail open: the pipe still lives in the
+        // per-user namespace, so this only loses the in-kernel ACL, not the
+        // primary isolation. The CLI auth token remains the security backstop.
+        match crate::win_sd::current_user_security_descriptor() {
+            Ok(sd) => opts = opts.security_descriptor(sd),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "could not build pipe security descriptor; using per-user namespace only"
+            ),
+        }
+        opts.create_tokio().context("create_tokio listener")?
     };
     #[cfg(not(windows))]
     let listener = {

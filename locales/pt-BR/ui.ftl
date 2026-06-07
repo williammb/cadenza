@@ -182,6 +182,7 @@ task-error = Erro: { $error }
 # Anexos de imagem (colar / arrastar-e-soltar / botão + preview de markdown)
 attachment-edit = Editar
 attachment-preview = Visualizar
+attachment-view-group = Modo de visualização
 attachment-button = Anexar imagem
 attachment-error-unsupported-format = Formato de imagem não suportado. Use PNG, JPEG, GIF ou WebP.
 attachment-error-too-large = A imagem excede o tamanho máximo (5 MB).
@@ -295,6 +296,30 @@ settings-update-checking = Verificando…
 settings-update-uptodate = Você está atualizado.
 settings-update-available = Nova versão disponível: v{ $version }
 settings-update-error = Falha ao verificar atualizações: { $error }
+
+# Settings → Geral: exportação de diagnóstico. Gera um .zip com os logs
+# rotativos + informações de ambiente, já redigido, para anexar a um
+# pedido de suporte, além de um atalho para abrir a pasta de logs. Segredos
+# são mascarados antes da escrita (ver manifesto de redação em diagnostics.rs).
+settings-section-diagnostics = Diagnóstico
+settings-diagnostics-hint = Exporte um pacote de logs redigido para anexar a um pedido de suporte. Tokens de autenticação, senhas e credenciais do Jira são mascarados; metadados de conexão e caminhos são mantidos.
+settings-diagnostics-export = Exportar diagnóstico
+settings-diagnostics-open-logs = Abrir pasta de logs
+settings-diagnostics-exporting = Gerando pacote de diagnóstico…
+settings-diagnostics-saved = { $count } arquivo(s) de log salvo(s) em { $path }
+settings-diagnostics-cancelled = Exportação cancelada.
+settings-diagnostics-error = Falha ao exportar diagnóstico: { $error }
+settings-diagnostics-open-error = Não foi possível abrir a pasta de logs: { $error }
+
+# Toast não-intrusivo para falhas em tarefas de fundo (verificação de
+# atualização, servidor IPC, etc.) que de outra forma só apareceriam no log.
+# `background-error-<kind>` é a mensagem por subsistema; o detalhe original
+# em inglês é anexado para suporte.
+background-error-title = Tarefa em segundo plano falhou
+background-error-updater = A verificação de atualização falhou.
+background-error-ipc = A ponte local do CLI parou. Reinicie o app para reconectar o CLI cadenza.
+background-error-generic = Uma tarefa em segundo plano falhou.
+background-error-dismiss = Dispensar
 
 # ─────────────────────── Revisão (review package) ───────────────────────
 # Aba "Revisão" no modal da task: estado de evidência, checks, riscos,

@@ -15,6 +15,7 @@ mod auth;
 mod blockers;
 mod commands;
 mod config;
+mod diagnostics;
 mod git;
 mod ipc;
 pub mod jira;
@@ -31,6 +32,7 @@ mod secrets;
 mod spawn;
 mod store;
 mod terminal;
+mod win_sd;
 mod worktrees;
 
 use commands::AppState;
@@ -188,6 +190,9 @@ pub fn run() {
             commands::list_installed_agents,
             commands::list_agent_models,
             commands::app_version,
+            // diagnostics export (redacted log/env bundle) + reveal logs dir
+            commands::export_diagnostics,
+            commands::open_logs_folder,
         ])
         .setup(move |app| {
             // Stash the AppHandle on AppState so background tasks
@@ -228,6 +233,7 @@ pub fn run() {
                             "ipc_server_crashed",
                             format!("{e:#}"),
                         );
+                        emit_background_error(&crash_handle, "ipc", format!("{e:#}"));
                     }
                 }
             });
@@ -420,6 +426,31 @@ pub fn run() {
         .expect("error while running cadenza");
 }
 
+/// Structured payload for the `background-error` webview event. Background
+/// tasks (updater poll, IPC server, skill check) fail silently from the
+/// user's perspective — they only land in the log. This carries a stable
+/// machine `kind` (so the UI can pick a localized message) plus the raw
+/// English `detail` for support, letting the UI surface a non-intrusive
+/// toast instead of leaving the failure invisible.
+#[derive(Clone, serde::Serialize)]
+struct BackgroundError {
+    /// Stable identifier for the failing subsystem, e.g. `"updater"`.
+    /// Maps to a `background-error-<kind>` i18n key in the UI.
+    kind: &'static str,
+    /// English, human-readable failure detail (already in the log too).
+    detail: String,
+}
+
+/// Emit a `background-error` event so the UI can show a dismissible toast.
+/// The failure is ALSO logged in English by the caller; this only adds the
+/// user-facing surface. Emit failures are swallowed (logged) — there's no
+/// recovery if even the event bus is down.
+fn emit_background_error(app: &tauri::AppHandle, kind: &'static str, detail: String) {
+    if let Err(e) = app.emit("background-error", BackgroundError { kind, detail }) {
+        tracing::warn!(error = ?e, kind, "emit background-error failed");
+    }
+}
+
 /// Restore + focus the main window. Shared by the `abrir` and
 /// `settings` tray handlers — the latter has to bring the window up
 /// before the emit lands, otherwise nothing visible happens.
@@ -444,6 +475,7 @@ pub(crate) async fn check_for_updates(app: &tauri::AppHandle) {
         Ok(u) => u,
         Err(e) => {
             tracing::warn!(error = ?e, "updater handle unavailable");
+            emit_background_error(app, "updater", format!("{e:#}"));
             return;
         }
     };
@@ -461,7 +493,10 @@ pub(crate) async fn check_for_updates(app: &tauri::AppHandle) {
             }
         }
         Ok(None) => tracing::debug!("no update available"),
-        Err(e) => tracing::warn!(error = ?e, "updater check failed"),
+        Err(e) => {
+            tracing::warn!(error = ?e, "updater check failed");
+            emit_background_error(app, "updater", format!("{e:#}"));
+        }
     }
 }
 

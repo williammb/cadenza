@@ -57,10 +57,23 @@ tauri-plugin-notification = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-updater = "2"
 arboard = "3"
+zip = { workspace = true }
 
 cadenza-proto = { workspace = true }
 cadenza-i18n = { workspace = true }
 skills-core = { workspace = true }
+
+# Windows-only: restrictive DACL for the auth token file + named-pipe security
+# descriptor (see src/win_sd.rs). Features are the minimal set needed to resolve
+# the current-user SID and convert an SDDL string to a security descriptor.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading",
+] }
+widestring = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

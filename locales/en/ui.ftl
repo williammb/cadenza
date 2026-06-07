@@ -182,6 +182,7 @@ task-error = Error: { $error }
 # Image attachments (paste / drag-drop / file button + markdown preview)
 attachment-edit = Edit
 attachment-preview = Preview
+attachment-view-group = View mode
 attachment-button = Attach image
 attachment-error-unsupported-format = Unsupported image format. Use PNG, JPEG, GIF or WebP.
 attachment-error-too-large = Image exceeds the maximum size of 5 MB.
@@ -294,6 +295,30 @@ settings-update-checking = Checking…
 settings-update-uptodate = You're up to date.
 settings-update-available = New version available: v{ $version }
 settings-update-error = Update check failed: { $error }
+
+# Settings → General: diagnostics export. Builds a redacted .zip of the
+# rolling logs + environment info to attach to a support request, and a
+# shortcut to reveal the log folder. Secrets are scrubbed before writing
+# (see diagnostics.rs redaction manifest).
+settings-section-diagnostics = Diagnostics
+settings-diagnostics-hint = Export a redacted log bundle to attach to a support request. Auth tokens, passwords, and Jira credentials are masked; connection metadata and paths are kept.
+settings-diagnostics-export = Export diagnostics
+settings-diagnostics-open-logs = Open logs folder
+settings-diagnostics-exporting = Building diagnostics bundle…
+settings-diagnostics-saved = Saved { $count } log file(s) to { $path }
+settings-diagnostics-cancelled = Export cancelled.
+settings-diagnostics-error = Diagnostics export failed: { $error }
+settings-diagnostics-open-error = Could not open the logs folder: { $error }
+
+# Non-intrusive toast for background failures (updater poll, IPC server,
+# etc.) that would otherwise only land in the log. `background-error-<kind>`
+# is the per-subsystem message; the raw English detail is appended for
+# support.
+background-error-title = Background task failed
+background-error-updater = The update check failed.
+background-error-ipc = The local CLI bridge stopped. Restart the app to reconnect the cadenza CLI.
+background-error-generic = A background task failed.
+background-error-dismiss = Dismiss
 
 # ─────────────────────── Review (review package) ───────────────────────
 # "Review" tab in the task modal: evidence state, checks, risks,

@@ -5,8 +5,9 @@
 //! - Validated against the `hello` handshake's `token` field.
 //! - Rotated when the user picks "Revoke CLI token" in the tray.
 //!
-//! Windows ACL hardening (restrict to the current user's SID) is a
-//! Phase 5 TODO — for now we rely on `%USERPROFILE%` being per-user.
+//! On Windows we apply a restrictive DACL (owner-only, full access to the
+//! current user's SID, no inherited ACEs) on every write/rotation — the
+//! Windows equivalent of Unix `mode(0o600)`. See [`crate::win_sd`].
 
 use anyhow::{Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
@@ -88,7 +89,12 @@ fn write_token(path: &Path, token: &str) -> Result<()> {
     #[cfg(not(unix))]
     {
         fs::write(path, token)?;
-        // TODO(phase-5): apply Windows DACL restricting to current user SID.
+        // Apply (or re-apply) the owner-only DACL on every write/rotation, so a
+        // file inherited from a less-restrictive ancestor or left over from an
+        // older build is tightened too — the Windows analogue of `mode(0o600)`.
+        #[cfg(windows)]
+        crate::win_sd::apply_owner_only_dacl(path)
+            .with_context(|| format!("apply owner-only DACL to {}", path.display()))?;
     }
     Ok(())
 }
