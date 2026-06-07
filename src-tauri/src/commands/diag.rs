@@ -28,9 +28,7 @@ pub enum DiagnosticsExport {
 pub async fn export_diagnostics(app: tauri::AppHandle) -> Result<DiagnosticsExport, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let data_dir = dirs::home_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join(".cadenza");
+    let data_dir = crate::data_dir();
     let log_dir = crate::observ::log_dir();
 
     let default_name = format!(
@@ -80,8 +78,13 @@ pub async fn export_diagnostics(app: tauri::AppHandle) -> Result<DiagnosticsExpo
 #[tauri::command]
 pub fn open_logs_folder() -> Result<(), String> {
     let dir = crate::observ::log_dir();
+    // If the directory can't be created the reveal cannot succeed, so surface
+    // the error instead of spawning the file manager on a non-existent path
+    // (`explorer.exe` spawns successfully regardless and would mask the
+    // failure, leaving the UI to report a phantom success).
     if let Err(e) = std::fs::create_dir_all(&dir) {
         tracing::warn!(error = ?e, "open_logs_folder: create_dir_all failed");
+        return Err(to_str_err(e));
     }
 
     #[cfg(target_os = "windows")]
