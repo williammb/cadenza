@@ -1,7 +1,15 @@
 # Cadenza — Como usar
 
-Você tem acesso ao CLI `cadenza-cli` para gerenciar tarefas. Ele fala com
-o aplicativo Cadenza pelo socket local; o app **precisa estar aberto**.
+O Cadenza é uma **ferramenta de apoio opcional** para coordenar tarefas pelo
+CLI `cadenza-cli`, que fala com o aplicativo Cadenza por um socket local. Ele
+só é relevante quando você foi iniciado para uma task do Cadenza
+(`$TASKAI_TASK_ID` setado) **ou** quando o humano pedir explicitamente para
+usá-lo.
+
+**Se `$TASKAI_TASK_ID` não estiver setado e o humano não tiver pedido o
+Cadenza, ignore o resto deste documento e apenas trabalhe normalmente como
+assistente** — não rode `cadenza-cli`, não reclame e não exija uma task. As
+seções abaixo só valem quando existe um contexto de task ativo.
 
 ## Saiba qual é a sua task
 
@@ -23,7 +31,7 @@ cadenza-cli get "$TASKAI_TASK_ID" --json
 existir). Só use `cadenza-cli current --json` como fallback quando
 `$TASKAI_TASK_ID` não estiver setado (você foi rodado fora do terminal do app).
 
-## Fluxo obrigatório
+## Fluxo da task (quando há uma task ativa)
 
 1. **Ao iniciar:** `cadenza-cli get "$TASKAI_TASK_ID" --json` — leia a sua
    task. Só trabalhe nela se o `estado` for `fazendo`.
@@ -130,12 +138,14 @@ revisor humano. O fluxo:
 
 ## Regras
 
-- Você só trabalha em tasks com `estado: fazendo`. Se
-  `get "$TASKAI_TASK_ID"` mostrar outro estado (e você não estiver em modo
-  plano), pare e pergunte ao humano.
-- Se `$TASKAI_TASK_ID` não estiver setado, use `cadenza-cli current --json`
-  como fallback; se isso retornar `null`, pare e peça ao humano para
-  começar uma task.
+- **Dentro de uma task ativa**, você só trabalha em tasks com
+  `estado: fazendo`. Se `get "$TASKAI_TASK_ID"` mostrar outro estado (e você
+  não estiver em modo plano), pare e pergunte ao humano.
+- Se `$TASKAI_TASK_ID` não estiver setado e `cadenza-cli current --json`
+  retornar `null` (ou o app não estiver rodando), **não há task ativa do
+  Cadenza** — apenas ajude o humano normalmente. **Não** recuse e **não** exija
+  uma task. Só use `cadenza-cli` quando o humano pedir ou quando existir
+  contexto de task.
 - Sempre use `--json` quando estiver parseando saída. Os valores
   `estado` são canônicos em português (`a_fazer`, `fazendo`,
   `aguardando_revisao`, `feito`) e **não** mudam com `--lang`.
@@ -144,8 +154,9 @@ revisor humano. O fluxo:
   - `20` → rejeitada — pare e reporte ao humano
   - `21` → timeout — pare, reporte que o humano não decidiu
 - `get` sai com `30` (`task_not_found`) se o id não existir.
-- Se receber exit code `10` ("app não está rodando"), peça ao humano
-  para abrir o Cadenza.
+- Se receber exit code `10` ("app não está rodando") *quando o humano
+  realmente quis usar o Cadenza*, peça para ele abrir o Cadenza. Caso
+  contrário, app fechado é normal — siga em frente sem ele.
 - Se receber exit code `11` ("token inválido"), peça ao humano para
   "Revogar token CLI" pelo menu da bandeja e tentar de novo.
 
