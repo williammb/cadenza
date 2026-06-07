@@ -111,31 +111,82 @@ fn mask_tokens(line: &str) -> String {
     out
 }
 
-/// Mask `password=…`, `pwd=…`, `passwd=…` occurrences.
+/// Mask `password=…`, `pwd=…`, `passwd=…` occurrences and the password
+/// component of any `scheme://user:password@host` connection string — the
+/// shape a Postgres DSN takes when it lands in a connection-error log line.
 fn mask_passwords(line: &str) -> String {
-    mask_kv(line, &["password", "passwd", "pwd"])
+    mask_url_userinfo(&mask_kv(line, &["password", "passwd", "pwd"]))
+}
+
+/// Mask the password in a `scheme://user:password@host` URL so a logged DSN
+/// (`postgres://user:secret@host/db`) does not leak the password. Only the
+/// segment between the first `:` of the userinfo and the `@` is replaced; the
+/// scheme, user, and host are preserved for diagnostic value. Handles multiple
+/// URLs on one line.
+fn mask_url_userinfo(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    loop {
+        let Some(scheme_end) = rest.find("://") else {
+            out.push_str(rest);
+            break;
+        };
+        let auth_start = scheme_end + 3;
+        // The authority ends at the first path/query/fragment char or whitespace.
+        let auth_end = rest[auth_start..]
+            .find(|c: char| matches!(c, '/' | '?' | '#') || c.is_whitespace())
+            .map(|off| auth_start + off)
+            .unwrap_or(rest.len());
+        let authority = &rest[auth_start..auth_end];
+        match (authority.find(':'), authority.rfind('@')) {
+            // `user:password@host` — the first `:` opens the password, the `@`
+            // closes the userinfo. A `:` after the `@` is a host port, not a
+            // password, so require `colon < at`.
+            (Some(colon), Some(at)) if colon < at => {
+                out.push_str(&rest[..auth_start + colon + 1]);
+                out.push_str(REDACTED);
+                out.push_str(&rest[auth_start + at..auth_end]);
+            }
+            // No userinfo password (bare host, or `host:port`): emit unchanged.
+            _ => out.push_str(&rest[..auth_end]),
+        }
+        rest = &rest[auth_end..];
+    }
+    out
 }
 
 /// Mask the value of `Authorization:`, `Cookie:`, and `Set-Cookie:` headers.
+///
+/// A header value runs to end of line, so once the EARLIEST header on the
+/// line is found everything from its value onward is masked — including any
+/// later header on the same line. We must key on the earliest *position*, not
+/// a fixed name priority: a line like `cookie: <secret> authorization: <tok>`
+/// would otherwise mask `authorization` (first by name) yet leak the `cookie`
+/// value that precedes it.
 fn mask_auth_headers(line: &str) -> String {
     let lower = line.to_ascii_lowercase();
-    for header in ["authorization:", "cookie:", "set-cookie:"] {
-        if let Some(pos) = lower.find(header) {
-            let value_start = pos + header.len();
+    let earliest = ["authorization:", "cookie:", "set-cookie:"]
+        .iter()
+        .filter_map(|header| lower.find(header).map(|pos| pos + header.len()))
+        .min();
+    match earliest {
+        Some(value_start) => {
             let mut masked = String::with_capacity(line.len());
             masked.push_str(&line[..value_start]);
             masked.push(' ');
             masked.push_str(REDACTED);
-            return masked;
+            masked
         }
+        None => line.to_string(),
     }
-    line.to_string()
 }
 
 /// Mask `key=value` / `key: value` / `key"="value"` for any of `keys`
-/// (case-insensitive key match). The value run ends at whitespace, quote,
-/// comma, or closing brace so structured (`key="v", …`) and JSON-ish
-/// (`"key":"v"`) shapes both scrub cleanly while leaving the rest intact.
+/// (case-insensitive key match). A quoted value is masked through its closing
+/// quote (honoring `\"` escapes); a bare value runs to the next whitespace or
+/// quote. We deliberately do NOT end a bare value at `,`/`}`/`)`: a secret can
+/// contain those, and stopping early would leak the tail. Over-masking a
+/// trailing structural char is safe; under-masking a credential is not.
 fn mask_kv(line: &str, keys: &[&str]) -> String {
     let lower = line.to_ascii_lowercase();
     let mut result = line.to_string();
@@ -184,11 +235,18 @@ fn mask_kv(line: &str, keys: &[&str]) -> String {
         }
         let value_start = i;
         let value_end = if value_start < bytes.len() && matches!(bytes[value_start], b'"' | b'\'') {
-            // Quoted value: span through the matching closing quote (inclusive).
+            // Quoted value: span through the matching closing quote (inclusive),
+            // skipping `\"`/`\\` escapes so `key="a\"b"` masks the whole value
+            // instead of stopping at the escaped inner quote (which would leak
+            // the tail `b"`).
             let quote = bytes[value_start];
             let mut j = value_start + 1;
             while j < bytes.len() && bytes[j] != quote {
-                j += 1;
+                if bytes[j] == b'\\' && j + 1 < bytes.len() {
+                    j += 2;
+                } else {
+                    j += 1;
+                }
             }
             if j < bytes.len() {
                 j + 1
@@ -196,9 +254,10 @@ fn mask_kv(line: &str, keys: &[&str]) -> String {
                 bytes.len()
             }
         } else {
-            // Bare value: ends at whitespace, quote, comma, or a closer.
+            // Bare value: ends only at whitespace or a quote. NOT at `,`/`}`/`)`
+            // — a secret may contain those, and stopping there leaks the tail.
             result[value_start..]
-                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '}' | ')'))
+                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\''))
                 .map(|off| value_start + off)
                 .unwrap_or(result.len())
         };
@@ -225,32 +284,59 @@ fn mask_kv(line: &str, keys: &[&str]) -> String {
     result
 }
 
-/// Mask the whitespace-delimited token immediately following `keyword`
-/// (case-insensitive), e.g. `Bearer abc123` → `Bearer [REDACTED]`.
+/// Mask the whitespace-delimited token immediately following EVERY
+/// occurrence of `keyword` (case-insensitive), e.g.
+/// `Bearer abc Bearer def` → `Bearer [REDACTED] Bearer [REDACTED]`.
+/// Masking only the first match would leak a second token on the same line.
 fn mask_after_keyword(line: &str, keyword: &str) -> String {
-    let lower = line.to_ascii_lowercase();
-    let Some(pos) = lower.find(keyword) else {
-        return line.to_string();
-    };
-    let after = pos + keyword.len();
-    let bytes = line.as_bytes();
-    let mut i = after;
-    while i < bytes.len() && bytes[i] == b' ' {
-        i += 1;
+    let mut result = line.to_string();
+    // Resume scanning past each masked value so the loop always advances and
+    // never rematches `[REDACTED]` (it contains no keyword substring anyway).
+    let mut search_from = 0usize;
+    while search_from < result.len() {
+        let lower = result.to_ascii_lowercase();
+        let Some(rel) = lower[search_from..].find(keyword) else {
+            break;
+        };
+        let pos = search_from + rel;
+        let after = pos + keyword.len();
+        let bytes = result.as_bytes();
+        // Anchor to a word boundary so a benign substring (`rebearer`, or the
+        // word `bearer` glued to other text) never triggers masking: the char
+        // before must be a non-alphanumeric boundary, and the auth scheme is
+        // always `keyword<space>token`, so a space must follow the keyword.
+        let boundary_before = pos == 0 || !bytes[pos - 1].is_ascii_alphanumeric();
+        let space_after = bytes.get(after) == Some(&b' ');
+        if !(boundary_before && space_after) {
+            search_from = after;
+            continue;
+        }
+        let mut i = after;
+        while i < bytes.len() && bytes[i] == b' ' {
+            i += 1;
+        }
+        let value_start = i;
+        if value_start >= result.len() {
+            break;
+        }
+        let value_end = result[value_start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '}' | ')'))
+            .map(|off| value_start + off)
+            .unwrap_or(result.len());
+        if value_end <= value_start {
+            // No value after this keyword (e.g. trailing `Bearer`); skip past
+            // the keyword so the scan can find any later occurrence.
+            search_from = after;
+            continue;
+        }
+        let mut next = String::with_capacity(result.len());
+        next.push_str(&result[..value_start]);
+        next.push_str(REDACTED);
+        next.push_str(&result[value_end..]);
+        result = next;
+        search_from = value_start + REDACTED.len();
     }
-    let value_start = i;
-    if value_start >= line.len() {
-        return line.to_string();
-    }
-    let value_end = line[value_start..]
-        .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ',' | '}' | ')'))
-        .map(|off| value_start + off)
-        .unwrap_or(line.len());
-    let mut out = String::with_capacity(line.len());
-    out.push_str(&line[..value_start]);
-    out.push_str(REDACTED);
-    out.push_str(&line[value_end..]);
-    out
+    result
 }
 
 /// Apply the full [`REDACTION_RULES`] pipeline to a single line. Public so
@@ -420,6 +506,27 @@ mod tests {
     }
 
     #[test]
+    fn redacts_every_bearer_on_a_line() {
+        // A second token on the same line must not survive (single-match
+        // masking would leak `tok2`).
+        assert_eq!(
+            redact_log_line("retry Bearer tok1 then Bearer tok2 done"),
+            "retry Bearer [REDACTED] then Bearer [REDACTED] done"
+        );
+    }
+
+    #[test]
+    fn redacts_header_value_preceding_authorization() {
+        // The earliest header on the line anchors the mask; a `cookie` value
+        // appearing before `authorization` must not leak (a fixed name-priority
+        // scan would mask authorization yet keep the cookie).
+        let out = redact_log_line("cookie: sess=SECRET1 authorization: Bearer SECRET2");
+        assert!(!out.contains("SECRET1"), "cookie value leaked: {out}");
+        assert!(!out.contains("SECRET2"), "auth value leaked: {out}");
+        assert!(out.starts_with("cookie: [REDACTED]"), "unexpected: {out}");
+    }
+
+    #[test]
     fn redacts_password_case_insensitive() {
         assert_eq!(
             redact_log_line("connecting PASSWORD=hunter2 to db"),
@@ -438,6 +545,46 @@ mod tests {
     #[test]
     fn leaves_non_secret_kv_untouched() {
         let line = "GET /rest/api host=example.atlassian.net user=ada status=200";
+        assert_eq!(redact_log_line(line), line);
+    }
+
+    #[test]
+    fn redacts_password_in_dsn() {
+        let out = redact_log_line("connect failed: postgres://cadenza:s3cr3t@db.host:5432/app");
+        assert!(!out.contains("s3cr3t"), "DSN password leaked: {out}");
+        assert!(
+            out.contains("postgres://cadenza:[REDACTED]@db.host:5432/app"),
+            "unexpected DSN masking: {out}"
+        );
+    }
+
+    #[test]
+    fn dsn_without_password_is_untouched() {
+        // `host:port` after `@` (or no userinfo) must not be mistaken for a
+        // password.
+        let line = "url=postgres://db.host:5432/app pool=8";
+        assert_eq!(redact_log_line(line), line);
+    }
+
+    #[test]
+    fn bare_value_with_special_chars_does_not_leak_tail() {
+        // A password containing `)`/`,` must be masked whole, not truncated.
+        let out = redact_log_line("password=p@ss)w,0rd next=ok");
+        assert!(!out.contains("w,0rd"), "password tail leaked: {out}");
+        assert!(out.contains("next=ok"), "trailing field lost: {out}");
+    }
+
+    #[test]
+    fn quoted_value_with_escaped_quote_does_not_leak_tail() {
+        let out = redact_log_line(r#"token="ab\"cd" host=x"#);
+        assert!(!out.contains("cd"), "escaped-quote tail leaked: {out}");
+        assert!(out.contains("host=x"), "trailing field lost: {out}");
+    }
+
+    #[test]
+    fn bearer_substring_in_a_word_is_not_masked() {
+        // `bearer` glued into another word is not the auth scheme.
+        let line = "loaded forbearer rules and 3 more items";
         assert_eq!(redact_log_line(line), line);
     }
 

@@ -620,12 +620,23 @@ function showUpdateBanner(version) {
 // the generic line for unknown kinds); the English `detail` is appended
 // as a muted sub-line for support. Auto-dismisses after a grace period.
 // No innerHTML — every node is created via the DOM API.
+const MAX_BACKGROUND_TOASTS = 3;
+
 function showBackgroundErrorToast(kind, detail) {
   const stack = document.getElementById("toast-stack");
   if (!stack) return;
 
+  // De-duplicate: a flapping subsystem (a failing updater poll, a crash-looping
+  // IPC server) re-emits the same (kind, detail) every cycle. Drop a repeat
+  // that's already on screen instead of stacking identical copies.
+  const dedupKey = `${kind} ${detail || ""}`;
+  for (const existing of stack.children) {
+    if (existing.dataset.toastKey === dedupKey) return;
+  }
+
   const toast = document.createElement("div");
   toast.className = "toast toast-error";
+  toast.dataset.toastKey = dedupKey;
 
   const body = document.createElement("div");
   body.className = "toast-body";
@@ -659,6 +670,12 @@ function showBackgroundErrorToast(kind, detail) {
 
   toast.append(body, dismiss);
   stack.append(toast);
+
+  // Cap the stack so a burst of distinct errors can't bury the UI: drop the
+  // oldest toasts beyond the limit.
+  while (stack.childElementCount > MAX_BACKGROUND_TOASTS) {
+    stack.firstElementChild.remove();
+  }
 
   // Auto-dismiss; the user can also close it sooner via the × button.
   setTimeout(remove, 12000);
