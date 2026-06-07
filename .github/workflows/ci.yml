@@ -124,9 +124,13 @@ jobs:
           cargo build -p cadenza-cli --bin cadenza-cli
           chmod +x target/debug/cadenza-cli
 
-      - name: cargo check (Tauri app)
+      # The src-tauri test binary now loads on Windows (build.rs injects the
+      # Common-Controls v6 manifest into test targets), so run its tests here
+      # instead of only type-checking — this is the only job that exercises the
+      # Windows-only win_sd security tests.
+      - name: cargo test (Tauri backend)
         if: runner.os == 'Windows'
-        run: cargo check -p cadenza --lib --bins
+        run: cargo test -p cadenza --lib --bins
 
       - name: cargo test (Windows fast crates)
         if: runner.os == 'Windows'
