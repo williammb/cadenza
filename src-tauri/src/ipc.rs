@@ -1,8 +1,11 @@
 //! NDJSON IPC server over the local socket.
 //!
 //! Transport per DESIGN-desktop-v2.md § "Protocolo IPC":
-//! - **Windows:** named pipe `cadenza-<username>` (ACL hardening TODO
-//!   in Phase 5 — current build relies on per-user pipe namespace).
+//! - **Windows:** named pipe `cadenza-<username>`, created with a security
+//!   descriptor restricting connections to the current user's SID (owner-only
+//!   DACL — see [`crate::win_sd`]). If the SID can't be resolved we fail open
+//!   to the per-user pipe namespace and log a warning rather than refuse to
+//!   start.
 //! - **Unix:** filesystem socket at `~/.cadenza/run/socket`.
 //!
 //! Each connection runs:
@@ -29,6 +32,8 @@ use interprocess::local_socket::{tokio::prelude::*, ListenerOptions};
 use interprocess::local_socket::{GenericFilePath, ToFsName};
 #[cfg(windows)]
 use interprocess::local_socket::{GenericNamespaced, ToNsName};
+#[cfg(windows)]
+use interprocess::os::windows::local_socket::ListenerOptionsExt;
 use serde::Serialize;
 use serde_json::Value;
 use std::path::PathBuf;
@@ -139,10 +144,19 @@ pub async fn run_server(deps: ServerDeps) -> Result<()> {
             .as_str()
             .to_ns_name::<GenericNamespaced>()
             .context("build namespaced pipe name")?;
-        ListenerOptions::new()
-            .name(name)
-            .create_tokio()
-            .context("create_tokio listener")?
+        let mut opts = ListenerOptions::new().name(name);
+        // Restrict the pipe to the current user's SID (owner-only DACL). If we
+        // can't resolve the SID we fail open: the pipe still lives in the
+        // per-user namespace, so this only loses the in-kernel ACL, not the
+        // primary isolation. The CLI auth token remains the security backstop.
+        match crate::win_sd::current_user_security_descriptor() {
+            Ok(sd) => opts = opts.security_descriptor(sd),
+            Err(e) => tracing::warn!(
+                error = %e,
+                "could not build pipe security descriptor; using per-user namespace only"
+            ),
+        }
+        opts.create_tokio().context("create_tokio listener")?
     };
     #[cfg(not(windows))]
     let listener = {
@@ -2788,5 +2802,450 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, DiscardError::Busy));
         assert_eq!(err.code_message().0, "jira_worktree_busy");
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// End-to-end IPC round-trip harness (Item 4)
+//
+// These tests drive the REAL server connection handler (`handle_connection` →
+// `dispatch` → real `FileRepository` over a temp data dir, FILE backend only)
+// against a real bidirectional byte stream, using a real NDJSON client that
+// speaks the exact wire framing `cadenza-cli/src/client.rs` uses (length-capped
+// lines, `{v,id,op,args}` requests, `{v,id,ok,result|error}` responses, untagged
+// `ServerFrame`). The full public flow is exercised: the `hello` handshake +
+// protocol negotiation, a mismatched-protocol handshake (→ the documented
+// `protocol_too_new` code the CLI maps to exit 12), `propose` plus a RESEND with
+// the SAME idempotency key (idempotent — no duplicate proposal), the triage
+// decision injected through the STORE (`write_decisao`) — NOT via any CLI op, as
+// there is no public CLI decision command — and the read/report ops the CLI
+// exposes (`current` / `list` / `append_log` / `done`).
+//
+// Transport choice: an in-process `tokio::io::duplex` pair rather than the live
+// named pipe / Unix socket. `run_server` is not parameterizable on its transport
+// name (Windows: `cadenza-<USERNAME>`; Unix: the fixed `~/.cadenza/run/socket`),
+// so binding it in a unit test would race the developer's real running app and
+// other parallel tests, and mutating `$USERNAME` mid-process is not safe under
+// `cargo test`'s threaded harness. The duplex pair drives the IDENTICAL server
+// code path (`handle_connection`, which `run_server` calls per accepted
+// connection) with perfect isolation, deterministic teardown, and no socket/pipe
+// or env to leak — satisfying the CI-robustness + guaranteed-cleanup requirement.
+// Every client read is bounded by a per-op timeout so a server-side hang fails
+// the test fast instead of blocking CI. The temp data dir is an owned `TempDir`
+// dropped at end of scope (including on panic).
+// ─────────────────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod roundtrip {
+    use super::*;
+    use crate::commands::AppState;
+    use crate::config::{Config, Project};
+    use crate::store::FileRepository;
+    use cadenza_proto::wire::{Request, Response, ServerFrame};
+    use cadenza_proto::{Decisao, DecisaoRegistro, MAX_PROTOCOL};
+    use std::time::Duration;
+    use tempfile::TempDir;
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream};
+    use tokio::task::JoinHandle;
+
+    /// Cap each individual client read so a server-side hang fails the test
+    /// quickly instead of blocking CI forever.
+    const OP_TIMEOUT: Duration = Duration::from_secs(10);
+
+    /// A minimal real NDJSON client over one half of a duplex pair. Mirrors
+    /// `cadenza-cli/src/client.rs`: newline-framed JSON, correlation by `id`,
+    /// untagged `ServerFrame`, events skipped while awaiting a correlated reply.
+    struct TestClient {
+        reader: tokio::io::Lines<BufReader<tokio::io::ReadHalf<DuplexStream>>>,
+        writer: tokio::io::WriteHalf<DuplexStream>,
+        next_id: u64,
+    }
+
+    impl TestClient {
+        fn new(stream: DuplexStream) -> Self {
+            let (r, w) = tokio::io::split(stream);
+            Self {
+                reader: BufReader::new(r).lines(),
+                writer: w,
+                next_id: 1,
+            }
+        }
+
+        async fn send(&mut self, req: &Request) {
+            let s = serde_json::to_string(req).unwrap();
+            self.writer.write_all(s.as_bytes()).await.unwrap();
+            self.writer.write_all(b"\n").await.unwrap();
+            self.writer.flush().await.unwrap();
+        }
+
+        async fn next_frame(&mut self) -> ServerFrame {
+            let line = tokio::time::timeout(OP_TIMEOUT, self.reader.next_line())
+                .await
+                .expect("server reply timed out")
+                .expect("read server line")
+                .expect("server closed connection unexpectedly");
+            serde_json::from_str(&line).expect("parse server frame")
+        }
+
+        /// Read frames until a `Response` arrives (skipping any events), then
+        /// return it. The first `hello` reply carries no `id`, so callers pass
+        /// `None`; correlated requests pass `Some(id)`.
+        async fn next_response(&mut self, want_id: Option<&str>) -> Response {
+            loop {
+                match self.next_frame().await {
+                    ServerFrame::Response(r) => {
+                        if want_id.is_none() || r.id.as_deref() == want_id {
+                            return r;
+                        }
+                        // Stray id — ignore (mirrors client.rs).
+                    }
+                    ServerFrame::Event(_) => continue,
+                }
+            }
+        }
+
+        fn mint_id(&mut self) -> String {
+            let s = self.next_id.to_string();
+            self.next_id += 1;
+            s
+        }
+
+        /// Send `hello` and return the parsed reply Response.
+        async fn hello(&mut self, protocol: u32, token: &str) -> Response {
+            let args = ops::hello::Args {
+                protocol,
+                client: "test-client/0".into(),
+                token: token.into(),
+            };
+            // The real client sends hello with id=None.
+            let req = Request::new(None, OP_HELLO, args).unwrap();
+            self.send(&req).await;
+            self.next_response(None).await
+        }
+
+        /// Send an op with a correlated id and return the parsed Response.
+        async fn request<A: serde::Serialize>(&mut self, op: &str, args: A) -> Response {
+            let id = self.mint_id();
+            let req = Request::new(Some(id.clone()), op, args).unwrap();
+            self.send(&req).await;
+            self.next_response(Some(&id)).await
+        }
+    }
+
+    /// Build a `ServerDeps` over a FILE backend rooted in a tempdir, with one
+    /// project (`P-1`) and a valid auth token written to `<dir>/auth`. Returns
+    /// the deps, the token, and the kept tempdir.
+    fn mk_server() -> (ServerDeps, String, TempDir) {
+        let dir = TempDir::new().unwrap();
+        let token = "roundtrip-token";
+        std::fs::write(dir.path().join("auth"), token).unwrap();
+        let repo = Arc::new(FileRepository::new(dir.path()).unwrap());
+        let config = Config {
+            projects: vec![Project {
+                id: "P-1".into(),
+                name: "Proj".into(),
+                path: dir.path().to_path_buf(),
+                agente: None,
+                default_branch: None,
+                color: None,
+                quality: None,
+            }],
+            active_project_id: Some("P-1".into()),
+            ..Default::default()
+        };
+        let state = AppState::for_test(dir.path(), repo, config).unwrap();
+        let (tx, rx) = mpsc::channel(64);
+        // Drain webview events in the background so a full channel never blocks a
+        // handler's `try_send` semantics (handlers use try_send, but draining
+        // keeps the receiver alive for the whole connection).
+        tokio::spawn(async move {
+            let mut rx = rx;
+            while rx.recv().await.is_some() {}
+        });
+        let deps = ServerDeps {
+            state: Arc::new(state),
+            data_dir: dir.path().to_path_buf(),
+            webview_events: tx,
+        };
+        (deps, token.to_string(), dir)
+    }
+
+    /// Spawn the REAL server connection handler on one half of a duplex pair and
+    /// return a `TestClient` over the other half plus the handler's join handle.
+    fn connect(deps: ServerDeps) -> (TestClient, JoinHandle<()>) {
+        let (client_side, server_side) = tokio::io::duplex(64 * 1024);
+        let handle = tokio::spawn(async move {
+            // Errors here are connection-teardown noise; the test asserts on the
+            // wire replies, not on this result.
+            let _ = handle_connection(server_side, deps).await;
+        });
+        (TestClient::new(client_side), handle)
+    }
+
+    async fn seed_task(deps: &ServerDeps, id: &str, estado: cadenza_proto::Estado) {
+        let task = cadenza_proto::Task {
+            id: id.into(),
+            titulo: format!("{id} title"),
+            estado,
+            responsavel: "humano".into(),
+            body: format!("# {id}\n\nbody\n"),
+            worktree_path: None,
+            branch: None,
+            blocked_by: Vec::new(),
+            jira_site: None,
+            jira_issue_id: None,
+            jira_key_display: None,
+        };
+        deps.state.repo.create_task(&task).await.unwrap();
+        deps.state.task_projects.set(id, Some("P-1")).unwrap();
+    }
+
+    /// Valid token + current protocol → ok handshake echoing the app protocol +
+    /// app banner. Negotiation is observable: the reply protocol is the app's
+    /// MAX_PROTOCOL.
+    #[tokio::test]
+    async fn handshake_negotiates_protocol() {
+        let (deps, token, _dir) = mk_server();
+        let (mut client, handle) = connect(deps);
+        let resp = client.hello(MAX_PROTOCOL, &token).await;
+        assert!(resp.ok, "hello should succeed: {resp:?}");
+        let result: ops::hello::Result = serde_json::from_value(resp.result.unwrap()).unwrap();
+        assert_eq!(result.protocol, MAX_PROTOCOL);
+        assert!(result.app.starts_with("cadenza/"), "app = {}", result.app);
+        handle.abort();
+    }
+
+    /// A client advertising a protocol ABOVE the app's MAX gets the documented
+    /// `protocol_too_new` error — the code `WireError::exit_code` maps to exit 12.
+    #[tokio::test]
+    async fn handshake_protocol_too_new_surfaces_mismatch() {
+        let (deps, token, _dir) = mk_server();
+        let (mut client, handle) = connect(deps);
+        let resp = client.hello(MAX_PROTOCOL + 1, &token).await;
+        assert!(!resp.ok);
+        let err = resp.error.expect("error body present");
+        // `protocol_too_new` is what `WireError::exit_code` maps to exit 12
+        // (asserted directly in the CLI golden contract tests).
+        assert_eq!(err.code, "protocol_too_new");
+        handle.abort();
+    }
+
+    /// Wrong token → `auth_failed` (CLI exit 11) and the connection closes
+    /// without serving any op.
+    #[tokio::test]
+    async fn handshake_bad_token_is_auth_failed() {
+        let (deps, _token, _dir) = mk_server();
+        let (mut client, handle) = connect(deps);
+        let resp = client.hello(MAX_PROTOCOL, "wrong-token").await;
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, "auth_failed");
+        handle.abort();
+    }
+
+    /// Full read/report flow over the real server: list (empty), seed via store,
+    /// current returns the topmost fazendo card, append_log mutates the body,
+    /// and a legacy `done` flips estado to aguardando_revisao.
+    #[tokio::test]
+    async fn read_report_flow_current_list_log_done() {
+        let (deps, token, _dir) = mk_server();
+        // current/list against an empty store first.
+        {
+            let (mut client, handle) = connect(deps.clone());
+            assert!(client.hello(MAX_PROTOCOL, &token).await.ok);
+
+            let list = client
+                .request(OP_LIST_TASKS, ops::list_tasks::Args::default())
+                .await;
+            let tasks: ops::list_tasks::Result =
+                serde_json::from_value(list.result.unwrap()).unwrap();
+            assert!(tasks.is_empty(), "store starts empty");
+
+            let current = client
+                .request(OP_CURRENT_TASK, ops::current_task::Args::default())
+                .await;
+            // current_task returns JSON null when nothing is in fazendo.
+            assert_eq!(current.result, Some(serde_json::Value::Null));
+            handle.abort();
+        }
+
+        // Seed one fazendo task through the store (server reads it live).
+        seed_task(&deps, "T-1", cadenza_proto::Estado::Fazendo).await;
+
+        let (mut client, handle) = connect(deps.clone());
+        assert!(client.hello(MAX_PROTOCOL, &token).await.ok);
+
+        // list now returns the task with the canonical PT estado on the wire.
+        let list = client
+            .request(OP_LIST_TASKS, ops::list_tasks::Args::default())
+            .await;
+        let tasks: ops::list_tasks::Result = serde_json::from_value(list.result.unwrap()).unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, "T-1");
+        assert_eq!(tasks[0].estado.as_str(), "fazendo");
+
+        // current returns the same card.
+        let current = client
+            .request(OP_CURRENT_TASK, ops::current_task::Args::default())
+            .await;
+        let cur: ops::current_task::Result =
+            serde_json::from_value(current.result.unwrap()).unwrap();
+        assert_eq!(cur.unwrap().id, "T-1");
+
+        // append_log mutates the body.
+        let log = client
+            .request(
+                OP_APPEND_LOG,
+                ops::append_log::Args {
+                    task_id: "T-1".into(),
+                    text: "progress update".into(),
+                },
+            )
+            .await;
+        assert!(log.ok, "append_log: {log:?}");
+        let task = deps.state.repo.read_task("T-1").await.unwrap();
+        assert!(task.body.contains("progress update"));
+
+        // legacy done (no evidence) flips estado to aguardando_revisao.
+        let done = client
+            .request(
+                OP_DONE,
+                ops::done::Args {
+                    task_id: "T-1".into(),
+                    summary: "done it".into(),
+                    evidence: None,
+                    idempotency_key: None,
+                },
+            )
+            .await;
+        assert!(done.ok, "done: {done:?}");
+        let task = deps.state.repo.read_task("T-1").await.unwrap();
+        assert_eq!(task.estado, cadenza_proto::Estado::AguardandoRevisao);
+        assert!(task.body.contains("[done request] done it"));
+        handle.abort();
+    }
+
+    /// `append_log` against a missing task → `task_not_found` (CLI exit 30).
+    #[tokio::test]
+    async fn append_log_missing_task_is_not_found() {
+        let (deps, token, _dir) = mk_server();
+        let (mut client, handle) = connect(deps);
+        assert!(client.hello(MAX_PROTOCOL, &token).await.ok);
+        let resp = client
+            .request(
+                OP_APPEND_LOG,
+                ops::append_log::Args {
+                    task_id: "T-nope".into(),
+                    text: "x".into(),
+                },
+            )
+            .await;
+        assert!(!resp.ok);
+        assert_eq!(resp.error.unwrap().code, "task_not_found");
+        handle.abort();
+    }
+
+    /// propose + RESEND with the SAME idempotency key is idempotent: the second
+    /// propose returns the SAME proposta_id and no duplicate proposal is stored.
+    /// Then the human decision is injected through the STORE (`write_decisao`),
+    /// NOT via any CLI op, and `await_decision` returns it.
+    #[tokio::test]
+    async fn propose_is_idempotent_and_decision_injected_via_store() {
+        let (deps, token, _dir) = mk_server();
+        let (mut client, handle) = connect(deps.clone());
+        assert!(client.hello(MAX_PROTOCOL, &token).await.ok);
+
+        let propose_args = cadenza_proto::NewProposta {
+            idempotency_key: "fixed-key-1".into(),
+            parent: None,
+            title: "Fix the bug".into(),
+            repro: "step 1".into(),
+            file: "src/foo.rs".into(),
+            what_failed: "assertion".into(),
+            action: "patch".into(),
+            jira_site: None,
+            jira_issue_id: None,
+        };
+
+        let first = client.request(OP_PROPOSE, propose_args.clone()).await;
+        assert!(first.ok, "first propose: {first:?}");
+        let id1: ops::propose::Result = serde_json::from_value(first.result.unwrap()).unwrap();
+
+        // RESEND with the SAME key → same proposta_id (server-side dedup).
+        let second = client.request(OP_PROPOSE, propose_args.clone()).await;
+        assert!(second.ok);
+        let id2: ops::propose::Result = serde_json::from_value(second.result.unwrap()).unwrap();
+        assert_eq!(
+            id1.proposta_id, id2.proposta_id,
+            "RESEND with same idempotency key must dedup to one proposal"
+        );
+
+        // Exactly one pending proposal exists on disk (no duplicate).
+        let pending = deps.state.repo.list_pending_propostas().await.unwrap();
+        assert_eq!(pending.len(), 1, "no duplicate proposal persisted");
+        assert_eq!(pending[0].proposta_id, id1.proposta_id);
+
+        // Inject the human decision through the STORE (test-control path) — there
+        // is no public CLI op for the triage decision. Then await_decision over
+        // the wire must return it.
+        let registro = DecisaoRegistro {
+            proposta_id: id1.proposta_id.clone(),
+            decisao: Decisao::Aceita,
+            task_id: Some("T-99".into()),
+            autor: "humano".into(),
+            decided_at_ms: 0,
+        };
+        deps.state.repo.write_decisao(registro).await.unwrap();
+
+        let decision = client
+            .request(
+                OP_AWAIT_DECISION,
+                ops::await_decision::Args {
+                    proposta_id: id1.proposta_id.clone(),
+                    timeout_ms: 5_000,
+                },
+            )
+            .await;
+        assert!(decision.ok, "await_decision: {decision:?}");
+        let reg: ops::await_decision::Result =
+            serde_json::from_value(decision.result.unwrap()).unwrap();
+        assert_eq!(reg.decisao, Decisao::Aceita);
+        assert_eq!(reg.task_id.as_deref(), Some("T-99"));
+        handle.abort();
+    }
+
+    /// `await_decision` with no decision written within the timeout → the
+    /// documented `decision_timeout` error (CLI exit 21). A short timeout keeps
+    /// the test fast.
+    #[tokio::test]
+    async fn await_decision_times_out() {
+        let (deps, token, _dir) = mk_server();
+        let (mut client, handle) = connect(deps.clone());
+        assert!(client.hello(MAX_PROTOCOL, &token).await.ok);
+
+        let propose_args = cadenza_proto::NewProposta {
+            idempotency_key: "timeout-key".into(),
+            parent: None,
+            title: "t".into(),
+            repro: "r".into(),
+            file: "f".into(),
+            what_failed: "w".into(),
+            action: "a".into(),
+            jira_site: None,
+            jira_issue_id: None,
+        };
+        let first = client.request(OP_PROPOSE, propose_args).await;
+        let id: ops::propose::Result = serde_json::from_value(first.result.unwrap()).unwrap();
+
+        let decision = client
+            .request(
+                OP_AWAIT_DECISION,
+                ops::await_decision::Args {
+                    proposta_id: id.proposta_id,
+                    timeout_ms: 50,
+                },
+            )
+            .await;
+        assert!(!decision.ok);
+        assert_eq!(decision.error.unwrap().code, "decision_timeout");
+        handle.abort();
     }
 }

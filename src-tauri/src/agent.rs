@@ -224,6 +224,10 @@ fn config_dir_for(kind: AgenteKind) -> Option<PathBuf> {
         // Docs point at `~/.gemini/antigravity-cli` (skills/MCP config)
         // and `~/.config/antigravity` (config.toml). `.gemini` is the
         // one tied to agent state, so prefer it for presence detection.
+        // This is a filesystem-probe assumption, not pinned by a fixture:
+        // if the dir name is wrong, `has_config_dir` in `detect_presence`
+        // simply reads false and presence falls back to PATH/locator — no
+        // panic, the agent is just reported uninstalled until verified.
         AgenteKind::Antigravity => home.join(".gemini").join("antigravity-cli"),
         AgenteKind::OpenCode => home.join(".config").join("opencode"),
     })
@@ -641,9 +645,11 @@ fn antigravity_sessions_root() -> PathBuf {
     // TODO(agy-verify): `agy` is not installed on the dev machine, so the
     // session-store path and filename/id format are unconfirmed. The docs
     // point at `~/.gemini/antigravity-cli/` for agent state; the capture
-    // reuses the codex jsonl+UUID-suffix walker. If `agy` stores sessions
-    // elsewhere or with a different id format, capture returns None and
-    // resume is disabled (graceful) until this is verified empirically.
+    // reuses the codex jsonl+UUID-suffix walker. This is a filesystem-probe
+    // assumption, not pinned by a fixture: if `agy` stores sessions
+    // elsewhere or with a different id format, the walker finds nothing,
+    // capture returns None, and resume is disabled (graceful, no panic)
+    // until this is verified empirically.
     dirs::home_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join(".gemini")

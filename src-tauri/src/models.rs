@@ -574,10 +574,14 @@ fn parse_copilot(frame: &[String]) -> Vec<ModelEntry> {
 /// which keys on the verified `gpt-` prefix and `(current)` marker. This
 /// parser is deliberately lenient: it takes the first token of each
 /// numbered row as the model id once past a "model"-mentioning header, and
-/// treats common selection markers as "current". Once a real
-/// `testdata/models_antigravity.bin` fixture is captured, tighten the
-/// header anchor / id filter / current detection to match and lock it with
-/// a fixture test (mirroring `parse_codex_fixture_*`).
+/// treats common selection markers as "current". The ASSUMED shape it keys
+/// on is pinned by the synthetic `testdata/models_antigravity.txt` fixture
+/// and exercised by `parse_antigravity_synthetic_menu_lists_models`; the
+/// graceful empty-output/no-menu behaviour is covered by
+/// `parse_antigravity_not_installed_yields_empty_without_panic`. Once a real
+/// `testdata/models_antigravity.bin` capture exists, replace that fixture,
+/// then tighten the header anchor / id filter / current detection to match
+/// and lock it with a fixture test (mirroring `parse_codex_fixture_*`).
 fn parse_antigravity(frame: &[String]) -> Vec<ModelEntry> {
     // Anchor on the menu header the same way parse_claude/parse_codex do
     // ("select model" / "/model") rather than any line merely containing
@@ -657,6 +661,23 @@ mod tests {
     const CLAUDE_FIXTURE: &[u8] = include_bytes!("../testdata/models_claude.bin");
     const CODEX_FIXTURE: &[u8] = include_bytes!("../testdata/models_codex.bin");
     const COPILOT_FIXTURE: &[u8] = include_bytes!("../testdata/models_copilot.bin");
+    // SYNTHETIC, not a real PTY capture: `agy` is not installed anywhere we
+    // can reach, so the layout in this fixture is ASSUMED (see the file's
+    // header comment). Unlike the `.bin` captures it is human-readable text
+    // with `#` comment lines, stripped by `antigravity_fixture_frame` before
+    // parsing.
+    const ANTIGRAVITY_FIXTURE: &str = include_str!("../testdata/models_antigravity.txt");
+
+    /// Drop the `#`-prefixed comment lines from the synthetic antigravity
+    /// fixture, leaving only the assumed `/model` menu rows the parser sees.
+    fn antigravity_fixture_frame() -> Vec<u8> {
+        ANTIGRAVITY_FIXTURE
+            .lines()
+            .filter(|l| !l.trim_start().starts_with('#'))
+            .collect::<Vec<_>>()
+            .join("\r\n")
+            .into_bytes()
+    }
 
     #[test]
     fn parse_claude_fixture_lists_three_models_with_default_current() {
@@ -713,18 +734,13 @@ mod tests {
 
     #[test]
     fn parse_antigravity_synthetic_menu_lists_models() {
-        // No real `agy` fixture yet (agy not installed) — this synthetic
-        // frame locks the lenient parser's row extraction against an
-        // ASSUMED `/model` layout. Replace with a captured
-        // testdata/models_antigravity.bin once agy is available, then
-        // tighten parse_antigravity to the real format.
-        let synthetic = concat!(
-            "Select model\r\n",
-            "  1. gemini-3.1-pro  (current)\r\n",
-            "  2. gemini-3.5-flash\r\n",
-            "  3. claude-sonnet\r\n",
-        );
-        let entries = parse_models(synthetic.as_bytes(), AgenteKind::Antigravity);
+        // Loads testdata/models_antigravity.txt (a SYNTHETIC, ASSUMED layout
+        // — `agy` is not installed; see the fixture header). This locks the
+        // lenient parser's row extraction against that assumed `/model`
+        // layout. When a real PTY capture is available, replace the fixture
+        // with testdata/models_antigravity.bin and tighten parse_antigravity.
+        let frame = antigravity_fixture_frame();
+        let entries = parse_models(&frame, AgenteKind::Antigravity);
         let ids: Vec<&str> = entries.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(
             ids,
@@ -732,6 +748,30 @@ mod tests {
         );
         let current = entries.iter().find(|e| e.current).expect("a current row");
         assert_eq!(current.id, "gemini-3.1-pro");
+    }
+
+    #[test]
+    fn parse_antigravity_not_installed_yields_empty_without_panic() {
+        // Graceful degradation: when `agy` is absent the PTY spawn fails and
+        // `discover_models` returns Err (the caller maps it to an actionable
+        // "not found on PATH" message). The parser itself must never panic on
+        // the byte streams it could still be handed — empty output (spawn
+        // produced nothing) or unrelated chrome with no numbered model rows —
+        // and must degrade to an empty list rather than fabricating entries.
+        assert!(
+            parse_models(b"", AgenteKind::Antigravity).is_empty(),
+            "empty agy output must parse to no models",
+        );
+
+        let no_menu = concat!(
+            "agy: command palette\r\n",
+            "Welcome to Antigravity. Type /help for commands.\r\n",
+            "Press Ctrl+C to exit.\r\n",
+        );
+        assert!(
+            parse_models(no_menu.as_bytes(), AgenteKind::Antigravity).is_empty(),
+            "output with no numbered model rows must parse to no models",
+        );
     }
 
     #[test]

@@ -157,6 +157,10 @@ export function setupAttachments(cfg) {
     textarea.hidden = false;
     editBtn?.classList.add("is-active");
     previewBtn?.classList.remove("is-active");
+    // Expose toggle state to assistive tech (the CSS class alone is invisible
+    // to screen readers).
+    editBtn?.setAttribute("aria-pressed", "true");
+    previewBtn?.setAttribute("aria-pressed", "false");
   }
 
   async function showPreview() {
@@ -166,6 +170,8 @@ export function setupAttachments(cfg) {
     preview.hidden = false;
     previewBtn?.classList.add("is-active");
     editBtn?.classList.remove("is-active");
+    previewBtn?.setAttribute("aria-pressed", "true");
+    editBtn?.setAttribute("aria-pressed", "false");
   }
 
   /** Clear buffered images and return to Edit view. Pass `readOnly` to

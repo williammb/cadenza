@@ -2196,6 +2196,54 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 
+/* ─────────────── Background-error toasts ─────────────── */
+
+/* Anchored, non-blocking stack in the lower-right. Populated by
+ * showBackgroundErrorToast() when the backend emits `background-error`
+ * (updater/IPC failures that would otherwise be log-only). */
+.toast-stack {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: min(28rem, calc(100vw - 2rem));
+  pointer-events: none;
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 8px;
+  background: var(--card-bg);
+  box-shadow: var(--modal-shadow);
+  pointer-events: auto;
+  font-size: 0.82rem;
+}
+.toast-error {
+  border: 1px solid var(--danger);
+  background: var(--danger-soft);
+}
+.toast-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+.toast-body strong {
+  font-family: var(--font-feature);
+  font-weight: 600;
+}
+.toast-detail {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  opacity: 0.7;
+  word-break: break-word;
+}
+
 /* ─────────────── Revisão (review package) ─────────────── */
 
 .review-body {

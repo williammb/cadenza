@@ -23,6 +23,8 @@ mod jira_inner;
 mod jira_review_inner;
 mod memory_inner;
 pub mod migrate;
+#[cfg(test)]
+mod parity_tests;
 mod postgres;
 mod review_inner;
 mod sqlite;

@@ -324,7 +324,11 @@ pub(crate) fn locate_agent_binary(command: &str) -> Option<PathBuf> {
             // installer is documented to drop the binary under
             // `~/.local/bin` (Unix) or `%LOCALAPPDATA%\Antigravity\`
             // (Windows). locate_in_roots also probes `<root>/bin`, so the
-            // home root covers the `~/.local/bin` case.
+            // home root covers the `~/.local/bin` case. This is a
+            // filesystem-probe assumption, not pinned by a fixture: if the
+            // real layout differs, `locate_agent_binary` returns None and
+            // the caller falls back to PATH resolution (and ultimately a
+            // "not found on PATH" error) — no panic — until verified.
             if let Some(home) = dirs::home_dir() {
                 roots.push(home.join(".local"));
                 roots.push(home.join(".gemini").join("antigravity-cli"));

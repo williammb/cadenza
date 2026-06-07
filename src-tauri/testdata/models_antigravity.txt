@@ -1,0 +1,28 @@
+# ASSUMED Antigravity (`agy`) `/model` menu layout — NOT VERIFIED.
+#
+# `agy` is not installed on any dev machine reachable to the project, so the
+# real rendering of the interactive `/model` menu (header wording, the
+# "current" selection glyph, and whether model ids carry a vendor prefix) has
+# never been captured. This file is a SYNTHETIC stand-in that pins the shape
+# `parse_antigravity` currently assumes, so the heuristic parser has an
+# explicit, reviewable fixture instead of an inline string buried in a test.
+#
+# Layout assumed here (mirrors the verified `parse_codex` / `parse_claude`
+# captures):
+#   * a header line containing "Select model" anchors extraction,
+#   * each model is a numbered row ("  1. <id> ..."),
+#   * the model id is the first whitespace-delimited token of the row,
+#   * the active model is flagged with a trailing "(current)" marker
+#     (the parser also treats the √ and ● glyphs as "current").
+#
+# Lines starting with '#' are fixture comments and are stripped before the
+# bytes are handed to the parser (real PTY output never contains them).
+#
+# TODO(agy-verify): replace this synthetic fixture with a real PTY capture
+# (`testdata/models_antigravity.bin`, like the other agents) once `agy` is
+# installed, then tighten `parse_antigravity` to the confirmed format and
+# update this fixture/test accordingly.
+Select model
+  1. gemini-3.1-pro  (current)
+  2. gemini-3.5-flash
+  3. claude-sonnet

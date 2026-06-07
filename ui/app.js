@@ -30,6 +30,7 @@ import {
   openJiraImport,
   setJiraImportRefreshCallback,
 } from "./jira-import.js";
+import { initModalA11y } from "./modal-a11y.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -526,6 +527,9 @@ async function main() {
   // don't flash the OS-default theme for a frame.
   initTheme();
   await bootI18n();
+  // Systematic modal a11y: focus restore, focus trap, aria-labelledby —
+  // applied to every `<dialog class="modal">` before any can open.
+  initModalA11y();
   wireTopbar();
   wireDropZones();
   setRefreshCallback(renderBoard);
@@ -580,6 +584,14 @@ async function main() {
       const version = typeof e?.payload === "string" ? e.payload : "";
       showUpdateBanner(version);
     });
+    // Background failures (updater poll, IPC server) emit a structured
+    // payload {kind, detail}. The detail is English (for support) and
+    // already logged; the toast picks a localized line by kind.
+    await listen("background-error", (e) => {
+      const kind = e?.payload?.kind || "generic";
+      const detail = e?.payload?.detail || "";
+      showBackgroundErrorToast(kind, detail);
+    });
   } catch (e) {
     console.warn("event subscribe failed", e);
   }
@@ -601,6 +613,72 @@ function showUpdateBanner(version) {
   if (tag) tag.textContent = version ? `v${version}` : "";
   banner.dataset.version = version || "";
   banner.hidden = false;
+}
+
+// Build and show a dismissible toast for a background failure. The
+// message is chosen by `kind` (background-error-<kind>, falling back to
+// the generic line for unknown kinds); the English `detail` is appended
+// as a muted sub-line for support. Auto-dismisses after a grace period.
+// No innerHTML — every node is created via the DOM API.
+const MAX_BACKGROUND_TOASTS = 3;
+
+function showBackgroundErrorToast(kind, detail) {
+  const stack = document.getElementById("toast-stack");
+  if (!stack) return;
+
+  // De-duplicate: a flapping subsystem (a failing updater poll, a crash-looping
+  // IPC server) re-emits the same (kind, detail) every cycle. Drop a repeat
+  // that's already on screen instead of stacking identical copies.
+  const dedupKey = `${kind} ${detail || ""}`;
+  for (const existing of stack.children) {
+    if (existing.dataset.toastKey === dedupKey) return;
+  }
+
+  const toast = document.createElement("div");
+  toast.className = "toast toast-error";
+  toast.dataset.toastKey = dedupKey;
+
+  const body = document.createElement("div");
+  body.className = "toast-body";
+
+  const title = document.createElement("strong");
+  title.textContent = t("background-error-title");
+
+  const msg = document.createElement("span");
+  const knownKinds = ["updater", "ipc"];
+  const key = knownKinds.includes(kind)
+    ? `background-error-${kind}`
+    : "background-error-generic";
+  msg.textContent = t(key);
+
+  body.append(title, msg);
+  if (detail) {
+    const det = document.createElement("span");
+    det.className = "toast-detail";
+    det.textContent = detail;
+    body.append(det);
+  }
+
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.className = "btn btn-icon";
+  dismiss.setAttribute("aria-label", t("background-error-dismiss"));
+  dismiss.title = t("background-error-dismiss");
+  dismiss.textContent = "×";
+  const remove = () => toast.remove();
+  dismiss.addEventListener("click", remove);
+
+  toast.append(body, dismiss);
+  stack.append(toast);
+
+  // Cap the stack so a burst of distinct errors can't bury the UI: drop the
+  // oldest toasts beyond the limit.
+  while (stack.childElementCount > MAX_BACKGROUND_TOASTS) {
+    stack.firstElementChild.remove();
+  }
+
+  // Auto-dismiss; the user can also close it sooner via the × button.
+  setTimeout(remove, 12000);
 }
 
 function wireUpdateBanner() {
