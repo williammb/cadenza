@@ -288,6 +288,27 @@ pub fn run() {
                 notify_outdated_skills(&skill_handle).await;
             });
 
+            // Stale Jira run secrets: an `Active` analysis-run secret cannot
+            // outlive the process that minted it (the analyst is a PTY child
+            // that dies with the app), so any record still `Active` at boot is
+            // stale and would otherwise keep the import short-circuit returning
+            // `ExistingActive` forever, leaving the issue un-reimportable.
+            // Revoke them once at startup; durable worktree work is unaffected.
+            if let Some(recon_state) = app.try_state::<Arc<AppState>>() {
+                let recon_state = recon_state.inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    match commands::reconcile_stale_run_secrets(&recon_state).await {
+                        Ok(0) => {}
+                        Ok(n) => {
+                            tracing::info!(count = n, "revoked stale jira run secrets at boot")
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "jira run-secret reconciliation failed")
+                        }
+                    }
+                });
+            }
+
             // Tray labels follow the active app locale. Resolve once at
             // build time; live re-translation of the tray menu would
             // need rebuilding the menu after every locale switch, which

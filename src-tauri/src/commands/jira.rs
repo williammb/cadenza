@@ -144,6 +144,42 @@ pub(crate) async fn revoke_run_secret(
     Ok(())
 }
 
+/// Boot-time reconciliation for stale analysis-run secrets.
+///
+/// An `Active` secret cannot outlive the process that minted it: the analyst
+/// runs in a PTY child that dies with the app, and the secret is only ever
+/// presented by that live analyst (via `jira-materialize`). So any record still
+/// marked `Active` at startup is stale — there is no process left to use it —
+/// yet it keeps `issue_has_active_work` true, so the import short-circuit would
+/// return `ExistingActive` forever and the issue could never be re-imported.
+///
+/// Revoke every such secret once at boot. Durable worktree-backed work is
+/// untouched: it stays "active" via the worktree predicate, not the secret, so
+/// reopening it still short-circuits as intended. Best-effort per record — a
+/// single upsert failure is logged and skipped, never fatal to boot. Returns
+/// the number of secrets revoked.
+pub(crate) async fn reconcile_stale_run_secrets(state: &AppState) -> Result<usize, String> {
+    let records = state.repo.list_jira_issues().await.map_err(to_str_err)?;
+    let now = now_ms_i64();
+    let mut revoked = 0usize;
+    for mut record in records {
+        if record.secret_status.as_deref() != Some(SecretStatus::Active.as_str()) {
+            continue;
+        }
+        record.secret_status = Some(SecretStatus::Revoked.as_str().to_string());
+        record.updated_at_ms = now;
+        match state.repo.upsert_jira_issue(&record).await {
+            Ok(()) => revoked += 1,
+            Err(e) => tracing::warn!(
+                error = %e,
+                jira_key = %record.jira_key,
+                "failed to revoke stale jira run secret at boot"
+            ),
+        }
+    }
+    Ok(revoked)
+}
+
 /// Failure surface for `jira_materialize_core`. Carries enough to map to the
 /// right wire `ErrorBody.code` (IPC) or `String` (Tauri command).
 #[derive(Debug)]
