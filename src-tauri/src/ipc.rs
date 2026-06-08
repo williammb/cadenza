@@ -2455,6 +2455,57 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn failed_spawn_revoke_unblocks_reimport() {
+        // Regression for the "import does nothing, then can't be re-imported"
+        // bug: the secret is minted (status=Active) BEFORE the analyst spawn.
+        // If the spawn tail in `jira_import_core` fails, it revokes the secret
+        // so the record is not stuck as "active work". This drives the same
+        // revoke + re-import seam the production failure path uses.
+        let (deps, _dir, _rx) = mk_deps(None);
+        let f = fetched("10042", "PROJ-7", "x", Value::Null);
+
+        // Import mints a run (status=Active).
+        let first = jira_import_persist(&deps.state, "site", &f, "P-1")
+            .await
+            .unwrap();
+        let run1 = match first {
+            ImportPersistOutcome::New {
+                analysis_run_id, ..
+            } => analysis_run_id,
+            _ => panic!("expected New"),
+        };
+
+        // Simulate the spawn-failure rollback the New arm performs.
+        crate::commands::revoke_run_secret(&deps.state, &run1)
+            .await
+            .unwrap();
+        let after_revoke = deps
+            .state
+            .repo
+            .read_jira_issue("site", "10042")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after_revoke.secret_status.as_deref(),
+            Some(SecretStatus::Revoked.as_str()),
+            "rolled-back import leaves the secret revoked, not active"
+        );
+
+        // The issue is importable again (no permanent ExistingActive lock),
+        // with a fresh run id.
+        let second = jira_import_persist(&deps.state, "site", &f, "P-1")
+            .await
+            .unwrap();
+        match second {
+            ImportPersistOutcome::New {
+                analysis_run_id, ..
+            } => assert_ne!(analysis_run_id, run1, "re-import mints a new run"),
+            _ => panic!("expected re-import to mint a new run, got stuck ExistingActive"),
+        }
+    }
+
     #[test]
     fn import_persist_outcome_contains_no_secret_in_proto_result() {
         // The proto Result is a distinct type from ImportPersistOutcome and
