@@ -144,6 +144,42 @@ pub(crate) async fn revoke_run_secret(
     Ok(())
 }
 
+/// Boot-time reconciliation for stale analysis-run secrets.
+///
+/// An `Active` secret cannot outlive the process that minted it: the analyst
+/// runs in a PTY child that dies with the app, and the secret is only ever
+/// presented by that live analyst (via `jira-materialize`). So any record still
+/// marked `Active` at startup is stale — there is no process left to use it —
+/// yet it keeps `issue_has_active_work` true, so the import short-circuit would
+/// return `ExistingActive` forever and the issue could never be re-imported.
+///
+/// Revoke every such secret once at boot. Durable worktree-backed work is
+/// untouched: it stays "active" via the worktree predicate, not the secret, so
+/// reopening it still short-circuits as intended. Best-effort per record — a
+/// single upsert failure is logged and skipped, never fatal to boot. Returns
+/// the number of secrets revoked.
+pub(crate) async fn reconcile_stale_run_secrets(state: &AppState) -> Result<usize, String> {
+    let records = state.repo.list_jira_issues().await.map_err(to_str_err)?;
+    let now = now_ms_i64();
+    let mut revoked = 0usize;
+    for mut record in records {
+        if record.secret_status.as_deref() != Some(SecretStatus::Active.as_str()) {
+            continue;
+        }
+        record.secret_status = Some(SecretStatus::Revoked.as_str().to_string());
+        record.updated_at_ms = now;
+        match state.repo.upsert_jira_issue(&record).await {
+            Ok(()) => revoked += 1,
+            Err(e) => tracing::warn!(
+                error = %e,
+                jira_key = %record.jira_key,
+                "failed to revoke stale jira run secret at boot"
+            ),
+        }
+    }
+    Ok(revoked)
+}
+
 /// Failure surface for `jira_materialize_core`. Carries enough to map to the
 /// right wire `ErrorBody.code` (IPC) or `String` (Tauri command).
 #[derive(Debug)]
@@ -685,120 +721,144 @@ pub(crate) async fn jira_import_core(
             summary,
         } => {
             // Step 6 — analyst spawn (thin tail, mirrors `destrinchar_ideia`).
-            let pid = record
-                .project_id
-                .clone()
-                .ok_or_else(|| ImportError::Internal("record missing project_id".to_string()))?;
-            let (cwd, command_override) = {
-                let cfg = state
-                    .config
+            // The capability secret is already minted + persisted (status=Active)
+            // by `jira_import_persist`. If ANY step below fails we MUST revoke it,
+            // otherwise the record keeps `issue_has_active_work` true and the early
+            // short-circuit would forever return `ExistingActive` — the issue would
+            // be stuck and un-re-importable. So run the spawn tail in an inner block
+            // and revoke the secret on error before propagating.
+            let spawned: Result<proto_ops::jira_import::Result, ImportError> = async {
+                let pid = record.project_id.clone().ok_or_else(|| {
+                    ImportError::Internal("record missing project_id".to_string())
+                })?;
+                let (cwd, command_override) = {
+                    let cfg = state
+                        .config
+                        .lock()
+                        .map_err(|e| ImportError::Internal(format!("config lock poisoned: {e}")))?;
+                    let project = cfg
+                        .projects
+                        .iter()
+                        .find(|p| p.id == pid)
+                        .ok_or_else(|| ImportError::UnknownProject(pid.clone()))?;
+                    let cmd = project
+                        .agente
+                        .as_ref()
+                        .filter(|a| a.kind == kind)
+                        .and_then(|a| a.command.clone())
+                        .or_else(|| {
+                            cfg.agente
+                                .as_ref()
+                                .filter(|a| a.kind == kind)
+                                .and_then(|a| a.command.clone())
+                        });
+                    (project.path.clone(), cmd)
+                };
+                if !cwd.exists() {
+                    return Err(ImportError::Spawn(format!(
+                        "project path does not exist: {} — fix it in Settings → Projetos",
+                        cwd.display()
+                    )));
+                }
+
+                // jira_site is a full origin ("https://acme.atlassian.net"); strip
+                // the scheme and sanitize so the synthetic id (exported as
+                // TASKAI_TASK_ID) is safe to use verbatim in paths/argv.
+                let host = jira_site.rsplit("://").next().unwrap_or(jira_site.as_str());
+                let site_token: String = host
+                    .chars()
+                    .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+                    .collect();
+                let synthetic_task_id = format!("JIRA-{}-{}", site_token, fetched.jira_issue_id);
+                let prompt = render_initial_jira_prompt(
+                    &state.i18n,
+                    &fetched.jira_key,
+                    &summary,
+                    &fetched.jira_issue_id,
+                );
+                let model = String::new();
+                let plan: LaunchPlan = agent::plan_launch(
+                    kind,
+                    &model,
+                    command_override.as_deref(),
+                    &cwd,
+                    &synthetic_task_id,
+                    &pid,
+                    None,
+                    Some(&prompt),
+                );
+                let LaunchPlan {
+                    spawn,
+                    conversation_id_known: _,
+                    pending_codex_capture,
+                    pending_opencode_capture: _,
+                    prompt_delivery,
+                } = plan;
+                // The capability secret reaches the analyst here via ENV ONLY.
+                let spawn = spawn.jira_analyst_env(
+                    &analysis_run_id,
+                    secret.expose(),
+                    &jira_site,
+                    &fetched.jira_issue_id,
+                    &fetched.jira_key,
+                );
+
+                let pty = PtyHandle::spawn(spawn).map_err(|e| ImportError::Spawn(e.to_string()))?;
+                let session_id = format!("S-{}", Uuid::new_v4().simple());
+                let session = TerminalSession::start(session_id.clone(), pty)
+                    .map_err(|e| ImportError::Spawn(e.to_string()))?;
+                state
+                    .sessions
                     .lock()
-                    .map_err(|e| ImportError::Internal(format!("config lock poisoned: {e}")))?;
-                let project = cfg
-                    .projects
-                    .iter()
-                    .find(|p| p.id == pid)
-                    .ok_or_else(|| ImportError::UnknownProject(pid.clone()))?;
-                let cmd = project
-                    .agente
-                    .as_ref()
-                    .filter(|a| a.kind == kind)
-                    .and_then(|a| a.command.clone())
-                    .or_else(|| {
-                        cfg.agente
-                            .as_ref()
-                            .filter(|a| a.kind == kind)
-                            .and_then(|a| a.command.clone())
+                    .map_err(|e| ImportError::Internal(e.to_string()))?
+                    .insert(session_id.clone(), session.clone());
+                // Log identity only — NEVER the secret.
+                tracing::info!(
+                    analysis_run_id = %analysis_run_id,
+                    jira_key = %fetched.jira_key,
+                    session = %session_id,
+                    "jira analyst started"
+                );
+
+                if prompt_delivery == PromptDelivery::TypeIn {
+                    let session_for_prompt = session.clone();
+                    tauri::async_runtime::spawn(async move {
+                        send_initial_prompt(&session_for_prompt, &prompt).await;
                     });
-                (project.path.clone(), cmd)
-            };
-            if !cwd.exists() {
-                return Err(ImportError::Spawn(format!(
-                    "project path does not exist: {} — fix it in Settings → Projetos",
-                    cwd.display()
-                )));
+                }
+                if let Some(capture) = pending_codex_capture {
+                    tauri::async_runtime::spawn(async move {
+                        let _ = wait_for_codex_uuid(capture).await;
+                    });
+                }
+
+                Ok(proto_ops::jira_import::Result::Imported {
+                    jira_site,
+                    jira_issue_id: fetched.jira_issue_id,
+                    jira_key: fetched.jira_key,
+                    summary,
+                    project_id: pid,
+                    analysis_run_id: analysis_run_id.clone(),
+                    session_id,
+                })
             }
-
-            // jira_site is a full origin ("https://acme.atlassian.net"); strip
-            // the scheme and sanitize so the synthetic id (exported as
-            // TASKAI_TASK_ID) is safe to use verbatim in paths/argv.
-            let host = jira_site.rsplit("://").next().unwrap_or(jira_site.as_str());
-            let site_token: String = host
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-                .collect();
-            let synthetic_task_id = format!("JIRA-{}-{}", site_token, fetched.jira_issue_id);
-            let prompt = render_initial_jira_prompt(
-                &state.i18n,
-                &fetched.jira_key,
-                &summary,
-                &fetched.jira_issue_id,
-            );
-            let model = String::new();
-            let plan: LaunchPlan = agent::plan_launch(
-                kind,
-                &model,
-                command_override.as_deref(),
-                &cwd,
-                &synthetic_task_id,
-                &pid,
-                None,
-                Some(&prompt),
-            );
-            let LaunchPlan {
-                spawn,
-                conversation_id_known: _,
-                pending_codex_capture,
-                pending_opencode_capture: _,
-                prompt_delivery,
-            } = plan;
-            // The capability secret reaches the analyst here via ENV ONLY.
-            let spawn = spawn.jira_analyst_env(
-                &analysis_run_id,
-                secret.expose(),
-                &jira_site,
-                &fetched.jira_issue_id,
-                &fetched.jira_key,
-            );
-
-            let pty = PtyHandle::spawn(spawn).map_err(|e| ImportError::Spawn(e.to_string()))?;
-            let session_id = format!("S-{}", Uuid::new_v4().simple());
-            let session = TerminalSession::start(session_id.clone(), pty)
-                .map_err(|e| ImportError::Spawn(e.to_string()))?;
-            state
-                .sessions
-                .lock()
-                .map_err(|e| ImportError::Internal(e.to_string()))?
-                .insert(session_id.clone(), session.clone());
-            // Log identity only — NEVER the secret.
-            tracing::info!(
-                analysis_run_id = %analysis_run_id,
-                jira_key = %fetched.jira_key,
-                session = %session_id,
-                "jira analyst started"
-            );
-
-            if prompt_delivery == PromptDelivery::TypeIn {
-                let session_for_prompt = session.clone();
-                tauri::async_runtime::spawn(async move {
-                    send_initial_prompt(&session_for_prompt, &prompt).await;
-                });
+            .await;
+            match spawned {
+                Ok(result) => Ok(result),
+                Err(e) => {
+                    // Roll back the just-minted capability so the issue stays
+                    // re-importable. Best-effort: a revoke failure is logged but
+                    // must not mask the original spawn error.
+                    if let Err(re) = revoke_run_secret(state, &analysis_run_id).await {
+                        tracing::warn!(
+                            error = %re,
+                            analysis_run_id = %analysis_run_id,
+                            "failed to revoke run secret after jira analyst spawn failure"
+                        );
+                    }
+                    Err(e)
+                }
             }
-            if let Some(capture) = pending_codex_capture {
-                tauri::async_runtime::spawn(async move {
-                    let _ = wait_for_codex_uuid(capture).await;
-                });
-            }
-
-            Ok(proto_ops::jira_import::Result::Imported {
-                jira_site,
-                jira_issue_id: fetched.jira_issue_id,
-                jira_key: fetched.jira_key,
-                summary,
-                project_id: pid,
-                analysis_run_id,
-                session_id,
-            })
         }
     }
 }

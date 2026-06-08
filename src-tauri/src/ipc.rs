@@ -2455,6 +2455,115 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn failed_spawn_revoke_unblocks_reimport() {
+        // Regression for the "import does nothing, then can't be re-imported"
+        // bug: the secret is minted (status=Active) BEFORE the analyst spawn.
+        // If the spawn tail in `jira_import_core` fails, it revokes the secret
+        // so the record is not stuck as "active work". This drives the same
+        // revoke + re-import seam the production failure path uses.
+        let (deps, _dir, _rx) = mk_deps(None);
+        let f = fetched("10042", "PROJ-7", "x", Value::Null);
+
+        // Import mints a run (status=Active).
+        let first = jira_import_persist(&deps.state, "site", &f, "P-1")
+            .await
+            .unwrap();
+        let run1 = match first {
+            ImportPersistOutcome::New {
+                analysis_run_id, ..
+            } => analysis_run_id,
+            _ => panic!("expected New"),
+        };
+
+        // Simulate the spawn-failure rollback the New arm performs.
+        crate::commands::revoke_run_secret(&deps.state, &run1)
+            .await
+            .unwrap();
+        let after_revoke = deps
+            .state
+            .repo
+            .read_jira_issue("site", "10042")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            after_revoke.secret_status.as_deref(),
+            Some(SecretStatus::Revoked.as_str()),
+            "rolled-back import leaves the secret revoked, not active"
+        );
+
+        // The issue is importable again (no permanent ExistingActive lock),
+        // with a fresh run id.
+        let second = jira_import_persist(&deps.state, "site", &f, "P-1")
+            .await
+            .unwrap();
+        match second {
+            ImportPersistOutcome::New {
+                analysis_run_id, ..
+            } => assert_ne!(analysis_run_id, run1, "re-import mints a new run"),
+            _ => panic!("expected re-import to mint a new run, got stuck ExistingActive"),
+        }
+    }
+
+    #[tokio::test]
+    async fn boot_reconcile_revokes_stale_active_secret_and_unblocks_reimport() {
+        // After an app restart the analyst PTY is gone, but a record minted
+        // before the crash is still secret_status=Active. Boot reconciliation
+        // must revoke it so the issue is re-importable instead of stuck on the
+        // ExistingActive short-circuit.
+        let (deps, _dir, _rx) = mk_deps(None);
+        let f = fetched("10042", "PROJ-7", "x", Value::Null);
+        let run1 = match jira_import_persist(&deps.state, "site", &f, "P-1")
+            .await
+            .unwrap()
+        {
+            ImportPersistOutcome::New {
+                analysis_run_id, ..
+            } => analysis_run_id,
+            _ => panic!("expected New"),
+        };
+
+        let revoked = crate::commands::reconcile_stale_run_secrets(&deps.state)
+            .await
+            .unwrap();
+        assert_eq!(revoked, 1, "the one Active secret is revoked");
+        let rec = deps
+            .state
+            .repo
+            .read_jira_issue("site", "10042")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            rec.secret_status.as_deref(),
+            Some(SecretStatus::Revoked.as_str())
+        );
+
+        // Re-import now mints a fresh run rather than short-circuiting.
+        match jira_import_persist(&deps.state, "site", &f, "P-1")
+            .await
+            .unwrap()
+        {
+            ImportPersistOutcome::New {
+                analysis_run_id, ..
+            } => assert_ne!(analysis_run_id, run1),
+            _ => panic!("expected re-import to mint a new run"),
+        }
+
+        // Idempotent: a second pass finds nothing Active to revoke.
+        let revoked_again = crate::commands::reconcile_stale_run_secrets(&deps.state)
+            .await
+            .unwrap();
+        // The re-import above minted a NEW Active secret, so exactly that one is
+        // revoked; running once more is a no-op.
+        assert_eq!(revoked_again, 1);
+        let third = crate::commands::reconcile_stale_run_secrets(&deps.state)
+            .await
+            .unwrap();
+        assert_eq!(third, 0, "no Active secrets remain");
+    }
+
     #[test]
     fn import_persist_outcome_contains_no_secret_in_proto_result() {
         // The proto Result is a distinct type from ImportPersistOutcome and

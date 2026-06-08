@@ -961,6 +961,9 @@ textarea {
   font-size: 0.85rem;
   line-height: 1.5;
 }
+.jira-assigned-filter {
+  margin-bottom: 0.5rem;
+}
 input:focus,
 textarea:focus,
 select:focus {

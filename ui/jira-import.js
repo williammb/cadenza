@@ -12,6 +12,7 @@
 
 import { t, onLocaleChange } from "./i18n.js";
 import { loadAgentPresence, decorateKindSelect } from "./agent-presence.js";
+import { attachTerminal } from "./terminal.js";
 
 const { invoke } = window.__TAURI__.core;
 
@@ -32,6 +33,9 @@ export async function openJiraImport(prefill = {}) {
   const note = document.getElementById("jira-assigned-note");
   note.hidden = true;
   note.textContent = "";
+  const filter = document.getElementById("jira-assigned-filter");
+  filter.value = "";
+  filter.hidden = true;
   lastAssigned = null;
   setStatus("");
   await populateProjects(prefill.projectId);
@@ -74,6 +78,7 @@ async function populateAnalyst() {
 }
 
 async function loadAssigned() {
+  document.getElementById("jira-assigned-filter").value = "";
   setStatus(t("jira-import-loading"));
   try {
     const res = await invoke("jira_list_assigned"); // no args
@@ -100,6 +105,7 @@ function renderAssigned(issues, partial) {
     const li = document.createElement("li");
     li.className = "jira-assigned-item";
     li.tabIndex = 0;
+    li.dataset.search = `${it.key} ${it.summary}`.toLowerCase();
     const key = document.createElement("span");
     key.className = "jira-key";
     key.textContent = it.key;
@@ -121,6 +127,19 @@ function renderAssigned(issues, partial) {
       }
     });
     list.append(li);
+  }
+  const filter = document.getElementById("jira-assigned-filter");
+  filter.hidden = issues.length === 0;
+  applyAssignedFilter();
+}
+
+// Hide rows whose key/summary don't contain the filter text (client-side,
+// no re-fetch). Empty filter shows everything.
+function applyAssignedFilter() {
+  const q = document.getElementById("jira-assigned-filter").value.trim().toLowerCase();
+  const list = document.getElementById("jira-assigned-list");
+  for (const li of list.children) {
+    li.hidden = q !== "" && !(li.dataset.search ?? "").includes(q);
   }
 }
 
@@ -151,6 +170,12 @@ async function doImport() {
     // Result is #[serde(tag = "outcome", rename_all = "snake_case")].
     if (res.outcome === "imported") {
       setStatus(t("jira-import-imported", { key: res.jira_key }), "ok");
+      // Open the spawned analyst's terminal pane (mirrors start-agent-modal);
+      // without this the analyst runs invisibly and the import "does nothing".
+      await attachTerminal(res.session_id, {
+        taskId: res.jira_key,
+        title: res.jira_key,
+      });
       setTimeout(() => {
         closeJiraImport();
         onClosedRefresh?.();
@@ -176,6 +201,10 @@ for (const b of document.querySelectorAll('[data-action="close-jira-import"]')) 
 document
   .getElementById("btn-jira-load-assigned")
   .addEventListener("click", loadAssigned);
+
+document
+  .getElementById("jira-assigned-filter")
+  .addEventListener("input", applyAssignedFilter);
 
 document.getElementById("btn-jira-do-import").addEventListener("click", doImport);
 

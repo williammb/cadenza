@@ -458,6 +458,7 @@ jira-import-key-label = Chave da issue
 jira-import-load-assigned = Carregar atribuídas a mim
 jira-import-loading = Carregando issues…
 jira-import-partial = Mostrando as primeiras { $count } issues.
+jira-assigned-filter-ph = Filtrar issues…
 jira-import-analyst = Agente analista
 jira-import-project = Projeto
 jira-import-submit = Importar
