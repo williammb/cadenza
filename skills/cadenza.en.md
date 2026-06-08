@@ -1,7 +1,14 @@
 # Cadenza — How to use
 
-You have access to the `cadenza-cli` CLI to manage tasks. It talks to the
-Cadenza desktop app over a local socket; the app **must be running**.
+Cadenza is an **optional support tool** for coordinating tasks via the
+`cadenza-cli` CLI, which talks to the Cadenza desktop app over a local socket.
+It is only relevant when you were started for a Cadenza task
+(`$TASKAI_TASK_ID` is set) **or** when the human explicitly asks you to use it.
+
+**If `$TASKAI_TASK_ID` is unset and the human hasn't asked for Cadenza, ignore
+the rest of this document and just work normally as an assistant** — don't run
+`cadenza-cli`, don't complain, and don't demand a task. The sections below
+apply only once there is an active task context.
 
 ## Know your task
 
@@ -23,7 +30,7 @@ cadenza-cli get "$TASKAI_TASK_ID" --json
 doesn't exist). Fall back to `cadenza-cli current --json` only when
 `$TASKAI_TASK_ID` is unset (you were run outside the app's terminal).
 
-## Required flow
+## Task flow (when you have an active task)
 
 1. **At session start:** `cadenza-cli get "$TASKAI_TASK_ID" --json` — read
    your task. Only work on it if its `estado` is `fazendo`.
@@ -128,11 +135,13 @@ reviewer. The flow:
 
 ## Rules
 
-- You only work on tasks with `estado: fazendo`. If `get "$TASKAI_TASK_ID"`
-  shows a different state (and you are not in plan mode), stop and ask the
-  human.
-- If `$TASKAI_TASK_ID` is unset, fall back to `cadenza-cli current --json`;
-  if that returns `null`, stop and ask the human to start a task.
+- **Within an active task**, you only work on tasks with `estado: fazendo`. If
+  `get "$TASKAI_TASK_ID"` shows a different state (and you are not in plan
+  mode), stop and ask the human.
+- If `$TASKAI_TASK_ID` is unset and `cadenza-cli current --json` returns `null`
+  (or the app isn't running), there is **no active Cadenza task** — just help
+  the human normally. Do **not** refuse and do **not** demand a task. Only use
+  `cadenza-cli` when the human asks or when a task context exists.
 - Always use `--json` when parsing output. `estado` values stay in PT
   canonical (`a_fazer`, `fazendo`, `aguardando_revisao`, `feito`) — they
   do **not** change with `--lang`.
@@ -141,8 +150,9 @@ reviewer. The flow:
   - `20` → rejected — stop and report to the human
   - `21` → timeout — stop, report that no decision was made
 - `get` exits `30` (`task_not_found`) if the id doesn't exist.
-- If you see exit code `10` ("app not running"), ask the human to open
-  the Cadenza app.
+- If you see exit code `10` ("app not running") *while the human actually
+  wanted to use Cadenza*, ask them to open the Cadenza app. Otherwise a closed
+  app is normal — just carry on without it.
 - If you see exit code `11` ("invalid token"), ask the human to use
   "Revoke CLI token" in the tray menu and try again.
 
