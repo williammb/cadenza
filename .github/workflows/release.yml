@@ -27,7 +27,7 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # The tag `vX.Y.Z` is the single source of truth for the release
       # version. We stamp it into the manifests here, on the runner's
@@ -102,7 +102,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Stamp the release version from the tag before building (same as the
       # Windows/macOS jobs). Without this the AppImage would ship the `0.0.0`
@@ -167,7 +167,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Stamp the release version from the tag before building (same as the
       # Windows job). perl keeps it portable across the BSD-sed macOS runner.
